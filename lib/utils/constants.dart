@@ -1,2 +1,2 @@
-const String mqttBroker = 'broker.hivemq.com';
+const String mqttBroker = 'broker.emqx.io';
 const int mqttPort = 1883;
