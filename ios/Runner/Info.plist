@@ -45,5 +45,24 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+
+    <!-- Background Modes for MQTT -->
+    <key>UIBackgroundModes</key>
+    <array>
+        <string>fetch</string>
+        <string>remote-notification</string>
+        <string>processing</string>
+    </array>
+
+    <!-- Enable background tasks for MQTT -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsArbitraryLoads</key>
+        <true/>
+    </dict>
+    
+    <!-- iOS background fetch interval for MQTT updates -->
+    <key>MinimumBackgroundFetchInterval</key>
+    <string>600</string> <!-- 10 minutes interval -->
 </dict>
 </plist>
