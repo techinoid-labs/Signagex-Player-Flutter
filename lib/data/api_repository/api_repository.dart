@@ -18,7 +18,7 @@ class ApiRepository {
     String? authToken,
   ) async {
     String apiUrl = '$baseurl$port$url';
-print(apiUrl);
+    print(apiUrl);
     try {
       http.Response response = await http
           .post(
