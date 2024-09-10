@@ -37,11 +37,24 @@ dependencies:
   cupertino_icons: ^1.0.8
   mqtt_client: ^9.6.3
   provider: ^6.1.2
-  uuid: ^3.0.6
+  url_launcher: ^6.1.0
+  http: ^1.1.0
+  path_provider:
+  shared_preferences: ^2.0.5
+  permission_handler:
+  connectivity_plus: ^6.0.5
+  internet_connection_checker: ^1.0.0
+  # platform_device_id_v3: ^1.0.0
+  # flutter_background_service: ^5.0.10
+  # flutter_local_notifications: ^9.0.0
+
 
 dev_dependencies:
   flutter_test:
     sdk: flutter
+  # workmanager: ^0.4.1
+  # uuid: ^3.0.6
+  # background_fetch: ^1.0.0
 
   # The "flutter_lints" package below contains a set of recommended lints to
   # encourage good coding practices. The lint set provided by the package is
@@ -62,8 +75,8 @@ flutter:
   uses-material-design: true
 
   # To add assets to your application, add an assets section, like this:
-  # assets:
-  #   - images/a_dot_burr.jpeg
+  assets:
+    - assets/images/
   #   - images/a_dot_ham.jpeg
 
   # An image asset can refer to one or more resolution-specific "variants", see
