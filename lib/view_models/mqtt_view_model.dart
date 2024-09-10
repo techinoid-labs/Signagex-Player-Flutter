@@ -4,7 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'package:connectivity_plus/connectivity_plus.dart';
+import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -25,8 +25,7 @@ enum MqttState {
 class MqttViewModel extends ChangeNotifier {
   final MqttClientService _mqttClientService;
   MqttState _state = MqttState.initial;
-  ConnectivityResult _connectivityResult = ConnectivityResult.none;
-  late final Connectivity _connectivity;
+
   static const _channel = MethodChannel('com.example/network');
 
   MqttState get state => _state;
@@ -38,28 +37,23 @@ class MqttViewModel extends ChangeNotifier {
 
   MqttViewModel(this._mqttClientService) {
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
-    _connectivity = Connectivity();
     _initializeBasedOnPlatform();
     _mqttConnection();
     _monitorConnectivity();
   }
 
   // Monitor connectivity changes and reinitialize MQTT on connection recovery
-void _monitorConnectivity() {
-  _connectivity.onConnectivityChanged.listen((List<ConnectivityResult> results) {
-    // Assuming you're only interested in the first result for now
-    if (results.isNotEmpty) {
-      ConnectivityResult result = results.first;
-      _connectivityResult = result;
-      if (_connectivityResult != ConnectivityResult.none) {
+  void _monitorConnectivity() {
+    InternetConnectionChecker().onStatusChange.listen((status) {
+      final hasConnection = status == InternetConnectionStatus.connected;
+      if (hasConnection) {
         _mqttConnection();
       } else {
         _state = MqttState.noInternet;
         notifyListeners();
       }
-    }
-  });
-}
+    });
+  }
 
   Future<void> checkAndRequestPermissions() async {
     final status = await Permission.location.status;
@@ -105,8 +99,50 @@ void _monitorConnectivity() {
   Future<void> _initializeBasedOnPlatform() async {
     if (Platform.isAndroid) {
       await _initializeMacAddresses();
-    } else if (Platform.isIOS || Platform.isMacOS) {
+    } else if (Platform.isIOS) {
       await getDeviceIdentifiers();
+    } else if (Platform.isMacOS) {
+      await getDeviceIdentifiersForMac();
+    }
+     else if (Platform.isWindows) {
+      await getMotherboardSerialForMac();
+    }else if (Platform.isLinux) {
+      await getMotherboardSeriaForLinux();
+    }
+  }
+
+
+   static const platform = MethodChannel('com.example/motherboard_serial');
+
+  Future<String?> getMotherboardSerialForMac() async {
+    try {
+      final String? serial = await platform.invokeMethod('getMotherboardSerial');
+      print("this is serial Port of Window$serial");
+      return serial;
+    } on PlatformException catch (e) {
+      print("Failed to get motherboard serial number: '${e.message}'.");
+      return null;
+    }
+  }
+  Future<String?> getMotherboardSeriaForLinux() async {
+    try {
+      final String? serial = await platform.invokeMethod('getMotherboardSerial');
+      return serial;
+    } on PlatformException catch (e) {
+      print("Failed to get motherboard serial number: '${e.message}'.");
+      return null;
+    }
+  }
+
+  static Future<String?> getDeviceIdentifiersForMac() async {
+    try {
+      final String? identifier =
+          await _channel.invokeMethod('getDeviceIdentifier');
+      print("Unique ID: $identifier");
+      return identifier;
+    } on PlatformException catch (e) {
+      print("Failed to get device identifier: '${e.message}'.");
+      return null;
     }
   }
 
@@ -151,14 +187,16 @@ void _monitorConnectivity() {
         ]
       };
     } else if (Platform.isIOS || Platform.isMacOS) {
-      final uuid = await getDeviceIdentifiers();
+      final uuid = Platform.isIOS
+          ? await getDeviceIdentifiers()
+          : await getDeviceIdentifiersForMac();
       requestBody = {"platform": "ios", "uuid": uuid ?? "unknown"};
     } else {
       debugPrint("Unsupported platform");
       return;
     }
 
-    print("Request body: $requestBody");
+    debugPrint("Request body: $requestBody");
 
     try {
       final response = await ApiRepository.sendPostRequest(
