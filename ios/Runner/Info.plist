@@ -51,19 +51,21 @@
     <array>
         <string>fetch</string>
         <string>remote-notification</string>
-        <string>processing</string>
     </array>
+    
+    <!-- Location Permission Description -->
     <key>NSLocationWhenInUseUsageDescription</key>
     <string>This app requires access to location for network connectivity checks.</string>
-    <!-- Enable background tasks for MQTT -->
+    
+    <!-- App Transport Security -->
     <key>NSAppTransportSecurity</key>
     <dict>
         <key>NSAllowsArbitraryLoads</key>
         <true/>
     </dict>
     
-    <!-- iOS background fetch interval for MQTT updates -->
+    <!-- Background Fetch Interval for MQTT Updates -->
     <key>MinimumBackgroundFetchInterval</key>
-    <string>600</string> <!-- 10 minutes interval -->
+    <integer>600</integer> <!-- 10 minutes interval -->
 </dict>
 </plist>
