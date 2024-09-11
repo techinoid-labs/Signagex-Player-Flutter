@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:geolocator/geolocator.dart';
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -25,10 +26,15 @@ enum MqttState {
 class MqttViewModel extends ChangeNotifier {
   final MqttClientService _mqttClientService;
   MqttState _state = MqttState.initial;
+  Map<String, dynamic> devicesinfo = deviceInfoMap;
 
-  static const _channel = MethodChannel('com.example/network');
+  Map<String, dynamic>? _deviceInfo;
+
+  Map<String, dynamic>? get deviceInfo => _deviceInfo;
+  static const _channel = MethodChannel('com.example/device_info');
 
   MqttState get state => _state;
+  String topic = "";
 
   Map<String, String?> macAddresses = {
     'wlan0': null,
@@ -37,8 +43,9 @@ class MqttViewModel extends ChangeNotifier {
 
   MqttViewModel(this._mqttClientService) {
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
+    _fetchCurrentLocation();
     _initializeBasedOnPlatform();
-    _mqttConnection();
+    // _mqttConnection();
     _monitorConnectivity();
   }
 
@@ -99,24 +106,113 @@ class MqttViewModel extends ChangeNotifier {
   Future<void> _initializeBasedOnPlatform() async {
     if (Platform.isAndroid) {
       await _initializeMacAddresses();
+      getDeviceInfoAndroid();
     } else if (Platform.isIOS) {
-      await getDeviceIdentifiers();
+      final identifier =
+          await _channel.invokeMethod<String>('getDeviceIdentifier');
+      print('iOS Device Identifier: $identifier');
+      devicesinfo!["platform"] = "iOS";
+
+      print("datataatata${devicesinfo["uuid"] = identifier}");
+      getDeviceInfo();
     } else if (Platform.isMacOS) {
       await getDeviceIdentifiersForMac();
-    }
-     else if (Platform.isWindows) {
+    } else if (Platform.isWindows) {
       await getMotherboardSerialForMac();
-    }else if (Platform.isLinux) {
+    } else if (Platform.isLinux) {
       await getMotherboardSeriaForLinux();
     }
   }
 
+  Future<void> getDeviceInfoAndroid() async {
+    try {
+      final String? result = await _channel.invokeMethod('getSystemData');
+      if (result != null) {
+        print("Device Info from Android: $result");
+        // Parse the result if needed
+        final Map<String, dynamic> deviceInfo = jsonDecode(result);
+        devicesinfo["device_info"] = deviceInfo;
+        notifyListeners();
+      } else {
+        print("Failed to get device info");
+      }
+    } on PlatformException catch (e) {
+      print("Failed to get device info: '${e.message}'.");
+    }
+  }
 
-   static const platform = MethodChannel('com.example/motherboard_serial');
+  // Method to check and request location permissions
+  Future<void> _checkAndRequestPermissions() async {
+    final locationStatus = await Permission.location.status;
+    if (!locationStatus.isGranted) {
+      final result = await Permission.location.request();
+      if (result.isDenied) {
+        // Handle the case when the user denies the permission
+        print('Location permission denied');
+        return;
+      }
+    }
+  }
+
+  // Method to fetch the current location
+  Future<void> _fetchCurrentLocation() async {
+    try {
+      // Check and request location permissions
+      await _checkAndRequestPermissions();
+
+      // Get the current position
+      Position position = await Geolocator.getCurrentPosition(
+        desiredAccuracy: LocationAccuracy.high,
+      );
+
+      // Update devicesinfo with latitude and longitude
+      devicesinfo["latitude"] = position.latitude;
+      devicesinfo["longitude"] = position.longitude;
+
+      print(
+          'Current Location: Latitude: ${position.latitude}, Longitude: ${position.longitude}');
+    } catch (e) {
+      print('Error fetching location: $e');
+    }
+  }
+
+  Future<void> getDeviceInfo() async {
+    try {
+      final Map<dynamic, dynamic>? result =
+          await _channel.invokeMethod('getDeviceInfo');
+
+      if (result != null) {
+        print("this is result$result");
+        _deviceInfo = Map<String, dynamic>.from(result);
+        print('Device Info: $_deviceInfo');
+        devicesinfo["sender"] = "ios";
+        devicesinfo["storage_info"]["total_storage"] =
+            _deviceInfo!["storage_info"]["total_storage"];
+        devicesinfo["storage_info"]["available_storage"] =
+            _deviceInfo!["storage_info"]["free_storage"];
+        devicesinfo["cpu_information"]["count_cores"] =
+            _deviceInfo!["cpu_information"]["processor_count"];
+        devicesinfo["time_zone"] = _deviceInfo!["time_zone"];
+        devicesinfo["battery_information"]["battery_percentage"] =
+            _deviceInfo!["battery_information"]["battery_level"];
+        devicesinfo["device_model"] = _deviceInfo!["name"];
+        print("this is dzzata$deviceInfoMap");
+      } else {
+        _deviceInfo = null;
+      }
+
+      notifyListeners();
+    } on PlatformException catch (e) {
+      print("Failed to get device info: '${e.message}'.");
+    }
+  }
 
   Future<String?> getMotherboardSerialForMac() async {
     try {
-      final String? serial = await platform.invokeMethod('getMotherboardSerial');
+      const platform = MethodChannel('com.example/motherboard_serial');
+
+      final String? serial =
+          await platform.invokeMethod('getMotherboardSerial');
       print("this is serial Port of Window$serial");
       return serial;
     } on PlatformException catch (e) {
@@ -124,9 +220,13 @@ class MqttViewModel extends ChangeNotifier {
       return null;
     }
   }
+
   Future<String?> getMotherboardSeriaForLinux() async {
     try {
-      final String? serial = await platform.invokeMethod('getMotherboardSerial');
+      const platform = MethodChannel('com.example/motherboard_serial');
+
+      final String? serial =
+          await platform.invokeMethod('getMotherboardSerial');
       return serial;
     } on PlatformException catch (e) {
       print("Failed to get motherboard serial number: '${e.message}'.");
@@ -205,7 +305,10 @@ class MqttViewModel extends ChangeNotifier {
         "player/connection/",
         null,
       );
-      debugPrint("This is the response from the API: $response");
+      topic = response["player_code"];
+      debugPrint("This is the response from the$topic API: $response");
+      subsibeMessage(topic);
+      publishMessage(jsonEncode(deviceInfoMap));
       if (response["paired"] == false) {
         _state = MqttState.noContent;
       } else if (response["paired"] == true) {
@@ -221,8 +324,12 @@ class MqttViewModel extends ChangeNotifier {
     notifyListeners();
   }
 
+  void subsibeMessage(String topic) {
+    _mqttClientService.subscribe(topic);
+  }
+
   void publishMessage(String message) {
-    _mqttClientService.publish(message);
+    _mqttClientService.publish(topic,message);
   }
 
   void _updateMessage() {
