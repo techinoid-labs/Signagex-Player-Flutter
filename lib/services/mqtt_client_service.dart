@@ -66,7 +66,7 @@ class MqttClientService {
       await _client.connect();
       if (_client.connectionStatus!.state == MqttConnectionState.connected) {
         print('MQTT_LOGS::Mosquitto client connected');
-        subscribe('85a1d2');
+
       } else {
         print('MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${_client.connectionStatus}');
         _client.disconnect();
@@ -96,8 +96,8 @@ class MqttClientService {
     });
   }
 
-  void publish(String message) {
-    const pubTopic = '85a1d2';
+  void publish(String topic,String message) {
+    var pubTopic = topic;
     final builder = MqttClientPayloadBuilder();
     builder.addString(message);
 
