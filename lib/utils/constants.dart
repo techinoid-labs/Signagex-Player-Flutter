@@ -14,7 +14,10 @@ Map<String, dynamic> deviceInfoMap = {
       ],
       "platform": ""
     },
-    "platform": "",
+  
+  },
+  if(isIos)...{
+      "platform": "",
     "uuid": ""
   },
   "sender": "",
