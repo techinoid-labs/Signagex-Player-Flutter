@@ -32,6 +32,7 @@ class MqttViewModel extends ChangeNotifier {
 
   Map<String, dynamic>? get deviceInfo => _deviceInfo;
   static const _channel = MethodChannel('com.example/device_info');
+  static const platform = MethodChannel('com.example/network');
 
   MqttState get state => _state;
   String topic = "";
@@ -43,7 +44,7 @@ class MqttViewModel extends ChangeNotifier {
 
   MqttViewModel(this._mqttClientService) {
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
-    _fetchCurrentLocation();
+    
     _initializeBasedOnPlatform();
     // _mqttConnection();
     _monitorConnectivity();
@@ -80,7 +81,18 @@ class MqttViewModel extends ChangeNotifier {
           macAddresses[interface] = mac;
         }
       }
+
       print("Fetched MAC addresses: $macAddresses");
+      devicesinfo["mac_address"]["macAddress"][0]["interface"] = "wlan0";
+      devicesinfo["mac_address"]["macAddress"][1]["interface"] = "eth0";
+      if (devicesinfo["mac_address"]["macAddress"][0]["interface"] == "wlan0") {
+        devicesinfo["mac_address"]["macAddress"][0]["mac"] =
+            macAddresses["wlan0"] ?? "";
+      } else {
+        devicesinfo["mac_address"]["macAddress"][1]["mac"] =
+            macAddresses["eth0"] ?? "";
+      }
+      debugPrint("this is object$deviceInfoMap");
     } else {
       print("No MAC addresses found.");
     }
@@ -88,7 +100,7 @@ class MqttViewModel extends ChangeNotifier {
 
   static Future<Map<String, dynamic>?> getListOfMacAddresses() async {
     final String? macAddressesJson =
-        await _channel.invokeMethod('getListOfMacAddresses');
+        await platform.invokeMethod('getListOfMacAddresses');
     if (macAddressesJson != null) {
       return jsonDecode(macAddressesJson);
     }
@@ -126,12 +138,94 @@ class MqttViewModel extends ChangeNotifier {
 
   Future<void> getDeviceInfoAndroid() async {
     try {
-      final String? result = await _channel.invokeMethod('getSystemData');
+      final String? result = await platform.invokeMethod('getSystemData');
       if (result != null) {
         print("Device Info from Android: $result");
-        // Parse the result if needed
+
+        // Parse the JSON result
         final Map<String, dynamic> deviceInfo = jsonDecode(result);
         devicesinfo["device_info"] = deviceInfo;
+
+        // Extract and parse the `cpu_detailed_information` field
+        final cpuDetailedInfo =
+            deviceInfo["cpu_detailed_information"] as String?;
+        if (cpuDetailedInfo != null) {
+          // Split the string by double newlines to separate processor blocks
+          final processorBlocks = cpuDetailedInfo.trim().split('\n\n');
+
+          final List<Map<String, String>> processorsList = [];
+
+          for (var block in processorBlocks) {
+            final lines = block.split('\n');
+            final Map<String, String> processorMap = {};
+
+            for (var line in lines) {
+              final parts = line.split(':');
+              if (parts.length == 2) {
+                final key =
+                    parts[0].trim().replaceAll(' ', '_').replaceAll('\t', '');
+                final value = parts[1].trim();
+                processorMap[key] = value;
+              }
+            }
+            processorsList.add(processorMap);
+          }
+
+          // Update `cpu_detailed_information` in the device info map
+          deviceInfo["cpu_detailed_information"] = processorsList;
+        }
+
+        debugPrint("this is ${deviceInfo["cpu_detailed_information"]}");
+        devicesinfo["sender"] = "android";
+        devicesinfo["android_version"] = deviceInfo["android_version"];
+        devicesinfo["last_seen"] = deviceInfo["last_seen"];
+        devicesinfo["device_model"] = deviceInfo["device_model"];
+        devicesinfo["network_name"] = deviceInfo["network_name"];
+        devicesinfo["time_zone"] = deviceInfo["time_zone"];
+        devicesinfo["last_ip_address"] = deviceInfo["last_ip_address"];
+        devicesinfo["cpu_information"]["processor"] =
+            deviceInfo["cpu_information"]["processor"];
+        devicesinfo["cpu_information"]["count_cores"] =
+            deviceInfo["cpu_information"]["count_cores"];
+        devicesinfo["memory_information"]["total_memory"] =
+            int.parse(deviceInfo["memory_information"]["total_memory"]);
+        devicesinfo["memory_information"]["available_memory"] =
+            int.parse(deviceInfo["memory_information"]["available_memory"]);
+        devicesinfo["memory_information"]["used_memory"] =
+            int.parse(deviceInfo["memory_information"]["used_memory"]);
+        ;
+        devicesinfo["battery_information"]["battery_percentage"] = num.tryParse(
+                deviceInfo["battery_information"]["battery_percentage"]
+                        as String? ??
+                    '') ??
+            0;
+        devicesinfo["battery_information"]["formatted_voltage"] = num.tryParse(
+                deviceInfo["battery_information"]["formatted_voltage"]
+                        as String? ??
+                    '') ??
+            0;
+
+        devicesinfo["battery_information"]["formatted_temperature"] =
+            num.tryParse(deviceInfo["battery_information"]
+                        ["formatted_temperature"] as String? ??
+                    '') ??
+                0;
+        devicesinfo["cpu_detailed_information"]["cpu_detailed_information"] =
+            deviceInfo["cpu_detailed_information"];
+        devicesinfo["hardware_details"] = deviceInfo["hardware_details"];
+        devicesinfo["storage_info"]["total_storage"] =
+            deviceInfo["storage_info"]["total_storage"];
+        devicesinfo["storage_info"]["available_storage"] =
+            deviceInfo["storage_info"]["available_storage"];
+        devicesinfo["ram_info"] = deviceInfo["ram_info"];
+        devicesinfo["device_resolution"]["width"] =
+            deviceInfo["device_resolution"]["width"];
+        devicesinfo["device_resolution"]["height"] =
+            deviceInfo["device_resolution"]["height"];
+        devicesinfo["camera_details"] =
+            deviceInfo["camera_details"]["lens_facing"];
+        debugPrint("this is full object$deviceInfoMap");
+_fetchCurrentLocation();
         notifyListeners();
       } else {
         print("Failed to get device info");
@@ -170,7 +264,7 @@ class MqttViewModel extends ChangeNotifier {
       devicesinfo["longitude"] = position.longitude;
 
       print(
-          'Current Location: Latitude: ${position.latitude}, Longitude: ${position.longitude}');
+          'sadasdasasda$deviceInfoMap');
     } catch (e) {
       print('Error fetching location: $e');
     }
@@ -186,6 +280,7 @@ class MqttViewModel extends ChangeNotifier {
         _deviceInfo = Map<String, dynamic>.from(result);
         print('Device Info: $_deviceInfo');
         devicesinfo["sender"] = "ios";
+        devicesinfo["android_version"] = _deviceInfo!["ios_version"];;
         devicesinfo["storage_info"]["total_storage"] =
             _deviceInfo!["storage_info"]["total_storage"];
         devicesinfo["storage_info"]["available_storage"] =
@@ -196,7 +291,8 @@ class MqttViewModel extends ChangeNotifier {
         devicesinfo["battery_information"]["battery_percentage"] =
             _deviceInfo!["battery_information"]["battery_level"];
         devicesinfo["device_model"] = _deviceInfo!["name"];
-        print("this is dzzata$deviceInfoMap");
+        debugPrint("this is dzzata$deviceInfoMap");
+        _fetchCurrentLocation();
       } else {
         _deviceInfo = null;
       }
@@ -310,9 +406,10 @@ class MqttViewModel extends ChangeNotifier {
       subsibeMessage(topic);
       publishMessage(jsonEncode(deviceInfoMap));
       if (response["paired"] == false) {
-        _state = MqttState.noContent;
+         _state = MqttState.pairedScreen;
       } else if (response["paired"] == true) {
-        _state = MqttState.pairedScreen;
+        _state = MqttState.noContent;
+       
       } else {
         _state = MqttState.failure;
       }
@@ -329,7 +426,7 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   void publishMessage(String message) {
-    _mqttClientService.publish(topic,message);
+    _mqttClientService.publish(topic, message);
   }
 
   void _updateMessage() {
