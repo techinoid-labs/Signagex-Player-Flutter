@@ -73,8 +73,8 @@ class _DigivisionViewState extends State<DigivisionView> {
                         fontWeight: FontWeight.bold,
                       ),
                     ),
-                    const SimpleText(
-                      text: "ZQR ADG",
+                     SimpleText(
+                      text: urlLauncherViewModel.topic,
                       fontSize: 24,
                       fontWeight: FontWeight.bold,
                     ),
