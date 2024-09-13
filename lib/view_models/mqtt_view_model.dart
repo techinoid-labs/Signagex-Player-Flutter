@@ -4,9 +4,12 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:battery_plus/battery_plus.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:internet_connection_checker/internet_connection_checker.dart';
+import 'package:network_info_plus/network_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:system_info2/system_info2.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../data/api_repository/api_repository.dart';
@@ -35,8 +38,8 @@ class MqttViewModel extends ChangeNotifier {
   static const platform = MethodChannel('com.example/network');
 
   MqttState get state => _state;
-  String topic = "";
-
+  String _topic = "";
+  String get topic => _topic;
   Map<String, String?> macAddresses = {
     'wlan0': null,
     'eth0': null,
@@ -44,7 +47,7 @@ class MqttViewModel extends ChangeNotifier {
 
   MqttViewModel(this._mqttClientService) {
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
-    
+    fetchAllInfo();
     _initializeBasedOnPlatform();
     // _mqttConnection();
     _monitorConnectivity();
@@ -68,6 +71,89 @@ class MqttViewModel extends ChangeNotifier {
     if (!status.isGranted) {
       await Permission.location.request();
     }
+  }
+
+  Future<void> fetchNetworkInfo() async {
+    final NetworkInfo networkInfo = NetworkInfo();
+
+    try {
+      // Fetch network information
+      final networkName = await networkInfo.getWifiName();
+      final ipAddress = await networkInfo.getWifiIP();
+      devicesinfo["last_ip_address"] = ipAddress;
+      print('Network Name (SSID): $networkName');
+      print('IP Address: $ipAddress');
+    } catch (e) {
+      print('Failed to get network info: ${e.toString()}');
+    }
+  }
+
+  Future<void> fetchBatteryInfo() async {
+    final Battery battery = Battery();
+
+    try {
+      // Fetch battery information
+      final batteryLevel = await battery.batteryLevel;
+      print('Battery Level: $batteryLevel%');
+    } catch (e) {
+      print('Failed to get battery level: ${e.toString()}');
+    }
+  }
+
+  Future<void> fetchSystemInfo() async {
+    try {
+      // Common System Information
+      final kernelArchitecture = SysInfo.kernelArchitecture.toString();
+      print('Kernel Architecture: $kernelArchitecture');
+
+      final kernelBitness = SysInfo.kernelBitness;
+      print('Kernel Bitness: $kernelBitness');
+
+      final kernelName = SysInfo.kernelName;
+      print('Kernel Name: $kernelName');
+
+      final kernelVersion = SysInfo.kernelVersion;
+      print('Kernel Version: $kernelVersion');
+
+      final operatingSystemName = SysInfo.operatingSystemName;
+      print('Operating System Name: $operatingSystemName');
+
+      final operatingSystemVersion = SysInfo.operatingSystemVersion;
+      print('Operating System Version: $operatingSystemVersion');
+
+      final userDirectory = SysInfo.userDirectory;
+      print('User Directory: $userDirectory');
+
+      final userId = SysInfo.userId;
+      print('User ID: $userId');
+
+      final userName = SysInfo.userName;
+      print('User Name: $userName');
+
+      final userSpaceBitness = SysInfo.userSpaceBitness;
+      print('User Space Bitness: $userSpaceBitness');
+
+      // Memory Information
+      final totalPhysicalMemory = SysInfo.getTotalPhysicalMemory();
+      print('Total Physical Memory: $totalPhysicalMemory bytes');
+
+      final freePhysicalMemory = SysInfo.getFreePhysicalMemory();
+      print('Free Physical Memory: $freePhysicalMemory bytes');
+
+      final totalVirtualMemory = SysInfo.getTotalVirtualMemory();
+      print('Total Virtual Memory: $totalVirtualMemory bytes');
+
+      final freeVirtualMemory = SysInfo.getFreeVirtualMemory();
+      print('Free Virtual Memory: $freeVirtualMemory bytes');
+    } catch (e) {
+      print("Failed to get system info: '${e.toString()}'.");
+    }
+  }
+
+  Future<void> fetchAllInfo() async {
+    await fetchNetworkInfo();
+    await fetchBatteryInfo();
+    await fetchSystemInfo();
   }
 
   Future<void> _initializeMacAddresses() async {
@@ -123,9 +209,11 @@ class MqttViewModel extends ChangeNotifier {
       final identifier =
           await _channel.invokeMethod<String>('getDeviceIdentifier');
       print('iOS Device Identifier: $identifier');
-      devicesinfo!["platform"] = "iOS";
-
-      print("datataatata${devicesinfo["uuid"] = identifier}");
+      devicesinfo["mac_address"]["macAddress"][0]["platform"] = "iOS";
+      devicesinfo["mac_address"]["macAddress"][0]["interface"] = "wlan0";
+      if (devicesinfo["mac_address"]["macAddress"][0]["interface"] == "wlan0") {
+        devicesinfo["mac_address"]["macAddress"][0]["mac"] = identifier;
+      }
       getDeviceInfo();
     } else if (Platform.isMacOS) {
       await getDeviceIdentifiersForMac();
@@ -225,7 +313,7 @@ class MqttViewModel extends ChangeNotifier {
         devicesinfo["camera_details"] =
             deviceInfo["camera_details"]["lens_facing"];
         debugPrint("this is full object$deviceInfoMap");
-_fetchCurrentLocation();
+        _fetchCurrentLocation();
         notifyListeners();
       } else {
         print("Failed to get device info");
@@ -263,8 +351,7 @@ _fetchCurrentLocation();
       devicesinfo["latitude"] = position.latitude;
       devicesinfo["longitude"] = position.longitude;
 
-      print(
-          'sadasdasasda$deviceInfoMap');
+      print('sadasdasasda$deviceInfoMap');
     } catch (e) {
       print('Error fetching location: $e');
     }
@@ -280,7 +367,8 @@ _fetchCurrentLocation();
         _deviceInfo = Map<String, dynamic>.from(result);
         print('Device Info: $_deviceInfo');
         devicesinfo["sender"] = "ios";
-        devicesinfo["android_version"] = _deviceInfo!["ios_version"];;
+        devicesinfo["android_version"] = _deviceInfo!["ios_version"];
+
         devicesinfo["storage_info"]["total_storage"] =
             _deviceInfo!["storage_info"]["total_storage"];
         devicesinfo["storage_info"]["available_storage"] =
@@ -303,39 +391,65 @@ _fetchCurrentLocation();
     }
   }
 
-  Future<String?> getMotherboardSerialForMac() async {
+  Future<Map> getMotherboardSerialForMac() async {
     try {
-      const platform = MethodChannel('com.example/motherboard_serial');
-
-      final String? serial =
-          await platform.invokeMethod('getMotherboardSerial');
-      print("this is serial Port of Window$serial");
-      return serial;
+      final Map<dynamic, dynamic> result =
+          await platform.invokeMethod('getSystemInfo');
+      return Map<String, dynamic>.from(result);
     } on PlatformException catch (e) {
-      print("Failed to get motherboard serial number: '${e.message}'.");
-      return null;
+      print("Failed to get system info: '${e.message}'.");
+      return {};
     }
   }
 
-  Future<String?> getMotherboardSeriaForLinux() async {
+  Future<Map> getMotherboardSeriaForLinux() async {
     try {
-      const platform = MethodChannel('com.example/motherboard_serial');
-
-      final String? serial =
-          await platform.invokeMethod('getMotherboardSerial');
-      return serial;
+      final Map<dynamic, dynamic> result =
+          await platform.invokeMethod('getSystemInfo');
+      return Map<String, dynamic>.from(result);
     } on PlatformException catch (e) {
-      print("Failed to get motherboard serial number: '${e.message}'.");
-      return null;
+      print("Failed to get system info: '${e.message}'.");
+      return {};
     }
   }
 
-  static Future<String?> getDeviceIdentifiersForMac() async {
+  Future<Map<String, dynamic>?> getDeviceIdentifiersForMac() async {
     try {
-      final String? identifier =
-          await _channel.invokeMethod('getDeviceIdentifier');
-      print("Unique ID: $identifier");
-      return identifier;
+      const channel = MethodChannel('com.example/systemInfo');
+
+      // Fetch all system info (as a Map)
+      final Map<dynamic, dynamic>? systemInfo =
+          await channel.invokeMethod('getSystemInfo');
+      final battery = Battery();
+      final batteryLevel = await battery.batteryLevel;
+      final batteryStatus = await battery.batteryState;
+      final batteryPlugged = await battery.onBatteryStateChanged;
+      print(
+          "this is batterydata $batteryLevel....$batteryPlugged...$batteryStatus");
+      if (systemInfo != null) {
+        devicesinfo["mac_address"]["macAddress"][0]["platform"] = "iOS";
+        devicesinfo["battery_information"]["battery_percentage"] = batteryLevel;
+        devicesinfo["mac_address"]["macAddress"][0]["interface"] = "wlan0";
+        if (devicesinfo["mac_address"]["macAddress"][0]["interface"] ==
+            "wlan0") {
+          devicesinfo["mac_address"]["macAddress"][0]["mac"] =
+              systemInfo["uuid"];
+        }
+        print("System Info: $systemInfo"); // Print all system information
+        devicesinfo["android_version"] = systemInfo["os_version"];
+        devicesinfo["platform"] = "macos";
+        devicesinfo["device_resolution"] = systemInfo["device_resolution"];
+        devicesinfo["time_zone"] = systemInfo["time_zone"];
+        devicesinfo["cpu_information"] = systemInfo["cpu_information"];
+        devicesinfo["memory_information"] = systemInfo["memory_information"];
+        devicesinfo["storage_info"] = systemInfo["storage_info"];
+
+        _fetchCurrentLocation();
+        return Map<String, dynamic>.from(systemInfo);
+      } else {
+        print("Failed to retrieve system info.");
+        return null;
+      }
     } on PlatformException catch (e) {
       print("Failed to get device identifier: '${e.message}'.");
       return null;
@@ -384,9 +498,12 @@ _fetchCurrentLocation();
       };
     } else if (Platform.isIOS || Platform.isMacOS) {
       final uuid = Platform.isIOS
-          ? await getDeviceIdentifiers()
-          : await getDeviceIdentifiersForMac();
+          ? await getDeviceIdentifiers() // Assuming this returns a String
+          : (await getDeviceIdentifiersForMac())?[
+              "uuid"]; // Extract "uuid" from the map
+
       requestBody = {"platform": "ios", "uuid": uuid ?? "unknown"};
+      print(requestBody);
     } else {
       debugPrint("Unsupported platform");
       return;
@@ -401,15 +518,15 @@ _fetchCurrentLocation();
         "player/connection/",
         null,
       );
-      topic = response["player_code"];
+      _topic = response["player_code"];
       debugPrint("This is the response from the$topic API: $response");
+
       subsibeMessage(topic);
       publishMessage(jsonEncode(deviceInfoMap));
       if (response["paired"] == false) {
-         _state = MqttState.pairedScreen;
+        _state = MqttState.pairedScreen;
       } else if (response["paired"] == true) {
         _state = MqttState.noContent;
-       
       } else {
         _state = MqttState.failure;
       }
