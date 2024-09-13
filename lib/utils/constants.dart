@@ -5,8 +5,9 @@ const int mqttPort = 1883;
 const String baseurl = "https://api.norwinsol.com:";
 const String port = "3002/";
 bool isIos = Platform.isIOS;
+bool isMac = Platform.isMacOS;
 Map<String, dynamic> deviceInfoMap = {
-  if (!isIos) ...{
+  // if (!isIos || !isMac ) ...{
     "mac_address": {
       "macAddress": [
         {"interface": "", "mac": ""},
@@ -15,11 +16,11 @@ Map<String, dynamic> deviceInfoMap = {
       "platform": ""
     },
   
-  },
-  if(isIos)...{
-      "platform": "",
-    "uuid": ""
-  },
+  // },
+  // if(isIos || isMac)...{
+  //     "platform": "",
+  //   "uuid": ""
+  // },
   "sender": "",
   "android_version": "",
   "webview_version": "",
