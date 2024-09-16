@@ -218,7 +218,7 @@ class MqttViewModel extends ChangeNotifier {
     } else if (Platform.isMacOS) {
       await getDeviceIdentifiersForMac();
     } else if (Platform.isWindows) {
-      await getMotherboardSerialForMac();
+      await getMotherboardSerialForWindows();
     } else if (Platform.isLinux) {
       await getMotherboardSeriaForLinux();
     }
@@ -324,15 +324,17 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   // Method to check and request location permissions
-  Future<void> _checkAndRequestPermissions() async {
-    final locationStatus = await Permission.location.status;
-    if (!locationStatus.isGranted) {
-      final result = await Permission.location.request();
-      if (result.isDenied) {
-        // Handle the case when the user denies the permission
-        print('Location permission denied');
-        return;
-      }
+  Future<void> _getLocation() async {
+    final status = await Permission.location.status;
+    if (status.isGranted) {
+      Position position = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high);
+      print(
+          'location Latitude: ${position.latitude}, Longitude: ${position.longitude}');
+    } else if (status.isDenied) {
+      // Handle permission denied case
+    } else if (status.isPermanentlyDenied) {
+      // Handle permission permanently denied case
     }
   }
 
@@ -340,7 +342,7 @@ class MqttViewModel extends ChangeNotifier {
   Future<void> _fetchCurrentLocation() async {
     try {
       // Check and request location permissions
-      await _checkAndRequestPermissions();
+      await _getLocation();
 
       // Get the current position
       Position position = await Geolocator.getCurrentPosition(
@@ -368,7 +370,6 @@ class MqttViewModel extends ChangeNotifier {
         print('Device Info: $_deviceInfo');
         devicesinfo["sender"] = "ios";
         devicesinfo["android_version"] = _deviceInfo!["ios_version"];
-
         devicesinfo["storage_info"]["total_storage"] =
             _deviceInfo!["storage_info"]["total_storage"];
         devicesinfo["storage_info"]["available_storage"] =
@@ -391,7 +392,7 @@ class MqttViewModel extends ChangeNotifier {
     }
   }
 
-  Future<Map> getMotherboardSerialForMac() async {
+  Future<Map> getMotherboardSerialForWindows() async {
     try {
       final Map<dynamic, dynamic> result =
           await platform.invokeMethod('getSystemInfo');
