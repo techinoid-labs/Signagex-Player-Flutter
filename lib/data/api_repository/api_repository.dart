@@ -32,6 +32,7 @@ class ApiRepository {
             body: json.encode(requestData),
           )
           .timeout(const Duration(seconds: 30));
+          print(response.body);
       return json.decode(response.body);
     } on TimeoutException {
       return {
