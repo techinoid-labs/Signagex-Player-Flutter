@@ -26,7 +26,9 @@
 	<string>$(PRODUCT_COPYRIGHT)</string>
  <!-- Location Permission Description -->
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>This app requires access to location for network connectivity checks.</string>
+	<string>Your message to users about why you need their location</string>
+	<key>NSLocationAlwaysUsageDescription</key>
+	<string>Your message to users about why you need their location</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
