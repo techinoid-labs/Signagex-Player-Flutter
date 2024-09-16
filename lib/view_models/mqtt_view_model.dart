@@ -209,7 +209,7 @@ class MqttViewModel extends ChangeNotifier {
       final identifier =
           await _channel.invokeMethod<String>('getDeviceIdentifier');
       print('iOS Device Identifier: $identifier');
-      devicesinfo["mac_address"]["macAddress"][0]["platform"] = "iOS";
+      devicesinfo["mac_address"]["platform"] = "IOS";
       devicesinfo["mac_address"]["macAddress"][0]["interface"] = "wlan0";
       if (devicesinfo["mac_address"]["macAddress"][0]["interface"] == "wlan0") {
         devicesinfo["mac_address"]["macAddress"][0]["mac"] = identifier;
@@ -427,7 +427,7 @@ class MqttViewModel extends ChangeNotifier {
       print(
           "this is batterydata $batteryLevel....$batteryPlugged...$batteryStatus");
       if (systemInfo != null) {
-        devicesinfo["mac_address"]["macAddress"][0]["platform"] = "iOS";
+        // devicesinfo["mac_address"]["platform"] = "iOS";
         devicesinfo["battery_information"]["battery_percentage"] = batteryLevel;
         devicesinfo["mac_address"]["macAddress"][0]["interface"] = "wlan0";
         if (devicesinfo["mac_address"]["macAddress"][0]["interface"] ==
@@ -522,6 +522,7 @@ class MqttViewModel extends ChangeNotifier {
       debugPrint("This is the response from the$topic API: $response");
 
       subsibeMessage(topic);
+      print(deviceInfoMap);
       publishMessage(jsonEncode(deviceInfoMap));
       if (response["paired"] == false) {
         _state = MqttState.pairedScreen;
