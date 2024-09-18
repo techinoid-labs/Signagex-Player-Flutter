@@ -298,32 +298,54 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun getCpuInformation(): Triple<String, String, Int> {
-        return try {
-            val cpuInfo = File("/proc/cpuinfo").readText()
+  private fun getCpuInformation(): Triple<String, String, Int> {
+    return try {
+        val cpuInfo = File("/proc/cpuinfo").readText()
 
-            // Extracting CPU architecture
-            val cpuArchitecture = cpuInfo.lines()
-                .firstOrNull { it.startsWith("Hardware") || it.startsWith("CPU architecture") }
-                ?.substringAfter(":")
-                ?.trim() ?: "Unknown"
+        // Extracting CPU architecture
+        var cpuArchitecture = cpuInfo.lines()
+            .firstOrNull { it.startsWith("Hardware") || it.startsWith("CPU architecture") }
+            ?.substringAfter(":")
+            ?.trim() ?: ""
 
-            // Extracting Processor name
-            val processorName = cpuInfo.lines()
-                .firstOrNull { it.startsWith("Processor") || it.startsWith("model name") }
-                ?.substringAfter(":")
-                ?.trim() ?: "Unknown"
-
-            // Counting the number of cores
-            val coreCount = cpuInfo.lines()
-                .count { it.startsWith("processor") } // Counts lines that start with "processor"
-
-            Triple(processorName, cpuArchitecture, coreCount)
-        } catch (e: Exception) {
-            log("Error retrieving CPU information: ${e.message}")
-            Triple("Unknown", "Unknown", 0)
+        // If cpuArchitecture is still empty, fetch it using Build.SUPPORTED_ABIS as a fallback
+        if (cpuArchitecture.isEmpty()) {
+            cpuArchitecture = getCpuArchitectureFallback()
         }
+
+        // Extracting Processor name
+        val processorName = cpuInfo.lines()
+            .firstOrNull { it.startsWith("Processor") || it.startsWith("model name") }
+            ?.substringAfter(":")
+            ?.trim() ?: "Unknown"
+
+        // Counting the number of cores
+        val coreCount = cpuInfo.lines()
+            .count { it.startsWith("processor") } // Counts lines that start with "processor"
+
+        Triple(processorName, cpuArchitecture, coreCount)
+    } catch (e: Exception) {
+        log("Error retrieving CPU information: ${e.message}")
+        Triple("Unknown", "Unknown", 0)
     }
+}
+
+// Fallback method using Android's Build API
+private fun getCpuArchitectureFallback(): String {
+    return try {
+        // Fetch architecture using Build.SUPPORTED_ABIS or Build.CPU_ABI as fallback
+        val supportedAbis = android.os.Build.SUPPORTED_ABIS
+        if (supportedAbis.isNotEmpty()) {
+            supportedAbis[0] // Return the first ABI in the list
+        } else {
+            android.os.Build.CPU_ABI ?: "Unknown"
+        }
+    } catch (e: Exception) {
+        log("Error fetching CPU architecture fallback: ${e.message}")
+        "Unknown"
+    }
+}
+
 
 
     private fun getMemoryInformation(): Triple<String, String, String> {
