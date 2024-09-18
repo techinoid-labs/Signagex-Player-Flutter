@@ -1,6 +1,7 @@
 import Cocoa
 import FlutterMacOS
-import IOKit.ps // Import IOKit for power source APIs
+import IOKit
+import SystemConfiguration
 
 @main
 class AppDelegate: FlutterAppDelegate {
@@ -149,55 +150,56 @@ class AppDelegate: FlutterAppDelegate {
         ]
     }
 
-    // Fetch battery information
-    private func getBatteryInfo() -> [String: Any] {
-        var batteryInfo = [
-            "battery_percentage": "Not Available",
-            "formatted_voltage": "Not Available",
-            "formatted_temperature": "Not Available"
-        ]
+    // Fetch battery information (placeholder, macOS API for battery info is not straightforward)
+private func getBatteryInfo() -> [String: Any] {
+    var batteryInfo = [
+        "battery_percentage": "Not Available",
+        "formatted_voltage": "Not Available",
+        "formatted_temperature": "Not Available"
+    ]
 
-        guard let powerSourceInfo = IOPSCopyPowerSourcesInfo()?.takeUnretainedValue() as? NSDictionary else {
-            print("Failed to get power source info")
-            return batteryInfo
-        }
-        
-        guard let powerSourcesList = IOPSCopyPowerSourcesList(powerSourceInfo)?.takeUnretainedValue() as? [CFTypeRef] else {
-            print("Failed to get power sources list")
-            return batteryInfo
-        }
-        
-        for powerSource in powerSourcesList {
-            guard let powerSourceDetails = IOPSGetPowerSourceDescription(powerSourceInfo, powerSource)?.takeUnretainedValue() as? [String: Any] else {
-                print("Failed to get power source description for \(powerSource)")
-                continue
-            }
-            
-            // Extract battery percentage
-            if let currentCapacity = powerSourceDetails[kIOPSCurrentCapacityKey as String] as? Int,
-               let maxCapacity = powerSourceDetails[kIOPSMaxCapacityKey as String] as? Int {
-                let batteryPercentage = Double(currentCapacity) / Double(maxCapacity) * 100
-                batteryInfo["battery_percentage"] = String(format: "%.0f%%", batteryPercentage)
-            } else {
-                print("Battery capacity info is not available")
-            }
-            
-            // Extract voltage and temperature if available
-            if let voltage = powerSourceDetails[kIOPSVoltageKey as String] as? Double {
-                batteryInfo["formatted_voltage"] = String(format: "%.2f V", voltage)
-            } else {
-                print("Voltage info is not available")
-            }
-            
-            if let temperature = powerSourceDetails[kIOPSTemperatureKey as String] as? Double {
-                batteryInfo["formatted_temperature"] = String(format: "%.2f °C", temperature)
-            } else {
-                print("Temperature info is not available")
-            }
-        }
-
+    guard let powerSourceInfo = IOPSCopyPowerSourcesInfo()?.takeUnretainedValue() as? NSDictionary else {
+        print("Failed to get power source info")
         return batteryInfo
     }
+    
+    guard let powerSourcesList = IOPSCopyPowerSourcesList(powerSourceInfo)?.takeUnretainedValue() as? [CFTypeRef] else {
+        print("Failed to get power sources list")
+        return batteryInfo
+    }
+    
+    for powerSource in powerSourcesList {
+        guard let powerSourceDetails = IOPSGetPowerSourceDescription(powerSourceInfo, powerSource)?.takeUnretainedValue() as? [String: Any] else {
+            print("Failed to get power source description for \(powerSource)")
+            continue
+        }
+        
+        // Extract battery percentage
+        if let currentCapacity = powerSourceDetails[kIOPSCurrentCapacityKey as String] as? Int,
+           let maxCapacity = powerSourceDetails[kIOPSMaxCapacityKey as String] as? Int {
+            let batteryPercentage = Double(currentCapacity) / Double(maxCapacity) * 100
+            batteryInfo["battery_percentage"] = String(format: "%.0f%%", batteryPercentage)
+        } else {
+            print("Battery capacity info is not available")
+        }
+        
+        // Extract voltage and temperature if available
+        if let voltage = powerSourceDetails[kIOPSVoltageKey as String] as? Double {
+            batteryInfo["formatted_voltage"] = String(format: "%.2f V", voltage)
+        } else {
+            print("Voltage info is not available")
+        }
+        
+        if let temperature = powerSourceDetails[kIOPSTemperatureKey as String] as? Double {
+            batteryInfo["formatted_temperature"] = String(format: "%.2f °C", temperature)
+        } else {
+            print("Temperature info is not available")
+        }
+    }
+
+    return batteryInfo
+}
+
 
     // Fetch camera details (Currently not available for macOS, placeholder)
     private func getCameraDetails() -> String {
@@ -217,7 +219,8 @@ class AppDelegate: FlutterAppDelegate {
         guard platformExpert != 0 else {
             return nil
         }
-        let uuid = IORegistryEntryCreateCFProperty(platformExpert, "IOPlatformUUID" as CFString, kCFAllocatorDefault, 0).takeUnretainedValue() as? String
+        
+        let uuid = IORegistryEntryCreateCFProperty(platformExpert, kIOPlatformUUIDKey as CFString, kCFAllocatorDefault, 0).takeRetainedValue() as? String
         IOObjectRelease(platformExpert)
         return uuid
     }
