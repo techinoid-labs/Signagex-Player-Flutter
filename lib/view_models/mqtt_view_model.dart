@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:battery_plus/battery_plus.dart';
+// import 'package:battery_plus/battery_plus.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
@@ -81,6 +82,9 @@ class MqttViewModel extends ChangeNotifier {
       final networkName = await networkInfo.getWifiName();
       final ipAddress = await networkInfo.getWifiIP();
       devicesinfo["last_ip_address"] = ipAddress;
+
+      devicesinfo["network_name"] = networkName ?? "";
+
       print('Network Name (SSID): $networkName');
       print('IP Address: $ipAddress');
     } catch (e) {
@@ -94,10 +98,24 @@ class MqttViewModel extends ChangeNotifier {
     try {
       // Fetch battery information
       final batteryLevel = await battery.batteryLevel;
-      print('Battery Level: $batteryLevel%');
+      print(batteryLevel);
     } catch (e) {
       print('Failed to get battery level: ${e.toString()}');
     }
+  }
+
+  String uniqueid = "";
+  Future<String> getDeviceID() async {
+    final result = await Process.run('powershell', [
+      '-Command',
+      'Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty UUID'
+    ]);
+
+    if (result.exitCode != 0) {
+      return 'Error: ${result.stderr}';
+    }
+
+    return result.stdout.trim();
   }
 
   Future<void> fetchSystemInfo() async {
@@ -114,7 +132,7 @@ class MqttViewModel extends ChangeNotifier {
 
       final kernelVersion = SysInfo.kernelVersion;
       print('Kernel Version: $kernelVersion');
-
+      devicesinfo["android_version"] = kernelVersion ?? "";
       final operatingSystemName = SysInfo.operatingSystemName;
       print('Operating System Name: $operatingSystemName');
 
@@ -218,7 +236,7 @@ class MqttViewModel extends ChangeNotifier {
     } else if (Platform.isMacOS) {
       await getDeviceIdentifiersForMac();
     } else if (Platform.isWindows) {
-      await getMotherboardSerialForWindows();
+      await getSystemDataForWindows();
     } else if (Platform.isLinux) {
       await getMotherboardSeriaForLinux();
     }
@@ -281,7 +299,6 @@ class MqttViewModel extends ChangeNotifier {
             int.parse(deviceInfo["memory_information"]["available_memory"]);
         devicesinfo["memory_information"]["used_memory"] =
             int.parse(deviceInfo["memory_information"]["used_memory"]);
-        ;
         devicesinfo["battery_information"]["battery_percentage"] = num.tryParse(
                 deviceInfo["battery_information"]["battery_percentage"]
                         as String? ??
@@ -392,15 +409,100 @@ class MqttViewModel extends ChangeNotifier {
     }
   }
 
-  Future<Map> getMotherboardSerialForWindows() async {
+  double _screenWidth = 0;
+  double _screenHeight = 0;
+
+  double get screenWidth => _screenWidth;
+  double get screenHeight => _screenHeight;
+
+  void setScreenSize(double width, double height) {
+    _screenWidth = width;
+    _screenHeight = height;
+    devicesinfo["device_resolution"] = "$_screenWidth x $screenHeight";
+
+    notifyListeners(); // Notify listeners about the change
+  }
+
+  Future<void> getSystemDataForWindows() async {
     try {
-      final Map<dynamic, dynamic> result =
-          await platform.invokeMethod('getSystemInfo');
-      return Map<String, dynamic>.from(result);
-    } on PlatformException catch (e) {
-      print("Failed to get system info: '${e.message}'.");
-      return {};
+      final result = await getAllSystemInfo();
+      if (result.exitCode == 0) {
+        final output = result.stdout.trim();
+
+        // Parse the JSON output from PowerShell
+        final Map<String, dynamic> systemInfo = jsonDecode(output);
+        devicesinfo["sender"] = "windows";
+        devicesinfo["time_zone"] = systemInfo["TimeZone"];
+        devicesinfo["mac_address"]["platform"] = "Windows";
+        devicesinfo["mac_address"]["macAddress"][0]["interface"] = "wlan0";
+        if (devicesinfo["mac_address"]["macAddress"][0]["interface"] ==
+            "wlan0") {
+          devicesinfo["mac_address"]["macAddress"][0]["mac"] =
+              systemInfo["DeviceID"];
+        }
+        devicesinfo["ram_info"] = systemInfo["InstalledRAM"].toString();
+
+        devicesinfo["hardware_details"]["model"] = systemInfo["DeviceName"];
+        print(systemInfo["TimeZone"]);
+        devicesinfo["hardware_details"]["device_id"] = systemInfo["DeviceID"];
+        devicesinfo["storage_info"]["total_storage"] =
+            systemInfo["Drives"][0]["TotalSpaceGB"].toString();
+
+        devicesinfo["storage_info"]["available_storage"] =
+            systemInfo["Drives"][0]["FreeSpaceGB"].toString();
+        ;
+        print(systemInfo["TimeZone"]);
+        devicesinfo["hardware_details"]["ram"] = systemInfo["InstalledRAM"];
+        devicesinfo["cpu_information"]["cpu_architecture"] =
+            systemInfo["CPUArchitecture"];
+        devicesinfo["cpu_information"]["processor"] = systemInfo["CPUInfo"];
+
+        // Print all the system information
+        systemInfo.forEach((key, value) {
+          print('$key: $value');
+        });
+
+        _fetchCurrentLocation();
+        await _checkPairingStatus();
+      } else {
+        print('Error: ${result.stderr}');
+      }
+    } catch (e) {
+      print('An error occurred: $e');
     }
+  }
+
+  Future<ProcessResult> getAllSystemInfo() {
+    return Process.run('powershell', [
+      '-Command',
+      '''
+    # Get drive information
+    \$drives = Get-WmiObject -Class Win32_LogicalDisk | ForEach-Object {
+      [PSCustomObject]@{
+        "DriveLetter" = \$_."DeviceID"
+        "TotalSpaceGB" = [math]::round(\$_."Size" / 1GB, 2)
+        "FreeSpaceGB" = [math]::round(\$_."FreeSpace" / 1GB, 2)
+        "FileSystem" = \$_."FileSystem"
+      }
+    }
+
+    # Get other system information
+    \$info = @{
+      "CPUInfo" = (Get-WmiObject -Class Win32_Processor | Select-Object -ExpandProperty Name);
+      "CPUArchitecture" = (Get-WmiObject -Class Win32_Processor | Select-Object -ExpandProperty Architecture);
+      "AvailableMemory" = (Get-CimInstance -ClassName Win32_OperatingSystem | Select-Object -ExpandProperty FreePhysicalMemory);
+      "TimeZone" = (Get-TimeZone).Id;
+      
+      "DeviceName" = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Name);
+      "InstalledRAM" = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty TotalPhysicalMemory);
+      "DeviceID" = (Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty UUID);
+      "Drives" = \$drives
+    }
+
+    # Output the information as JSON
+    \$info | ConvertTo-Json
+    '''
+    ]);
   }
 
   Future<Map> getMotherboardSeriaForLinux() async {
@@ -421,15 +523,15 @@ class MqttViewModel extends ChangeNotifier {
       // Fetch all system info (as a Map)
       final Map<dynamic, dynamic>? systemInfo =
           await channel.invokeMethod('getSystemInfo');
-      final battery = Battery();
-      final batteryLevel = await battery.batteryLevel;
-      final batteryStatus = await battery.batteryState;
-      final batteryPlugged = await battery.onBatteryStateChanged;
-      print(
-          "this is batterydata $batteryLevel....$batteryPlugged...$batteryStatus");
+      // final battery = Battery();
+      // final batteryLevel = await battery.batteryLevel;
+      // final batteryStatus = await battery.batteryState;
+      // final batteryPlugged = await battery.onBatteryStateChanged;
+      // print(
+      //     "this is batterydata $batteryLevel....$batteryPlugged...$batteryStatus");
       if (systemInfo != null) {
         // devicesinfo["mac_address"]["platform"] = "iOS";
-        devicesinfo["battery_information"]["battery_percentage"] = batteryLevel;
+        // devicesinfo["battery_information"]["battery_percentage"] = batteryLevel;
         devicesinfo["mac_address"]["macAddress"][0]["interface"] = "wlan0";
         if (devicesinfo["mac_address"]["macAddress"][0]["interface"] ==
             "wlan0") {
@@ -478,7 +580,9 @@ class MqttViewModel extends ChangeNotifier {
       await _mqttClientService.connect();
       _state = MqttState.connectionScreen;
       notifyListeners();
-      await _checkPairingStatus();
+      if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
+        await _checkPairingStatus();
+      }
     } catch (error) {
       _state = MqttState.noInternet;
       notifyListeners();
@@ -505,8 +609,15 @@ class MqttViewModel extends ChangeNotifier {
 
       requestBody = {"platform": "ios", "uuid": uuid ?? "unknown"};
       print(requestBody);
+    } else if (Platform.isWindows) {
+      requestBody = {
+        "platform": "windows",
+        "uuid": await getDeviceID()
+      };
+      print("windows$requestBody");
     } else {
       debugPrint("Unsupported platform");
+
       return;
     }
 
