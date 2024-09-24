@@ -132,7 +132,7 @@ class MqttViewModel extends ChangeNotifier {
 
       final kernelVersion = SysInfo.kernelVersion;
       print('Kernel Version: $kernelVersion');
-      devicesinfo["android_version"] = kernelVersion ?? "";
+      devicesinfo["android_version"] = kernelVersion;
       final operatingSystemName = SysInfo.operatingSystemName;
       print('Operating System Name: $operatingSystemName');
 
@@ -238,7 +238,7 @@ class MqttViewModel extends ChangeNotifier {
     } else if (Platform.isWindows) {
       await getSystemDataForWindows();
     } else if (Platform.isLinux) {
-      await getMotherboardSeriaForLinux();
+      await getDataForLinux();
     }
   }
 
@@ -420,7 +420,7 @@ class MqttViewModel extends ChangeNotifier {
     _screenHeight = height;
     devicesinfo["device_resolution"] = "$_screenWidth x $screenHeight";
 
-    notifyListeners(); // Notify listeners about the change
+    notifyListeners(); 
   }
 
   Future<void> getSystemDataForWindows() async {
@@ -505,15 +505,107 @@ class MqttViewModel extends ChangeNotifier {
     ]);
   }
 
-  Future<Map> getMotherboardSeriaForLinux() async {
+  Future<void> getDataForLinux() async {
     try {
-      final Map<dynamic, dynamic> result =
-          await platform.invokeMethod('getSystemInfo');
-      return Map<String, dynamic>.from(result);
-    } on PlatformException catch (e) {
-      print("Failed to get system info: '${e.message}'.");
-      return {};
+      final result = await getAllSystemInfoFLinux();
+      if (result.exitCode == 0) {
+        final output = result.stdout.trim();
+
+        // Parse the JSON output
+        final Map<String, dynamic> systemInfo = jsonDecode(output);
+
+        devicesinfo["sender"] = "Linux";
+        devicesinfo["time_zone"] = systemInfo["TimeZone"];
+        devicesinfo["mac_address"]["platform"] = "Linux";
+        devicesinfo["mac_address"]["macAddress"][0]["interface"] = "wlan0";
+        if (devicesinfo["mac_address"]["macAddress"][0]["interface"] ==
+            "wlan0") {
+          devicesinfo["mac_address"]["macAddress"][0]["mac"] =
+              systemInfo["MacAddress"];
+        }
+        devicesinfo["ram_info"] = systemInfo["InstalledRAM"].toString();
+
+        devicesinfo["hardware_details"]["model"] = systemInfo["DeviceName"];
+        print(systemInfo["TimeZone"]);
+        devicesinfo["hardware_details"]["device_id"] = systemInfo["MacAddress"];
+        devicesinfo["storage_info"]["total_storage"] =
+            systemInfo["DiskCapacity"].toString();
+
+        print(systemInfo["TimeZone"]);
+        devicesinfo["hardware_details"]["ram"] = systemInfo["InstalledRAM"];
+        devicesinfo["cpu_information"]["cpu_architecture"] =
+            systemInfo["CPUArchitecture"];
+        devicesinfo["cpu_information"]["processor"] = systemInfo["CPUInfo"];
+
+        // Print all the system information
+        systemInfo.forEach((key, value) {
+          print('$key: $value');
+        });
+
+        _fetchCurrentLocation();
+        await _checkPairingStatus();
+      } else {
+        print('Error: ${result.stderr}');
+      }
+    } catch (e) {
+      print('An error occurred: $e');
     }
+  }
+
+  Future<String> getDeviceIDForLinux() async {
+    final result =
+        await Process.run('bash', ['-c', 'sudo dmidecode -s system-uuid']);
+
+    if (result.exitCode != 0) {
+      return 'Error: ${result.stderr}';
+    }
+
+    return result.stdout.trim();
+  }
+
+  Future<ProcessResult> getAllSystemInfoFLinux() {
+    return Process.run('bash', [
+      '-c',
+      '''
+    # Get system information
+    mac_address=\$(ip addr show | grep 'link/ether' | awk '{print \$2}' | head -n 1)
+    serial_number=\$(sudo dmidecode -s system-serial-number)
+    os_version=\$(uname -r)
+    cpu_info=\$(lscpu | grep 'Model name' | awk -F: '{print \$2}' | xargs)
+    cpu_architecture=\$(uname -m)
+    available_memory=\$(free -m | grep 'Mem:' | awk '{print \$7}')
+    ram_info=\$(sudo dmidecode -t memory | grep -A16 'Memory Device' | grep -E 'Size|Manufacturer|Speed' | grep -v 'No Module Installed')
+    network_adapters=\$(ip link show | awk -F: '/^[0-9]+:/{print \$2}' | xargs)
+    time_zone=\$(timedatectl | grep 'Time zone' | awk '{print \$3}')
+    device_name=\$(hostname)
+    installed_ram=\$(free -m | grep 'Mem:' | awk '{print \$2}')
+    product_id=\$(sudo dmidecode -s system-product-name)
+    disk_capacity=\$(df -h --total | grep 'total' | awk '{print \$2}')
+
+    # Create JSON structure including Disk Capacity
+    info=\$(cat <<EOF
+    {
+      "MacAddress": "\$mac_address",
+      "SerialNumber": "\$serial_number",
+      "OSVersion": "\$os_version",
+      "CPUInfo": "\$cpu_info",
+      "CPUArchitecture": "\$cpu_architecture",
+      "AvailableMemory": "\$available_memory MB",
+      "RAMInfo": "\$ram_info",
+      "NetworkAdapters": "\$network_adapters",
+      "TimeZone": "\$time_zone",
+      "DeviceName": "\$device_name",
+      "InstalledRAM": "\$installed_ram MB",
+      "ProductID": "\$product_id",
+      "DiskCapacity": "\$disk_capacity"
+    }
+EOF
+    )
+
+    # Output JSON
+    echo "\$info"
+    '''
+    ]);
   }
 
   Future<Map<String, dynamic>?> getDeviceIdentifiersForMac() async {
@@ -610,10 +702,10 @@ class MqttViewModel extends ChangeNotifier {
       requestBody = {"platform": "ios", "uuid": uuid ?? "unknown"};
       print(requestBody);
     } else if (Platform.isWindows) {
-      requestBody = {
-        "platform": "windows",
-        "uuid": await getDeviceID()
-      };
+      requestBody = {"platform": "windows", "uuid": await getDeviceID()};
+      print("windows$requestBody");
+    } else if (Platform.isLinux) {
+      requestBody = {"platform": "linux", "uuid": await getDeviceIDForLinux()};
       print("windows$requestBody");
     } else {
       debugPrint("Unsupported platform");
