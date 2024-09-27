@@ -72,6 +72,31 @@ class MainActivity : FlutterActivity() {
                     val systemData = getSystemData()
                     result.success(systemData.toString())
                 }
+                "rebootDevice" -> {
+                    log("Rebooting device...")
+                    try {
+                        // Execute the reboot command as root
+                        val process = Runtime.getRuntime().exec("su")
+                        val outputStream = process.outputStream
+                        outputStream.write("reboot\n".toByteArray())
+                        outputStream.flush()
+                        outputStream.close()
+                        process.waitFor()
+
+                        // Check for error output
+                        val errorStream = process.errorStream.bufferedReader().readText()
+                        if (errorStream.isNotEmpty()) {
+                            log("Error output: $errorStream")
+                            result.error("REBOOT_FAILED", "Failed to reboot device", errorStream)
+                        } else {
+                            log("Reboot command executed successfully")
+                            result.success("Reboot initiated")
+                        }
+                    } catch (e: Exception) {
+                        log("Error initiating reboot: ${e.message}")
+                        result.error("REBOOT_FAILED", "Failed to reboot device", e.message)
+                    }
+                }
                 "getBatteryPercentage" -> {
                     log("getBatteryPercentage called")
                     val batteryPercentage = getBatteryPercentage()
@@ -406,6 +431,16 @@ private fun getCpuArchitectureFallback(): String {
             "Unknown"
         }
     }
+    private fun rebootDevice() {
+        try {
+            val intent = Intent(Intent.ACTION_REBOOT)
+            intent.putExtra("android.intent.extra.KEY_CONFIRM", true)
+            startActivity(intent)
+        } catch (e: Exception) {
+            log("Error initiating reboot: ${e.message}")
+        }
+    }
+
 
     private fun getHardwareDetails(): String {
         return try {
