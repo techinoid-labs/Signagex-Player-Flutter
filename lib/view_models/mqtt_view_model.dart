@@ -10,8 +10,11 @@ import 'package:geolocator/geolocator.dart';
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:screen_brightness/screen_brightness.dart';
 import 'package:system_info2/system_info2.dart';
 import 'package:url_launcher/url_launcher.dart';
+
+import 'package:digital_signage/utils/globle_variable.dart';
 
 import '../data/api_repository/api_repository.dart';
 import '../services/mqtt_client_service.dart';
@@ -420,7 +423,7 @@ class MqttViewModel extends ChangeNotifier {
     _screenHeight = height;
     devicesinfo["device_resolution"] = "$_screenWidth x $screenHeight";
 
-    notifyListeners(); 
+    notifyListeners();
   }
 
   Future<void> getSystemDataForWindows() async {
@@ -724,23 +727,109 @@ EOF
       );
       _topic = response["player_code"];
       debugPrint("This is the response from the$topic API: $response");
-
+      globleTopic = _topic;
       subsibeMessage(topic);
       print(deviceInfoMap);
       publishMessage(jsonEncode(deviceInfoMap));
+
       if (response["paired"] == false) {
         _state = MqttState.pairedScreen;
+        // setAppBrightness(0.6);
+        setBrightnessForIOS(0.4);
+        setVolumeForIOS(0.5);
       } else if (response["paired"] == true) {
         _state = MqttState.noContent;
+        // setBrightness(0.3);
+        // setVolume(50);
+        // setAppBrightness(0.6);
+        // setVolume(5);
+        setAppBrightness(0.3);
+        setBrightnessForIOS(0.4);
+        setVolumeForIOS(0.5);
       } else {
         _state = MqttState.failure;
       }
+      notifyListeners();
     } catch (error) {
       _state = MqttState.failure;
       debugPrint("Error: $error");
     }
 
     notifyListeners();
+  }
+
+  Future<void> setBrightnessForIOS(double value) async {
+    const platform = MethodChannel('com.example/device_info');
+
+    try {
+      final result =
+          await platform.invokeMethod('setScreenBrightness', {'value': value});
+      print(result);
+    } on PlatformException catch (e) {
+      print("Failed to set brightness: '${e.message}'.");
+    }
+  }
+
+  Future<void> setVolumeForIOS(double value) async {
+    const platform = MethodChannel('com.example/device_info');
+
+    try {
+      final result = await platform.invokeMethod('setVolume', {'value': value});
+      print(result);
+    } on PlatformException catch (e) {
+      print("Failed to set volume: '${e.message}'.");
+    }
+  }
+
+  Future<void> setVolumeForAndroid(int level) async {
+    const MethodChannel _channel = MethodChannel('com.example/network');
+
+    await _channel.invokeMethod('setVolume', {'level': level});
+  }
+// Future<void> setBrightness(double brightness) async {
+//   try {
+//     // Ensure that the brightness is in the range of 0.0 to 1.0
+//     if (brightness < 0.0 || brightness > 1.0) {
+//       throw ArgumentError('Brightness must be between 0.0 and 1.0');
+//     }
+//     // Invoke method to set brightness
+//     await SystemChannels.platform.invokeMethod('setBrightness', brightness);
+//   } on PlatformException catch (e) {
+//     print('Failed to set brightness: ${e.message}');
+//     // Handle exception
+//   }
+// }
+
+  Future<void> setAppBrightness(double brightness) async {
+    try {
+      double currentBrightnesss = await ScreenBrightness().current;
+
+      // Log the current brightness to verify
+      print('Current brightness is: $currentBrightnesss');
+      // Log the brightness value before setting
+      print('Attempting to set brightness to: $brightness');
+
+      // Set the application screen brightness
+      await ScreenBrightness().setScreenBrightness(brightness);
+
+      // Get the current brightness after setting
+      double currentBrightness = await ScreenBrightness().current;
+
+      // Log the current brightness to verify
+      print('Current brightness is: $currentBrightness');
+    } catch (e) {
+      // Handle any errors
+      print('Failed to set brightness: $e');
+    }
+  }
+
+  Future<void> setVolumeForMac(int volume) async {
+    const platform = MethodChannel('com.example/volumeControl');
+    try {
+      await platform.invokeMethod('setVolume', {'volume': volume});
+    } on PlatformException catch (e) {
+      print("Failed to set volume: ${e.message}");
+    }
   }
 
   void subsibeMessage(String topic) {
