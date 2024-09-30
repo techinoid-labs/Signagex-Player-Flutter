@@ -12,17 +12,75 @@ class AppDelegate: FlutterAppDelegate {
 
     override func applicationDidFinishLaunching(_ notification: Notification) {
         let controller = self.mainFlutterWindow?.contentViewController as! FlutterViewController
-        let channel = FlutterMethodChannel(name: "com.example/systemInfo", binaryMessenger: controller.engine.binaryMessenger)
-
-        channel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
+        
+        // System Info Channel
+        let systemInfoChannel = FlutterMethodChannel(name: "com.example/systemInfo", binaryMessenger: controller.engine.binaryMessenger)
+        systemInfoChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
             if call.method == "getSystemInfo" {
                 result(self.getSystemInformation())
             } else {
                 result(FlutterMethodNotImplemented)
             }
         }
+        
+        // Reboot Device Channel
+        let rebootChannel = FlutterMethodChannel(name: "com.example/deviceControl", binaryMessenger: controller.engine.binaryMessenger)
+        rebootChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
+            if call.method == "rebootDevice" {
+                self.rebootDevice()
+                result("Reboot initiated")
+            } else {
+                result(FlutterMethodNotImplemented)
+            }
+        }
+       // Brightness Control Channel
+         let brightnessChannel = FlutterMethodChannel(name: "com.example/brightness",
+                                                      binaryMessenger: controller.engine.binaryMessenger)
+        brightnessChannel.setMethodCallHandler { (call, result) in
+            if call.method == "setBrightness" {
+                if let args = call.arguments as? [String: Any],
+                   let brightness = args["brightness"] as? Double {
+                    self.setBrightness(brightness: brightness)
+                    result(nil) // Indicate success
+                } else {
+                    result(FlutterError(code: "INVALID_ARGUMENTS", message: "Invalid brightness value", details: nil))
+                }
+            } else {
+                result(FlutterMethodNotImplemented)
+            }
+        }
+
+    
+    // Volume Control Channel (new)
+    let volumeChannel = FlutterMethodChannel(name: "com.example/volumeControl", binaryMessenger: controller.engine.binaryMessenger)
+    volumeChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
+        if call.method == "setVolume", let args = call.arguments as? [String: Any],
+           let volume = args["volume"] as? Int {
+            self.setVolume(volume: volume)
+            result("Volume set to \(volume)%")
+        } else {
+            result(FlutterMethodNotImplemented)
+        }
+    }
     }
 
+    // Reboot macOS function
+   func rebootDevice() {
+    let appleScript = """
+    do shell script "shutdown -r now" with administrator privileges
+    """
+    var error: NSDictionary?
+    if let scriptObject = NSAppleScript(source: appleScript) {
+        scriptObject.executeAndReturnError(&error)
+        if let error = error {
+            print("AppleScript error: \(error)")
+        }
+    } else {
+        print("Failed to create AppleScript object")
+    }
+}
+
+    // Fetch system information
     private func getSystemInformation() -> [String: Any] {
         var systemInfo = [String: Any]()
         
@@ -73,6 +131,65 @@ class AppDelegate: FlutterAppDelegate {
             "processor": getProcessorName(),
             "count_cores": getCoreCount()
         ]
+    }
+func setBrightness(brightness: Double) {
+    let brightnessValue = max(0.0, min(1.0, brightness)) // Clamp brightness between 0.0 and 1.0
+    let checkCommand = "which brightness"
+    let output = shell(checkCommand)
+    
+    if output.contains("/usr/local/bin/brightness") || output.contains("/opt/homebrew/bin/brightness") {
+        // Brightness tool is available, adjust brightness
+        _ = shell("brightness \(brightnessValue)")
+    } else {
+        // Open Terminal for user to manually install Homebrew and brightness tool
+        let script = """
+        tell application "Terminal"
+            do script "brew install brightness"
+            activate
+        end tell
+        """
+        let appleScriptCommand = "osascript -e '\(script)'"
+        _ = shell(appleScriptCommand)
+        
+        // Inform the user they need to install the tool manually
+        let alert = NSAlert()
+        alert.messageText = "Brightness Tool Not Installed"
+        alert.informativeText = "The tool is being installed. Please follow the instructions in the terminal window to complete the process."
+        alert.alertStyle = .warning
+        alert.runModal()
+    }
+}
+
+
+   func shell(_ command: String) -> String {
+    let process = Process()
+    process.launchPath = "/bin/bash"
+    process.arguments = ["-c", command]
+
+    let pipe = Pipe()
+    process.standardOutput = pipe
+    process.standardError = pipe // Capture error output
+    process.launch()
+
+    let data = pipe.fileHandleForReading.readDataToEndOfFile()
+    let output = String(data: data, encoding: .utf8) ?? ""
+    print("Shell Output: \(output)") // Log output
+    return output
+}
+
+    func setVolume(volume: Int) {
+        let appleScript = """
+        set volume output volume \(volume)
+        """
+        var error: NSDictionary?
+        if let scriptObject = NSAppleScript(source: appleScript) {
+            scriptObject.executeAndReturnError(&error)
+            if let error = error {
+                print("AppleScript error: \(error)")
+            }
+        } else {
+            print("Failed to create AppleScript object")
+        }
     }
 
     private func getCPUArchitecture() -> String {
@@ -150,56 +267,51 @@ class AppDelegate: FlutterAppDelegate {
         ]
     }
 
-    // Fetch battery information (placeholder, macOS API for battery info is not straightforward)
-private func getBatteryInfo() -> [String: Any] {
-    var batteryInfo = [
-        "battery_percentage": "Not Available",
-        "formatted_voltage": "Not Available",
-        "formatted_temperature": "Not Available"
-    ]
+    // Fetch battery information
+    private func getBatteryInfo() -> [String: Any] {
+        var batteryInfo = [
+            "battery_percentage": "Not Available",
+            "formatted_voltage": "Not Available",
+            "formatted_temperature": "Not Available"
+        ]
 
-    guard let powerSourceInfo = IOPSCopyPowerSourcesInfo()?.takeUnretainedValue() as? NSDictionary else {
-        print("Failed to get power source info")
+        guard let powerSourceInfo = IOPSCopyPowerSourcesInfo()?.takeUnretainedValue() as? NSDictionary else {
+            print("Failed to get power source info")
+            return batteryInfo
+        }
+        
+        guard let powerSourcesList = IOPSCopyPowerSourcesList(powerSourceInfo)?.takeUnretainedValue() as? [CFTypeRef] else {
+            print("Failed to get power sources list")
+            return batteryInfo
+        }
+        
+        for powerSource in powerSourcesList {
+            guard let powerSourceDetails = IOPSGetPowerSourceDescription(powerSourceInfo, powerSource)?.takeUnretainedValue() as? [String: Any] else {
+                print("Failed to get power source description for \(powerSource)")
+                continue
+            }
+            
+            // Extract battery percentage
+            if let currentCapacity = powerSourceDetails[kIOPSCurrentCapacityKey as String] as? Int,
+               let maxCapacity = powerSourceDetails[kIOPSMaxCapacityKey as String] as? Int {
+                let batteryPercentage = Double(currentCapacity) / Double(maxCapacity) * 100
+                batteryInfo["battery_percentage"] = String(format: "%.0f%%", batteryPercentage)
+            } else {
+                print("Battery capacity info is not available")
+            }
+            
+            // Extract voltage and temperature if available
+            if let voltage = powerSourceDetails[kIOPSVoltageKey as String] as? Double {
+                batteryInfo["formatted_voltage"] = String(format: "%.2f V", voltage)
+            }
+            
+            if let temperature = powerSourceDetails[kIOPSTemperatureKey as String] as? Double {
+                batteryInfo["formatted_temperature"] = String(format: "%.2f °C", temperature)
+            }
+        }
+
         return batteryInfo
     }
-    
-    guard let powerSourcesList = IOPSCopyPowerSourcesList(powerSourceInfo)?.takeUnretainedValue() as? [CFTypeRef] else {
-        print("Failed to get power sources list")
-        return batteryInfo
-    }
-    
-    for powerSource in powerSourcesList {
-        guard let powerSourceDetails = IOPSGetPowerSourceDescription(powerSourceInfo, powerSource)?.takeUnretainedValue() as? [String: Any] else {
-            print("Failed to get power source description for \(powerSource)")
-            continue
-        }
-        
-        // Extract battery percentage
-        if let currentCapacity = powerSourceDetails[kIOPSCurrentCapacityKey as String] as? Int,
-           let maxCapacity = powerSourceDetails[kIOPSMaxCapacityKey as String] as? Int {
-            let batteryPercentage = Double(currentCapacity) / Double(maxCapacity) * 100
-            batteryInfo["battery_percentage"] = String(format: "%.0f%%", batteryPercentage)
-        } else {
-            print("Battery capacity info is not available")
-        }
-        
-        // Extract voltage and temperature if available
-        if let voltage = powerSourceDetails[kIOPSVoltageKey as String] as? Double {
-            batteryInfo["formatted_voltage"] = String(format: "%.2f V", voltage)
-        } else {
-            print("Voltage info is not available")
-        }
-        
-        if let temperature = powerSourceDetails[kIOPSTemperatureKey as String] as? Double {
-            batteryInfo["formatted_temperature"] = String(format: "%.2f °C", temperature)
-        } else {
-            print("Temperature info is not available")
-        }
-    }
-
-    return batteryInfo
-}
-
 
     // Fetch camera details (Currently not available for macOS, placeholder)
     private func getCameraDetails() -> String {
@@ -220,8 +332,8 @@ private func getBatteryInfo() -> [String: Any] {
             return nil
         }
         
-        let uuid = IORegistryEntryCreateCFProperty(platformExpert, kIOPlatformUUIDKey as CFString, kCFAllocatorDefault, 0).takeRetainedValue() as? String
+        let uuidData = IORegistryEntryCreateCFProperty(platformExpert, kIOPlatformUUIDKey as CFString, kCFAllocatorDefault, 0)
         IOObjectRelease(platformExpert)
-        return uuid
+        return uuidData?.takeUnretainedValue() as? String
     }
 }
