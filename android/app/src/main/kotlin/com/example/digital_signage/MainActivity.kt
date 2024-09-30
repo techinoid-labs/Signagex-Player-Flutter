@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.net.wifi.WifiManager
 import android.os.BatteryManager
+import android.media.AudioManager
 import android.os.Build
 import android.os.StatFs
 import android.provider.Settings
@@ -72,6 +73,20 @@ class MainActivity : FlutterActivity() {
                     val systemData = getSystemData()
                     result.success(systemData.toString())
                 }
+                 "setVolume" -> {
+                val level = call.argument<Int>("level") ?: 0
+                setVolume(level)
+                result.success("Volume set to $level")
+            }
+            "setBrightness" -> {
+                    val brightness = call.argument<Int>("brightness") ?: 0
+                    if (checkWriteSettingsPermission()) {
+                        setBrightness(brightness)
+                        result.success("Brightness set to $brightness")
+                    } else {
+                        result.error("PERMISSION_DENIED", "Permission to write settings not granted.", null)
+                    }
+                }
                 "rebootDevice" -> {
                     log("Rebooting device...")
                     try {
@@ -106,6 +121,48 @@ class MainActivity : FlutterActivity() {
             }
         }
     }
+
+   private fun checkWriteSettingsPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            Settings.System.canWrite(this)
+        } else {
+            true // No need to check for older versions
+        }
+    }
+
+    private fun setBrightness(brightness: Int) {
+        try {
+            if (brightness in 0..255) {
+                Settings.System.putInt(contentResolver, Settings.System.SCREEN_BRIGHTNESS, brightness)
+                val layoutParams = window.attributes
+                layoutParams.screenBrightness = brightness / 255.0f // Brightness must be in [0.0 - 1.0]
+                window.attributes = layoutParams
+                log("Brightness set to $brightness")
+            } else {
+                log("Brightness level out of range: $brightness")
+            }
+        } catch (e: Exception) {
+            log("Error setting brightness: ${e.message}")
+        }
+    }
+
+ 
+private fun setVolume(level: Int) {
+    try {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        // Ensure the volume level is within the valid range
+        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        if (level in 0..maxVolume) {
+            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, level, 0)
+            log("Volume set to $level")
+        } else {
+            log("Volume level out of range: $level")
+        }
+    } catch (e: Exception) {
+        log("Error setting volume: ${e.message}")
+    }
+}
+
 
     private fun getBatteryPercentage(): String {
         return try {
