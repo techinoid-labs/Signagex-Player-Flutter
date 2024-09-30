@@ -2,6 +2,7 @@ import UIKit
 import CoreLocation
 import SystemConfiguration.CaptiveNetwork
 import Security
+import MediaPlayer
 
 @main
 @objc class AppDelegate: FlutterAppDelegate, CLLocationManagerDelegate {
@@ -35,6 +36,22 @@ import Security
                 } else {
                     result(FlutterError(code: "UNAVAILABLE", message: "Unable to get device identifier", details: nil))
                 }
+             case "setScreenBrightness":
+        if let args = call.arguments as? [String: CGFloat],
+           let brightness = args["value"] {
+            self.setScreenBrightness(to: brightness)
+            result("Brightness set to \(brightness)")
+        } else {
+            result(FlutterError(code: "INVALID_ARGUMENTS", message: "Brightness value not provided", details: nil))
+        }
+    case "setVolume":
+        if let args = call.arguments as? [String: Float],
+           let volume = args["value"] {
+            self.setVolume(to: volume)
+            result("Volume set to \(volume)")
+        } else {
+            result(FlutterError(code: "INVALID_ARGUMENTS", message: "Volume value not provided", details: nil))
+        }
             default:
                 result(FlutterMethodNotImplemented)
             }
@@ -271,4 +288,20 @@ import Security
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
         print("Location manager failed with error: \(error.localizedDescription)")
     }
+    private func setScreenBrightness(to value: CGFloat) {
+    UIScreen.main.brightness = value // value should be between 0.0 (dark) and 1.0 (full brightness)
+    print("Screen brightness set to \(value)")
+}
+
+
+private func setVolume(to value: Float) {
+    let volumeView = MPVolumeView()
+    for view in volumeView.subviews {
+        if let slider = view as? UISlider {
+            slider.value = value // value should be between 0.0 (mute) and 1.0 (max volume)
+            break
+        }
+    }
+    print("Volume set to \(value)")
+}
 }
