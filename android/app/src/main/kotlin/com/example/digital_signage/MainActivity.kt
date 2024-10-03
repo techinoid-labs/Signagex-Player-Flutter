@@ -1,5 +1,5 @@
 package com.example.digital_signage
-
+import android.content.pm.ActivityInfo
 import android.annotation.SuppressLint
 import android.app.ActivityManager
 import android.content.Context
@@ -19,7 +19,10 @@ import android.view.WindowManager
 import android.hardware.display.DisplayManager
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraManager
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
 import android.util.DisplayMetrics
+import androidx.annotation.RequiresApi
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -36,6 +39,7 @@ import kotlin.math.roundToInt
 class MainActivity : FlutterActivity() {
     private val CHANNEL = "com.example/network"
 
+    @RequiresApi(Build.VERSION_CODES.M)
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, CHANNEL).setMethodCallHandler { call, result ->
@@ -78,6 +82,10 @@ class MainActivity : FlutterActivity() {
                 setVolume(level)
                 result.success("Volume set to $level")
             }
+             "muteVolume" -> {
+                    muteVolume()  // Call the muteVolume function
+                    result.success("Volume muted")
+                }
             "setBrightness" -> {
                     val brightness = call.argument<Int>("brightness") ?: 0
                     if (checkWriteSettingsPermission()) {
@@ -112,13 +120,36 @@ class MainActivity : FlutterActivity() {
                         result.error("REBOOT_FAILED", "Failed to reboot device", e.message)
                     }
                 }
+                "restartNetwork" -> {
+                    restartNetwork()
+                }
+                "unmuteVolume" -> {
+                    unmuteVolume()  
+                 
+                }
+                
                 "getBatteryPercentage" -> {
                     log("getBatteryPercentage called")
                     val batteryPercentage = getBatteryPercentage()
                     result.success(batteryPercentage)
                 }
+                "setOrientation" -> {
+                            val orientation = call.argument<Int>("orientation") ?: 0
+                            setOrientation(orientation)
+                            result.success("Orientation set to $orientation")
+                        }
                 else -> result.notImplemented()
             }
+        }
+    }
+
+    private fun setOrientation(orientation: Int) {
+        when (orientation) {
+            0 -> requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            90 -> requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            180 -> requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_REVERSE_PORTRAIT
+            270 -> requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+            else -> log("Invalid orientation: $orientation")
         }
     }
 
@@ -146,7 +177,18 @@ class MainActivity : FlutterActivity() {
         }
     }
 
- 
+ private fun unmuteVolume() {
+    try {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        // Set the volume level to a non-zero value (unmute), adjust as needed
+        val maxVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC)
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, maxVolume / 2, 0) // Set to 50% volume, adjust if needed
+        log("Volume unmuted")
+    } catch (e: Exception) {
+        log("Error unmuting volume: ${e.message}")
+    }
+}
+
 private fun setVolume(level: Int) {
     try {
         val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
@@ -163,7 +205,44 @@ private fun setVolume(level: Int) {
     }
 }
 
+private fun muteVolume() {
+    try {
+        val audioManager = getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        // Set the volume level to 0 (mute)
+        audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, 0, 0)
+        log("Volume muted")
+    } catch (e: Exception) {
+        log("Error muting volume: ${e.message}")
+    }
+}
 
+    @RequiresApi(Build.VERSION_CODES.M)
+    @SuppressLint("ServiceCast")
+    private fun restartNetwork() {
+        val connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+        val networkCapabilities = connectivityManager.getNetworkCapabilities(connectivityManager.activeNetwork)
+
+        if (networkCapabilities != null) {
+            when {
+                networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) -> {
+                    restartWifi()
+                }
+                networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR) -> {
+                    restartMobileData()
+                }
+                networkCapabilities.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET) -> {
+                    restartEthernet()
+                }
+                else -> {
+                    log("Unknown network type. Cannot restart.")
+//                    result.error("UNKNOWN_TYPE", "Unknown network type", null)
+                }
+            }
+        } else {
+            log("No active network connection.")
+//            result.error("NO_CONNECTION", "No active network connection", null)
+        }
+    }
     private fun getBatteryPercentage(): String {
         return try {
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
@@ -183,6 +262,56 @@ private fun setVolume(level: Int) {
         } catch (e: Exception) {
             log("Error retrieving battery percentage: ${e.message}")
             "Unknown"
+        }
+    }
+
+    private fun restartWifi() {
+        try {
+            val wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+            if (wifiManager.isWifiEnabled) {
+                wifiManager.isWifiEnabled = false
+                Thread.sleep(2000) // Wait for 2 seconds before enabling it again
+                wifiManager.isWifiEnabled = true
+                log("Wi-Fi restarted successfully")
+//                result.success("Wi-Fi restarted")
+            } else {
+                wifiManager.isWifiEnabled = true
+                log("Wi-Fi enabled successfully")
+//                result.success("Wi-Fi enabled")
+            }
+        } catch (e: Exception) {
+            log("Error restarting Wi-Fi: ${e.message}")
+//            result.error("WIFI_ERROR", "Error restarting Wi-Fi", e.message)
+        }
+    }
+
+    private fun restartMobileData() {
+        try {
+            // Command to disable mobile data
+            Runtime.getRuntime().exec("su -c svc data disable")
+            Thread.sleep(2000) // Wait for 2 seconds
+            // Command to enable mobile data
+            Runtime.getRuntime().exec("su -c svc data enable")
+            log("Mobile data restarted successfully.")
+//            result.success("Mobile data restarted")
+        } catch (e: Exception) {
+            log("Error restarting mobile data: ${e.message}")
+//            result.error("MOBILE_DATA_ERROR", "Error restarting mobile data", e.message)
+        }
+    }
+
+    private fun restartEthernet() {
+        try {
+            // Command to disable Ethernet (if applicable)
+            Runtime.getRuntime().exec("su -c ifconfig eth0 down")
+            Thread.sleep(2000) // Wait for 2 seconds
+            // Command to enable Ethernet
+            Runtime.getRuntime().exec("su -c ifconfig eth0 up")
+            log("Ethernet restarted successfully.")
+//            result.success("Ethernet restarted")
+        } catch (e: Exception) {
+            log("Error restarting Ethernet: ${e.message}")
+//            result.error("ETHERNET_ERROR", "Error restarting Ethernet", e.message)
         }
     }
 
