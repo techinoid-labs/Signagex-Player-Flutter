@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
@@ -16,7 +15,8 @@ class MqttClientService {
   late MqttServerClient _client;
   final ValueNotifier<String> receivedMessageNotifier =
       ValueNotifier<String>('');
-
+  // final PlaylistViewModel playlistViewModel = PlaylistViewModel();
+  Function(String)? onMessageReceived;
   MqttClientService() {
     _initializeClient();
   }
@@ -67,16 +67,16 @@ class MqttClientService {
         .startClean()
         .withWillQos(MqttQos.atLeastOnce);
 
-    print('MQTT_LOGS::Mosquitto client connecting....');
+    print('MQTT_LOGS:: client connecting....');
     _client.connectionMessage = connMessage;
 
     try {
       await _client.connect();
       if (_client.connectionStatus!.state == MqttConnectionState.connected) {
-        print('MQTT_LOGS::Mosquitto client connected');
+        print('MQTT_LOGS:: client connected');
       } else {
         print(
-            'MQTT_LOGS::ERROR Mosquitto client connection failed - disconnecting, status is ${_client.connectionStatus}');
+            'MQTT_LOGS::ERROR  client connection failed - disconnecting, status is ${_client.connectionStatus}');
         _client.disconnect();
       }
     } catch (e) {
@@ -92,95 +92,45 @@ class MqttClientService {
     }
   }
 
-  void subscribe(String topic) {
+   void subscribe(String topic) {
     print('MQTT_LOGS:: Subscribing to the topic: $topic');
     _client.subscribe(topic, MqttQos.atMostOnce);
 
     _client.updates?.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
-      final recMess = c![0].payload as MqttPublishMessage;
-      final pt =
-          MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
-      receivedMessageNotifier.value = pt;
-      print(
-          'MQTT_LOGS:: New data arrived: topic ...$globleTopic.... <${c[0].topic}>, payload is $pt');
-      final jsonObj = jsonDecode(pt);
-
-      if (jsonObj["action"] == "action_reboot") {
-        print("action rebooot");
-        if (Platform.isMacOS) {
-          _rebootDeviceForMacOS();
-        } else if (Platform.isAndroid) {
-          print("i am here for andorind");
-          rebootDeviceForAndroid();
-        } else if (Platform.isWindows) {
-          rebootDeviceForWindows();
-        } else if (Platform.isLinux) {
-          rebootDeviceForLinux();
-        }
-      }
+      _handleReceivedMessage(c);
     });
   }
 
-  Future<String> rebootDeviceForLinux() async {
-    print("Attempting to restart the device...");
+  void _handleReceivedMessage(List<MqttReceivedMessage<MqttMessage?>>? messages) {
+    if (messages == null || messages.isEmpty) return;
 
-    // Execute the reboot command
-    final result = await Process.run('pkexec', ['systemctl', 'reboot']);
-
-    print('Exit code: ${result.exitCode}');
-    print('Stdout: ${result.stdout}');
-    print('Stderr: ${result.stderr}');
-
-    if (result.exitCode != 0) {
-      return 'Error: ${result.stderr}';
+    final recMess = messages[0].payload as MqttPublishMessage;
+    final payload = MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
+    
+    // Call the callback if it is set
+    if (onMessageReceived != null) {
+      onMessageReceived!(payload);  // Pass the message payload to the callback
     }
 
-    return 'Reboot command executed successfully';
-  }
+    receivedMessageNotifier.value = payload;
+    print('MQTT_LOGS:: New data arrived payload is $payload');
+    print('MQTT_LOGS:: New data arrived: topic ...$globleTopic.... <${messages[0].topic}>, payload is $payload');
 
-  Future<void> rebootDeviceForWindows() async {
     try {
-      publish(globleTopic, "success");
-      final result = await Process.run(
-          'powershell', ['-Command', 'Restart-Computer -Force']);
-
-      if (result.exitCode != 0) {
-        print('Error: ${result.stderr}');
-      } else {
-        print('Device is rebooting...');
-      }
+      final jsonObj = jsonDecode(payload);
+     
     } catch (e) {
-      print('An error occurred: $e');
+      print('Failed to decode JSON: $e');
     }
   }
-
-  Future<void> rebootDeviceForAndroid() async {
-    print("reboot$globleTopic");
-    try {
-      publish(globleTopic, "success");
-      await platform.invokeMethod('rebootDevice');
-    } on PlatformException catch (e) {
-      print("Failed to reboot device: ${e.message}");
-    }
-  }
-
-  Future<void> _rebootDeviceForMacOS() async {
-    try {
-      publish(globleTopic, "success");
-      final String result = await platformMacOS.invokeMethod('rebootDevice');
-      print(result);
-    } on PlatformException catch (e) {
-      print("Failed to reboot the device: '${e.message}'.");
-    }
-  }
-
   void publish(String topic, String message) {
     var pubTopic = topic;
     final builder = MqttClientPayloadBuilder();
     builder.addString(message);
 
     if (_client.connectionStatus?.state == MqttConnectionState.connected) {
-      _client.publishMessage(pubTopic, MqttQos.atMostOnce, builder.payload!);
+      _client.publishMessage(pubTopic, MqttQos.atMostOnce, builder.payload!,
+          retain: true);
       print('MQTT_LOGS:: Published message: $message');
     }
   }
