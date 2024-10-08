@@ -37,6 +37,7 @@ dependencies:
   cupertino_icons: ^1.0.8
   mqtt_client: ^9.6.3
   provider: ^6.1.2
+  dio: ^5.7.0
   url_launcher: ^6.1.0
   http: ^1.1.0
   path_provider:
@@ -44,9 +45,12 @@ dependencies:
   permission_handler:
   connectivity_plus: ^6.0.5
   internet_connection_checker: ^1.0.0
+  video_player: ^2.3.0
   geolocator: ^9.0.1
   battery_plus: ^6.0.3
   network_info_plus: ^6.0.1
+  screen_brightness: ^1.0.1
+
   # device_info_plus: ^10.0.0
   # battery_plus: ^3.0.0
   # network_info_plus: ^3.0.0
