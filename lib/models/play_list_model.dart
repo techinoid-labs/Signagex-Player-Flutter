@@ -1,7 +1,3 @@
-// To parse this JSON data, do
-//
-//     final playListModel = playListModelFromJson(jsonString);
-
 import 'dart:convert';
 
 PlayListModel playListModelFromJson(String str) => PlayListModel.fromJson(json.decode(str));
@@ -61,8 +57,9 @@ class Data {
 }
 
 class Playlist {
-    String name;
+    dynamic name;
     String id;
+    Schedule playlistSchedule;
     Playback playback;
     Default playlistDefault;
     List<Media> media;
@@ -70,6 +67,7 @@ class Playlist {
     Playlist({
         required this.name,
         required this.id,
+        required this.playlistSchedule,
         required this.playback,
         required this.playlistDefault,
         required this.media,
@@ -78,6 +76,7 @@ class Playlist {
     factory Playlist.fromJson(Map<String, dynamic> json) => Playlist(
         name: json["name"],
         id: json["id"],
+        playlistSchedule: Schedule.fromJson(json["playlist_schedule"]),
         playback: Playback.fromJson(json["playback"]),
         playlistDefault: Default.fromJson(json["default"]),
         media: List<Media>.from(json["media"].map((x) => Media.fromJson(x))),
@@ -86,6 +85,7 @@ class Playlist {
     Map<String, dynamic> toJson() => {
         "name": name,
         "id": id,
+        "playlist_schedule": playlistSchedule.toJson(),
         "playback": playback.toJson(),
         "default": playlistDefault.toJson(),
         "media": List<dynamic>.from(media.map((x) => x.toJson())),
@@ -95,12 +95,14 @@ class Playlist {
 class Media {
     Settings? settings;
     Schedule? schedule;
+    String? id;
     String? mediaType;
     String? mediaUrl;
 
     Media({
         required this.settings,
         required this.schedule,
+        required this.id,
         required this.mediaType,
         required this.mediaUrl,
     });
@@ -108,6 +110,7 @@ class Media {
     factory Media.fromJson(Map<String, dynamic> json) => Media(
         settings: Settings.fromJson(json["settings"]),
         schedule: Schedule.fromJson(json["schedule"]),
+        id: json["id"],
         mediaType: json["mediaType"],
         mediaUrl: json["mediaUrl"],
     );
@@ -115,6 +118,7 @@ class Media {
     Map<String, dynamic> toJson() => {
         "settings": settings!.toJson(),
         "schedule": schedule!.toJson(),
+        "id": id,
         "mediaType": mediaType,
         "mediaUrl": mediaUrl,
     };
@@ -122,7 +126,7 @@ class Media {
 
 class Schedule {
     bool alwaysPlay;
-    Period period;
+    Period? period; // Change to Period?
 
     Schedule({
         required this.alwaysPlay,
@@ -131,12 +135,12 @@ class Schedule {
 
     factory Schedule.fromJson(Map<String, dynamic> json) => Schedule(
         alwaysPlay: json["always_play"],
-        period: Period.fromJson(json["period"]),
+        period: json["period"] != null ? Period.fromJson(json["period"]) : null, // Handle null
     );
 
     Map<String, dynamic> toJson() => {
         "always_play": alwaysPlay,
-        "period": period.toJson(),
+        "period": period?.toJson(), // Check if period is null
     };
 }
 
@@ -225,8 +229,8 @@ class Days {
 }
 
 class Time {
-    String from;
-    String to;
+    String from; // Change from DateTime to String
+    String to;   // Change from DateTime to String
 
     Time({
         required this.from,
@@ -234,8 +238,8 @@ class Time {
     });
 
     factory Time.fromJson(Map<String, dynamic> json) => Time(
-        from: json["from"],
-        to: json["to"],
+        from: json["from"], // Just assign the string directly
+        to: json["to"],     // Just assign the string directly
     );
 
     Map<String, dynamic> toJson() => {
@@ -243,6 +247,7 @@ class Time {
         "to": to,
     };
 }
+
 
 class Settings {
     String duration;
@@ -293,9 +298,9 @@ class Playback {
 }
 
 class Default {
-    String? duration;
-    String? transition;
-    String? volume;
+    String duration;
+    String transition;
+    String volume;
 
     Default({
         required this.duration,
