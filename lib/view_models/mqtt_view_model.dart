@@ -5,16 +5,20 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:battery_plus/battery_plus.dart';
+import 'package:dio/dio.dart';
 // import 'package:battery_plus/battery_plus.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 import 'package:system_info2/system_info2.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
+import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 
 import '../data/api_repository/api_repository.dart';
 import '../services/mqtt_client_service.dart';
@@ -27,23 +31,33 @@ enum MqttState {
   noContent,
   connectionScreen,
   noInternet,
+  downloading,
   pairedScreen,
+  playlistScreen
 }
 
 class MqttViewModel extends ChangeNotifier {
   final MqttClientService _mqttClientService;
+  final DeviceSettingsViewModel deviceSettings = DeviceSettingsViewModel();
+
   MqttState _state = MqttState.initial;
   Map<String, dynamic> devicesinfo = deviceInfoMap;
 
   Map<String, dynamic>? _deviceInfo;
+  List<dynamic> _mediaList = [];
 
   Map<String, dynamic>? get deviceInfo => _deviceInfo;
   static const _channel = MethodChannel('com.example/device_info');
   static const platform = MethodChannel('com.example/network');
-
+  List<dynamic> get mediaList => _mediaList;
   MqttState get state => _state;
   String _topic = "";
   String get topic => _topic;
+
+  PlayListModel? _playListModel;
+
+  PlayListModel? get playListModel => _playListModel;
+
   Map<String, String?> macAddresses = {
     'wlan0': null,
     'eth0': null,
@@ -51,6 +65,7 @@ class MqttViewModel extends ChangeNotifier {
 
   MqttViewModel(this._mqttClientService) {
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
+    _mqttClientService.onMessageReceived = _handleIncomingMessage;
     fetchAllInfo();
     _initializeBasedOnPlatform();
     // _mqttConnection();
@@ -685,6 +700,190 @@ EOF
     }
   }
 
+  double _progress = 0.0;
+  bool _isDownloading = false;
+  String _downloadedFilePath = '';
+
+  double get progress => _progress;
+  bool get isDownloading => _isDownloading;
+  String get downloadedFilePath => _downloadedFilePath;
+
+  int _downloadCount = 0; //
+  double _overallProgress = 0.0; // Tracks total download progress (0.0 to 1.0)
+  double get overallProgress => _overallProgress; // Getter for UI binding
+
+ void _startDownloading() async {
+  if (_state == MqttState.downloading) {
+    print("Downloads are already in progress.");
+    return; // Prevent re-entering the download process
+  }
+
+  _downloadCount = _playListModel!.data.playlist.media.length; // Set the total count of media files
+  print("Total files ${_playListModel!.data.playlist.media.length} to download: $_downloadCount");
+
+  if (_downloadCount > 0) {
+    _state = MqttState.downloading; // Set state to downloading before starting downloads
+    notifyListeners(); // Notify the UI that downloading has started
+  } else {
+    _state = MqttState.noContent; // If no files are available to download
+    notifyListeners();
+    return;
+  }
+
+  int completedDownloads = 0; // Track how many downloads have completed
+  _overallProgress = 0.0; // Reset overall progress
+
+  for (var media in _playListModel!.data.playlist.media) {
+    String mediaUrl = media.mediaUrl ?? '';
+    print("Starting download check for Media URL: $mediaUrl");
+
+    String filename = _extractFilename(mediaUrl);
+    print('Extracted filename: $filename');
+
+    // Get platform-specific directory
+    Directory? directory = await _getDirectory();
+    if (directory == null) {
+      print('Unable to determine directory');
+      throw Exception('Unable to determine directory');
+    }
+    print('Download directory: ${directory.path}');
+
+    String filePath = '${directory.path}/$filename';
+
+    
+    bool fileExists = await File(filePath).exists();
+    if (fileExists) {
+      print('File already exists: $filePath');
+      _mediaPath.add(filePath); 
+      _updateMediaModel();
+      completedDownloads++;
+      _overallProgress = completedDownloads / _downloadCount;
+      print('Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+      notifyListeners();
+    } else {
+
+      await downloadFile(mediaUrl).then((_) {
+        completedDownloads++;
+        _overallProgress = completedDownloads / _downloadCount;
+        print('Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+        notifyListeners();
+      }).catchError((error) {
+        print("Error downloading file: $error");
+        _state = MqttState.failure; // On failure, set state to failure
+        notifyListeners(); // Notify the UI
+      });
+    }
+
+    if (completedDownloads == _downloadCount) {
+      print("All files processed.");
+      _state = MqttState.playlistScreen; // All files processed, change to playlist screen state
+      notifyListeners();
+    }
+  }
+}
+  List<String> _mediaPath = [];
+  List<String> get mediaPath => _mediaPath;
+
+void _updateMediaModel() {
+  if (_playListModel != null && _playListModel!.data.playlist.media.isNotEmpty) {
+    for (int i = 0; i < _playListModel!.data.playlist.media.length; i++) {
+      var mediaItem = _playListModel!.data.playlist.media[i];
+      if (i < _mediaPath.length) {
+        mediaItem.mediaUrl = _mediaPath[i];
+      }
+    }
+  }
+}
+Future<void> downloadFile(String url) async {
+  if (Platform.isAndroid) {
+    print('Requesting storage permission...');
+    var status = await Permission.storage.request();
+    if (!status.isGranted) {
+      print('Storage permission denied');
+      throw Exception('Storage permission not granted');
+    }
+    print('Storage permission granted');
+  }
+
+  try {
+    String filename = _extractFilename(url);
+    Directory? directory = await _getDirectory();
+    if (directory == null) {
+      print('Unable to determine directory');
+      throw Exception('Unable to determine directory');
+    }
+
+    String filePath = '${directory.path}/$filename';
+
+    // Initialize Dio for downloading
+    Dio dio = Dio();
+    print('Starting download from URL: $url to $filePath');
+
+    // Start downloading the file
+    await dio.download(
+      url,
+      filePath,
+      onReceiveProgress: (received, total) {
+        if (total != -1) {
+          double progress = received / total;
+          print('Download progress: ${(progress * 100).toStringAsFixed(2)}%');
+        }
+      },
+    );
+
+    _mediaPath.add(filePath); // Add the newly downloaded file path to the list
+    _updateMediaModel(); // Update the media model with the downloaded file path
+
+    print('File downloaded to: $filePath');
+  } catch (e) {
+    print('Download failed: $e');
+    throw Exception('Download failed: $e');
+  }
+}
+String _extractFilename(String url, {String? mediaType}) {
+  String decodedUrl = Uri.decodeFull(url);
+  String filename = decodedUrl.split('/').last.split('?').first;
+
+  // Determine the file extension based on the media type
+  if (mediaType != null) {
+    switch (mediaType) {
+      case 'audio/mpeg':
+        filename += '.mp3';
+        break;
+      case 'audio/mp4':
+        filename += '.m4a';
+        break;
+      case 'video/mp4':
+        filename += '.mp4';
+        break;
+      case 'image/jpeg':
+      case 'image/png':
+      case 'image/gif':
+        filename += '.jpg'; 
+        break;
+      default:
+        
+        break;
+    }
+  } else {
+  
+    if (url.contains('images')) {
+      filename += '.jpg'; 
+    }
+  }
+
+  return filename;
+}
+
+  Future<Directory?> _getDirectory() async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      return await getApplicationDocumentsDirectory();
+    } else if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      return await getDownloadsDirectory();
+    }
+    return null;
+  }
+
   Future<void> _checkPairingStatus() async {
     Map<String, dynamic> requestBody;
 
@@ -730,22 +929,16 @@ EOF
       globleTopic = _topic;
       subsibeMessage(topic);
       print(deviceInfoMap);
-      publishMessage(jsonEncode(deviceInfoMap));
+      publishMessage(globleTopic, jsonEncode(deviceInfoMap));
 
       if (response["paired"] == false) {
         _state = MqttState.pairedScreen;
-        // setAppBrightness(0.6);
-        setBrightnessForIOS(0.4);
-        setVolumeForIOS(0.5);
       } else if (response["paired"] == true) {
         _state = MqttState.noContent;
-        // setBrightness(0.3);
-        // setVolume(50);
-        // setAppBrightness(0.6);
-        // setVolume(5);
-        setAppBrightness(0.3);
-        setBrightnessForIOS(0.4);
-        setVolumeForIOS(0.5);
+        // downloadFile(
+        //     "https://images2.alphacoders.com/597/thumb-1920-597309.jpg");
+
+        // restartNetworkForAndroid();
       } else {
         _state = MqttState.failure;
       }
@@ -758,6 +951,54 @@ EOF
     notifyListeners();
   }
 
+  Future<String> unmuteVolumeForMac() async {
+    const MethodChannel _channel = MethodChannel('com.example/volumeControl');
+    final String result = await _channel.invokeMethod('unmuteVolume');
+    return result;
+  }
+
+  Future<String> restartNetworkForMac() async {
+    const MethodChannel _channel = MethodChannel('com.example/networkControl');
+
+    final String result = await _channel.invokeMethod('restartNetwork');
+    return result;
+  }
+
+  Future<void> muteVolumeForAndroid() async {
+    try {
+      const platform = MethodChannel('com.example/network');
+
+      final result = await platform.invokeMethod('muteVolume');
+      print(
+          result); // Prints "Volume muted" or the success message from Android
+    } on PlatformException catch (e) {
+      print("Failed to mute volume: '${e.message}'.");
+    }
+  }
+
+  static Future<void> setOrientationForAndroid(int orientation) async {
+    try {
+      const MethodChannel _channel = MethodChannel('com.example/network');
+
+      await _channel
+          .invokeMethod('stOrientation', {'orientation': orientation});
+    } on PlatformException catch (e) {
+      print("Failed to set orientation: '${e.message}'.");
+    }
+  }
+
+  Future<void> setBrightnessForMac(double brightness) async {
+    try {
+      const MethodChannel _channel =
+          MethodChannel('com.example/brightnessControl');
+      final String result = await _channel
+          .invokeMethod('setBrightness', {'brightness': brightness});
+      print("this is respone $result");
+    } on PlatformException catch (e) {
+      print("Failed to set brightness: '${e.message}'.");
+    }
+  }
+
   Future<void> setBrightnessForIOS(double value) async {
     const platform = MethodChannel('com.example/device_info');
 
@@ -767,6 +1008,15 @@ EOF
       print(result);
     } on PlatformException catch (e) {
       print("Failed to set brightness: '${e.message}'.");
+    }
+  }
+
+  Future<void> restartNetworkForAndroid() async {
+    try {
+      final result = await platform.invokeMethod('restartNetwork');
+      print(result); // Prints "Wi-Fi restarted" or success message from Android
+    } on PlatformException catch (e) {
+      print("Failed to restart Wi-Fi: '${e.message}'.");
     }
   }
 
@@ -786,21 +1036,8 @@ EOF
 
     await _channel.invokeMethod('setVolume', {'level': level});
   }
-// Future<void> setBrightness(double brightness) async {
-//   try {
-//     // Ensure that the brightness is in the range of 0.0 to 1.0
-//     if (brightness < 0.0 || brightness > 1.0) {
-//       throw ArgumentError('Brightness must be between 0.0 and 1.0');
-//     }
-//     // Invoke method to set brightness
-//     await SystemChannels.platform.invokeMethod('setBrightness', brightness);
-//   } on PlatformException catch (e) {
-//     print('Failed to set brightness: ${e.message}');
-//     // Handle exception
-//   }
-// }
 
-  Future<void> setAppBrightness(double brightness) async {
+  Future<void> setAppBrightnessForANDROID(double brightness) async {
     try {
       double currentBrightnesss = await ScreenBrightness().current;
 
@@ -832,12 +1069,100 @@ EOF
     }
   }
 
+  Future<void> _muteVolumeForMac() async {
+    const platform = MethodChannel('com.example/volumeControl');
+    try {
+      await platform.invokeMethod('muteVolume');
+    } on PlatformException catch (e) {
+      print("Failed to mute volume: ${e.message}");
+    }
+  }
+
   void subsibeMessage(String topic) {
     _mqttClientService.subscribe(topic);
   }
 
-  void publishMessage(String message) {
+  void publishMessage(String topic, String message) {
     _mqttClientService.publish(topic, message);
+  }
+
+  void _handleIncomingMessage(String message) {
+    // Handle the incoming message here
+    print('Received message in ViewModel: $message');
+    final jsonObj = jsonDecode(message);
+
+    if (jsonObj["action"] == "action_reboot") {
+      print("action rebooot");
+      var data = {"success": true};
+      // playlistViewModel.downloadFile("https://images2.alphacoders.com/597/thumb-1920-597309.jpg");
+      publishMessage(globleTopic, jsonEncode(data));
+
+      if (Platform.isMacOS) {
+        deviceSettings.rebootDeviceForMacOS();
+      } else if (Platform.isAndroid) {
+        print("i am here for andorind");
+        deviceSettings.rebootDeviceForAndroid();
+      } else if (Platform.isWindows) {
+        deviceSettings.rebootDeviceForWindows();
+      } else if (Platform.isLinux) {
+        deviceSettings.rebootDeviceForLinux();
+      }
+    } else if (jsonObj["action"] == "action_setup_player") {
+      print("action mute${jsonObj["settings"]["mute_audio"]}");
+      if (jsonObj["settings"]["mute_audio"] == true) {
+        if (Platform.isMacOS) {
+          deviceSettings.muteVolumeForMac();
+        } else if (Platform.isAndroid) {
+          print("i am here for andorind");
+          deviceSettings.muteVolumeForAndroid();
+        } else if (Platform.isWindows) {
+          deviceSettings.muteVolumeForWindows();
+        } else if (Platform.isLinux) {
+          deviceSettings.muteVolumeForLinux();
+        }
+      } else if (jsonObj["settings"]["mute_audio"] == false) {
+        if (Platform.isMacOS) {
+          deviceSettings.unmuteVolumeForMac();
+        } else if (Platform.isAndroid) {
+          print("i am here for andorind");
+          deviceSettings.unmuteVolumeForAndroid();
+        } else if (Platform.isWindows) {
+          deviceSettings.unmuteVolumeForWindows();
+        } else if (Platform.isLinux) {
+          deviceSettings.unmuteVolumeForLinux();
+        }
+      } else if (jsonObj["settings"]["brightness"]['value'] != null) {
+        if (Platform.isMacOS) {
+          print("No brightness For Mac");
+          // deviceSettings.unmuteVolumeForMac();
+        } else if (Platform.isAndroid) {
+          print("i am here for andorind");
+          var value = jsonObj["settings"]["brightness"]['value'];
+          deviceSettings.setAppBrightnessForAndroid(value);
+        } else if (Platform.isWindows) {
+          var res = jsonObj["settings"]["brightness"]['value'];
+          deviceSettings.adjustBrightnessForWindows(res);
+        } else if (Platform.isLinux) {
+          var res = jsonObj["settings"]["brightness"]['value'];
+          deviceSettings.changeBrightnessForLinux(res);
+        }
+      }
+      var data = {"success": true};
+      publishMessage(globleTopic, jsonEncode(data));
+    } else if (jsonObj["action"] == "publish_playlist") {
+      print("i am in actionPlaylist${jsonObj["data"]["playlist"]["media"]}");
+      // _mediaList = jsonObj;
+      _playListModel = playListModelFromJson(jsonEncode(jsonObj));
+      print("model data ${_playListModel!.data.playlist.media}");
+      print(_mediaList);
+      for (var media in _playListModel!.data.playlist.media) {
+        // String mediaUrl = media["mediaUrl"];
+        print("Media URL: $media");
+
+        // Download the media file
+        _startDownloading();
+      }
+    }
   }
 
   void _updateMessage() {
