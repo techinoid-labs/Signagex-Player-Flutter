@@ -9,17 +9,18 @@ import 'package:video_player/video_player.dart';
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/view_models/mqtt_view_model.dart';
 
-
 class PlaylistScreen extends StatelessWidget {
   const PlaylistScreen({super.key});
 
   @override
   Widget build(BuildContext context) {
     final mqttViewModel = Provider.of<MqttViewModel>(context);
-    print("this is playlist media ... ${mqttViewModel.playListModel!.data.playlist.playlistSchedule.period!.date.start}");
-    
+    print(
+        "this is playlist media ... ${mqttViewModel.playListModel!.data.playlist.playlistSchedule.period!.date.start}");
+
     DateTime now = DateTime.now();
-    var playlistSchedule = mqttViewModel.playListModel!.data.playlist.playlistSchedule;
+    var playlistSchedule =
+        mqttViewModel.playListModel!.data.playlist.playlistSchedule;
 
     // Check if always_play is true
     if (playlistSchedule.alwaysPlay) {
@@ -41,7 +42,8 @@ class PlaylistScreen extends StatelessWidget {
       playlistSchedule.period!.date.end,
     );
 
-    bool isPlaylistDayAllowed = _isCurrentDayAllowed(playlistSchedule.period!.days, now);
+    bool isPlaylistDayAllowed =
+        _isCurrentDayAllowed(playlistSchedule.period!.days, now);
     bool isTimeInRange = _isTimeInRange(
       playlistSchedule.period!.time.from,
       playlistSchedule.period!.time.to,
@@ -65,20 +67,29 @@ class PlaylistScreen extends StatelessWidget {
   // Change the argument types to DateTime
   bool _isPlaylistDateInRange(DateTime startDate, DateTime endDate) {
     DateTime now = DateTime.now();
-    return now.isAfter(startDate) && now.isBefore(endDate.add(Duration(days: 1)));
+    return now.isAfter(startDate) &&
+        now.isBefore(endDate.add(Duration(days: 1)));
   }
 
   // Check if the current day is allowed based on the schedule
   bool _isCurrentDayAllowed(dynamic days, DateTime now) {
     switch (now.weekday) {
-      case 1: return days.monday ?? false;
-      case 2: return days.tuesday ?? false;
-      case 3: return days.wednesday ?? false;
-      case 4: return days.thursday ?? false;
-      case 5: return days.friday ?? false;
-      case 6: return days.saturday ?? false;
-      case 7: return days.sunday ?? false;
-      default: return false; // Should not reach here
+      case 1:
+        return days.monday ?? false;
+      case 2:
+        return days.tuesday ?? false;
+      case 3:
+        return days.wednesday ?? false;
+      case 4:
+        return days.thursday ?? false;
+      case 5:
+        return days.friday ?? false;
+      case 6:
+        return days.saturday ?? false;
+      case 7:
+        return days.sunday ?? false;
+      default:
+        return false;
     }
   }
 
@@ -100,7 +111,6 @@ class PlaylistScreen extends StatelessWidget {
     return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
   }
 }
-
 
 class VideoPlaylistWidget extends StatefulWidget {
   final List<Media> mediaPaths;
@@ -145,90 +155,121 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       });
     });
   }
-void _initializeNextMedia() {
-  if (_currentIndex < widget.mediaPaths.length) {
-    Media nextMedia = widget.mediaPaths[_currentIndex];
-    print("Loading media at index $_currentIndex: ${nextMedia.mediaUrl!}");
 
-    DateTime now = DateTime.now();
-    print("Current date: $now");
+  void _initializeNextMedia() {
+    if (_currentIndex < widget.mediaPaths.length) {
+      Media nextMedia = widget.mediaPaths[_currentIndex];
+      print("Loading media at index $_currentIndex: ${nextMedia.mediaUrl!}");
 
-    DateTime startDate = nextMedia.schedule!.period!.date.start;
-    DateTime endDate = nextMedia.schedule!.period!.date.end;
-    print("Media start date: $startDate");
-    print("Media end date: $endDate");
+      // Check if always_play is true
+      if (nextMedia.schedule!.alwaysPlay) {
+        print("Always play is true for media: ${nextMedia.mediaUrl!}");
+        _loadMedia(nextMedia);
+        return;
+      }
 
-    bool isDateInRange = now.isAfter(startDate) && now.isBefore(endDate.add(Duration(days: 1)));
-    print("Is current date in range: $isDateInRange");
+      // Proceed with date, day, and time checks
+      DateTime now = DateTime.now();
+      print("Current date: $now");
 
-    bool isDayAllowed = _isCurrentDayAllowed(nextMedia.schedule!.period!.days, now);
-    print("Is current day allowed: $isDayAllowed");
+      DateTime startDate = nextMedia.schedule!.period!.date.start;
+      DateTime endDate = nextMedia.schedule!.period!.date.end;
+      print("Media start date: $startDate");
+      print("Media end date: $endDate");
 
-    String? timeFrom = nextMedia.schedule!.period!.time.from;
-    String? timeTo = nextMedia.schedule!.period!.time.to;
+      bool isDateInRange = now.isAfter(startDate) &&
+          now.isBefore(endDate.add(Duration(days: 1)));
+      print("Is current date in range: $isDateInRange");
 
-    if (timeFrom != null && timeTo != null) {
-      DateTime currentTime = DateTime.now();
-      DateTime fromTime = DateTime.now().copyWith(
-        hour: int.parse(timeFrom.split(':')[0]),
-        minute: int.parse(timeFrom.split(':')[1]),
-        second: int.parse(timeFrom.split(':')[2]),
-      );
+      bool isDayAllowed =
+          _isCurrentDayAllowed(nextMedia.schedule!.period!.days, now);
+      print("Is current day allowed: $isDayAllowed");
 
-      DateTime toTime = DateTime.now().copyWith(
-        hour: int.parse(timeTo.split(':')[0]),
-        minute: int.parse(timeTo.split(':')[1]),
-        second: int.parse(timeTo.split(':')[2]),
-      );
+      String? timeFrom = nextMedia.schedule!.period!.time.from;
+      String? timeTo = nextMedia.schedule!.period!.time.to;
 
-      bool isTimeInRange = currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
-      print("Is current time in range: $isTimeInRange");
+      if (timeFrom != null && timeTo != null) {
+        DateTime currentTime = DateTime.now();
+        DateTime fromTime = DateTime.now().copyWith(
+          hour: int.parse(timeFrom.split(':')[0]),
+          minute: int.parse(timeFrom.split(':')[1]),
+          second: int.parse(timeFrom.split(':')[2]),
+        );
 
-      if (isDateInRange && isDayAllowed && isTimeInRange) {
-        String duration = nextMedia.settings!.duration;
-        print("Loading duration at index $_currentIndex: $duration");
-        _startMediaLoop(duration);
+        DateTime toTime = DateTime.now().copyWith(
+          hour: int.parse(timeTo.split(':')[0]),
+          minute: int.parse(timeTo.split(':')[1]),
+          second: int.parse(timeTo.split(':')[2]),
+        );
 
-        if (isVideoFile(nextMedia.mediaUrl!)) {
-          _initializeNextVideo(nextMedia);
+        bool isTimeInRange =
+            currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
+        print("Is current time in range: $isTimeInRange");
+
+        if (isDateInRange && isDayAllowed && isTimeInRange) {
+          String duration = nextMedia.settings!.duration;
+          print("Loading duration at index $_currentIndex: $duration");
+          _startMediaLoop(duration);
+          _loadMedia(nextMedia);
         } else {
-          print("Current media is an image: ${nextMedia.mediaUrl!}");
+          print("Current date, day, or time is not allowed for this media.");
+          _onMediaEnd();
         }
       } else {
-        print("Current date, day, or time is not allowed for this media.");
+        print("Time range not defined for this media.");
         _onMediaEnd();
       }
-    } else {
-      print("Time range not defined for this media.");
-      _onMediaEnd();
     }
   }
-}
+
+  void _loadMedia(Media nextMedia) {
+    if (isVideoFile(nextMedia.mediaUrl!)) {
+      _initializeNextVideo(nextMedia);
+    } else {
+      print("Current media is an image: ${nextMedia.mediaUrl!}");
+    }
+  }
 
   String _getCurrentDayString(int weekday) {
     switch (weekday) {
-      case 1: return 'monday';
-      case 2: return 'tuesday';
-      case 3: return 'wednesday';
-      case 4: return 'thursday';
-      case 5: return 'friday';
-      case 6: return 'saturday';
-      case 7: return 'sunday';
-      default: return '';
+      case 1:
+        return 'monday';
+      case 2:
+        return 'tuesday';
+      case 3:
+        return 'wednesday';
+      case 4:
+        return 'thursday';
+      case 5:
+        return 'friday';
+      case 6:
+        return 'saturday';
+      case 7:
+        return 'sunday';
+      default:
+        return '';
     }
   }
 
   // Check if current day is allowed based on the schedule
   bool _isCurrentDayAllowed(dynamic days, DateTime now) {
     switch (now.weekday) {
-      case 1: return days.monday ?? false;
-      case 2: return days.tuesday ?? false;
-      case 3: return days.wednesday ?? false;
-      case 4: return days.thursday ?? false;
-      case 5: return days.friday ?? false;
-      case 6: return days.saturday ?? false;
-      case 7: return days.sunday ?? false;
-      default: return false; // Should not reach here
+      case 1:
+        return days.monday ?? false;
+      case 2:
+        return days.tuesday ?? false;
+      case 3:
+        return days.wednesday ?? false;
+      case 4:
+        return days.thursday ?? false;
+      case 5:
+        return days.friday ?? false;
+      case 6:
+        return days.saturday ?? false;
+      case 7:
+        return days.sunday ?? false;
+      default:
+        return false; // Should not reach here
     }
   }
 
@@ -244,13 +285,13 @@ void _initializeNextMedia() {
         });
       }).catchError((error) {
         print("Error initializing video: $error");
-        setState(() {}); // Refresh UI to show fallback
+        setState(() {});
       });
   }
 
   void _startMediaLoop(String duration) {
     int durationSeconds =
-        int.tryParse(duration) ?? 10; // Default to 10 seconds if parsing fails
+        int.tryParse(duration) ?? 10; 
     _timer = Timer(Duration(seconds: durationSeconds), _onMediaEnd);
   }
 
@@ -284,13 +325,15 @@ void _initializeNextMedia() {
       opacity: _opacity,
       duration: const Duration(milliseconds: 500), // Fade transition duration
       child: AnimatedSwitcher(
-        duration: const Duration(milliseconds: 500), // Animation duration for transition
+        duration: const Duration(
+            milliseconds: 500),
         child: isVideoFile(currentMedia.mediaUrl!)
             ? VideoPlayerWidget(
                 filePath: currentMedia.mediaUrl!,
                 onVideoEnd: _onMediaEnd,
                 aspectRatio: getAspectRatio(currentMedia.settings?.ratio),
-                transitionType: currentMedia.settings!.transition, // Default to fadeIn
+                transitionType:
+                    currentMedia.settings!.transition, 
               )
             : SizedBox.expand(
                 child: ImageWidget(
@@ -318,6 +361,7 @@ void _initializeNextMedia() {
     return videoExtensions.any((ext) => path.endsWith(ext));
   }
 }
+
 class VideoPlayerWidget extends StatefulWidget {
   final String filePath;
   final VoidCallback onVideoEnd;
