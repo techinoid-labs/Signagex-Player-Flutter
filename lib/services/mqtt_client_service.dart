@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
 
@@ -26,6 +25,8 @@ class MqttClientService {
         'uniqueClientID_${DateTime.now().millisecondsSinceEpoch}', mqttPort);
 
     _client.logging(on: true);
+    _client.autoReconnect = true;
+    _client.resubscribeOnAutoReconnect = true;
     _client.onConnected = onConnected;
     _client.onDisconnected = onDisconnected;
     _client.onUnsubscribed = onUnsubscribed;
@@ -92,7 +93,7 @@ class MqttClientService {
     }
   }
 
-   void subscribe(String topic) {
+  void subscribe(String topic) {
     print('MQTT_LOGS:: Subscribing to the topic: $topic');
     _client.subscribe(topic, MqttQos.atMostOnce);
 
@@ -101,28 +102,31 @@ class MqttClientService {
     });
   }
 
-  void _handleReceivedMessage(List<MqttReceivedMessage<MqttMessage?>>? messages) {
+  void _handleReceivedMessage(
+      List<MqttReceivedMessage<MqttMessage?>>? messages) {
     if (messages == null || messages.isEmpty) return;
 
     final recMess = messages[0].payload as MqttPublishMessage;
-    final payload = MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
-    
+    final payload =
+        MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
+
     // Call the callback if it is set
     if (onMessageReceived != null) {
-      onMessageReceived!(payload);  // Pass the message payload to the callback
+      onMessageReceived!(payload); // Pass the message payload to the callback
     }
 
     receivedMessageNotifier.value = payload;
     print('MQTT_LOGS:: New data arrived payload is $payload');
-    print('MQTT_LOGS:: New data arrived: topic ...$globleTopic.... <${messages[0].topic}>, payload is $payload');
+    print(
+        'MQTT_LOGS:: New data arrived: topic ...$globleTopic.... <${messages[0].topic}>, payload is $payload');
 
     try {
-      final jsonObj = jsonDecode(payload);
-     
+      jsonDecode(payload);
     } catch (e) {
       print('Failed to decode JSON: $e');
     }
   }
+
   void publish(String topic, String message) {
     var pubTopic = topic;
     final builder = MqttClientPayloadBuilder();
