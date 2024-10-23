@@ -718,8 +718,8 @@ EOF
     return; // Prevent re-entering the download process
   }
 
-  _downloadCount = _playListModel!.data.playlist.media.length; // Set the total count of media files
-  print("Total files ${_playListModel!.data.playlist.media.length} to download: $_downloadCount");
+  _downloadCount = _playListModel!.data.playlist.media!.length; // Set the total count of media files
+  print("Total files ${_playListModel!.data.playlist.media!.length} to download: $_downloadCount");
 
   if (_downloadCount > 0) {
     _state = MqttState.downloading; // Set state to downloading before starting downloads
@@ -733,7 +733,7 @@ EOF
   int completedDownloads = 0; // Track how many downloads have completed
   _overallProgress = 0.0; // Reset overall progress
 
-  for (var media in _playListModel!.data.playlist.media) {
+  for (var media in _playListModel!.data.playlist.media!) {
     String mediaUrl = media.mediaUrl ?? '';
     print("Starting download check for Media URL: $mediaUrl");
 
@@ -785,9 +785,9 @@ EOF
   List<String> get mediaPath => _mediaPath;
 
 void _updateMediaModel() {
-  if (_playListModel != null && _playListModel!.data.playlist.media.isNotEmpty) {
-    for (int i = 0; i < _playListModel!.data.playlist.media.length; i++) {
-      var mediaItem = _playListModel!.data.playlist.media[i];
+  if (_playListModel != null && _playListModel!.data.playlist.media!.isNotEmpty) {
+    for (int i = 0; i < _playListModel!.data.playlist.media!.length; i++) {
+      var mediaItem = _playListModel!.data.playlist.media![i];
       if (i < _mediaPath.length) {
         mediaItem.mediaUrl = _mediaPath[i];
       }
@@ -945,7 +945,7 @@ String _extractFilename(String url, {String? mediaType}) {
       notifyListeners();
     } catch (error) {
       _state = MqttState.failure;
-      debugPrint("Error: $error");
+      debugPrint("Error:inapi $error");
     }
 
     notifyListeners();
@@ -1155,7 +1155,7 @@ String _extractFilename(String url, {String? mediaType}) {
       _playListModel = playListModelFromJson(jsonEncode(jsonObj));
       print("model data ${_playListModel!.data.playlist.media}");
       print(_mediaList);
-      for (var media in _playListModel!.data.playlist.media) {
+      for (var media in _playListModel!.data.playlist.media!) {
         // String mediaUrl = media["mediaUrl"];
         print("Media URL: $media");
 
