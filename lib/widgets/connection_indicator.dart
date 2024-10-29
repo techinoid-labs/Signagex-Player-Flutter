@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 class MqttStatusIndicator extends StatelessWidget {
   final bool isConnected;
 
-  MqttStatusIndicator({required this.isConnected});
+  const MqttStatusIndicator({super.key, required this.isConnected});
 
   @override
   Widget build(BuildContext context) {
