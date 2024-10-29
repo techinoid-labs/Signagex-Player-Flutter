@@ -734,7 +734,7 @@ EOF
   _overallProgress = 0.0; // Reset overall progress
 
   for (var media in _playListModel!.data.playlist.media!) {
-    String mediaUrl = media.mediaUrl ?? '';
+    String mediaUrl = media.mediaUrl;
     print("Starting download check for Media URL: $mediaUrl");
 
     String filename = _extractFilename(mediaUrl);
