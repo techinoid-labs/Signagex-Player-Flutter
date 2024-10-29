@@ -247,13 +247,15 @@ class Time {
 class Default {
   String duration;
   String transition;
-  String? volume;
-  String? otherMediaDefaultVolume;
-  String? ratio;
+  String? volume; // Optional
+  bool isPaused;
+  String? otherMediaDefaultVolume; // Optional
+  String? ratio; // Optional
 
   Default({
     required this.duration,
     required this.transition,
+    required this.isPaused,
     required this.volume,
     this.otherMediaDefaultVolume,
     this.ratio,
@@ -262,10 +264,9 @@ class Default {
   factory Default.fromJson(Map<String, dynamic> json) => Default(
         duration: json["duration"],
         transition: json["transition"],
-        volume: json["volume"],
-        otherMediaDefaultVolume: json.containsKey("other_media_default_volume")
-            ? json["other_media_default_volume"]
-            : null,
+        volume: json["volume"] ?? null, // Use null if the key is not present
+        isPaused: json["is_paused"] ?? false, // Default to false if not present
+        otherMediaDefaultVolume: json["other_media_default_volume"],
         ratio: json["ratio"],
       );
 
@@ -273,11 +274,11 @@ class Default {
         "duration": duration,
         "transition": transition,
         "volume": volume,
+        "is_paused": isPaused,
         "other_media_default_volume": otherMediaDefaultVolume,
         "ratio": ratio,
       };
 }
-
 class Playback {
   String mode;
   int count;
