@@ -1,154 +1,40 @@
-import 'dart:async';
-import 'dart:convert';
-import 'dart:io';
-
-import 'package:http/http.dart' as http;
-
+import 'package:digital_signage/data/network/base_api_service.dart';
+import 'package:digital_signage/data/network/network_api_service.dart';
 import 'package:digital_signage/utils/constants.dart';
 
+
 class ApiRepository {
-  const ApiRepository._();
+   BaseApiService _apiService = NetworkApiService();
 
-  static ApiRepository get instance => const ApiRepository._();
-
-  static Future<dynamic> sendPostRequest(
-    dynamic requestData,
-    String port,
-    String url,
-    String? authToken,
-  ) async {
-    String apiUrl = '$baseurl$port$url';
-    print(apiUrl);
+  Future<dynamic> fetchData(String url) async {
     try {
-      http.Response response = await http
-          .post(
-            Uri.parse(apiUrl),
-            headers: authToken != null
-                ? {
-                    HttpHeaders.contentTypeHeader: 'application/json',
-                    HttpHeaders.authorizationHeader: "Bearer $authToken"
-                  }
-                : {HttpHeaders.contentTypeHeader: 'application/json'},
-            body: json.encode(requestData),
-          )
-          .timeout(const Duration(seconds: 30));
-          print(response.body);
-      return json.decode(response.body);
-    } on TimeoutException {
-      return {
-        "statusCode": 500,
-        "message": "Request Timeout",
-      };
-    } catch (error) {
-      print(error);
-      return {
-        "statusCode": 400,
-        "message": "No internet connection",
-      };
-    }
-  }
-
-  static Future<dynamic> sendGetRequest(
-    String port,
-    String url,
-    String? authToken,
-  ) async {
-    String apiUrl = '$url$port$url';
-
-    try {
-      http.Response response = await http
-          .get(
-            Uri.parse(apiUrl),
-            headers: authToken != null
-                ? {
-                    HttpHeaders.contentTypeHeader: 'application/json',
-                    HttpHeaders.authorizationHeader: "Bearer $authToken"
-                  }
-                : {HttpHeaders.contentTypeHeader: 'application/json'},
-          )
-          .timeout(const Duration(seconds: 30));
-
-      return json.decode(response.body);
-    } on TimeoutException {
-      return {
-        "statusCode": 500,
-        "message": "Request Timeout",
-      };
-    } catch (error) {
-      return {
-        "statusCode": 400,
-        "message": "No internet connection",
-      };
-    }
-  }
-
-  static Future<dynamic> sendPatchRequest(
-    dynamic requestData,
-    String port,
-    String url,
-    String? authToken,
-  ) async {
-    String apiUrl = '$url$port$url';
-
-    try {
-      http.Response response = await http
-          .patch(
-            Uri.parse(apiUrl),
-            headers: authToken != null
-                ? {
-                    HttpHeaders.contentTypeHeader: 'application/json',
-                    HttpHeaders.authorizationHeader: "Bearer $authToken"
-                  }
-                : {HttpHeaders.contentTypeHeader: 'application/json'},
-            body: json.encode(requestData),
-          )
-          .timeout(const Duration(seconds: 30));
-      return json.decode(response.body);
-    } on TimeoutException {
-      return {
-        "statusCode": 500,
-        "message": "Request Timeout",
-      };
+      return await _apiService.getApiResponse(url);
     } catch (e) {
-      print(e);
-      return {
-        "statusCode": 400,
-        "message": "No internet connection",
-      };
+      rethrow;
     }
   }
 
-  static Future<dynamic> sendDeleteRequest(
-    String port,
-    String url,
-    String? authToken,
-  ) async {
-    String apiUrl = '$url$port$url';
-
+  Future<dynamic> postData(String url, dynamic data, String? authToken) async {
     try {
-      http.Response response = await http
-          .delete(
-            Uri.parse(apiUrl),
-            headers: authToken != null
-                ? {
-                    HttpHeaders.contentTypeHeader: 'application/json',
-                    HttpHeaders.authorizationHeader: "Bearer $authToken"
-                  }
-                : {HttpHeaders.contentTypeHeader: 'application/json'},
-          )
-          .timeout(const Duration(seconds: 30));
-      return json.decode(response.body);
-    } on TimeoutException {
-      return {
-        "statusCode": 500,
-        "message": "Request Timeout",
-      };
+      return await _apiService.postApiResponse(baseurl+url, data, authToken);
     } catch (e) {
-      print(e);
-      return {
-        "statusCode": 400,
-        "message": "No internet connection",
-      };
+      rethrow;
+    }
+  }
+
+  Future<dynamic> patchData(String url, String data, String authToken) async {
+    try {
+      return await _apiService.patchApiResponse(url, data, authToken);
+    } catch (e) {
+      rethrow;
+    }
+  }
+
+  Future<dynamic> deleteData(String url, String authToken) async {
+    try {
+      return await _apiService.deleteApiResponse(url, authToken);
+    } catch (e) {
+      rethrow;
     }
   }
 }
