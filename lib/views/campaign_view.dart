@@ -224,12 +224,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
   }
 
-  @override
-  void dispose() {
-    _timer?.cancel();
-    _videoController?.dispose();
-    super.dispose();
-  }
+ @override
+void dispose() {
+  _timer?.cancel();
+  _videoController?.dispose();
+  super.dispose();
+}
+
 
   @override
   Widget build(BuildContext context) {
