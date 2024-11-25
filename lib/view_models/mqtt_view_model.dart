@@ -1158,8 +1158,8 @@ EOF
       requestBody = {
         "platform": "android",
         "macAddress": [
-          {"mac": macAddresses['wlan0'] ?? "21342423424", "interface": "wlan0"},
-          {"mac": macAddresses['eth0'] ?? "2342343242324", "interface": "eth0"}
+          {"mac": macAddresses['wlan0'] ?? "", "interface": "wlan0"},
+          {"mac": macAddresses['eth0'] ?? "", "interface": "eth0"}
         ]
       };
     } else if (Platform.isIOS || Platform.isMacOS) {
