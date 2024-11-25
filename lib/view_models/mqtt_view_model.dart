@@ -6,16 +6,16 @@ import 'package:flutter/services.dart';
 
 import 'package:battery_plus/battery_plus.dart';
 import 'package:dio/dio.dart';
-// import 'package:battery_plus/battery_plus.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:screen_brightness/screen_brightness.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:system_info2/system_info2.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:digital_signage/models/compaign_model.dart';
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
@@ -29,6 +29,7 @@ enum MqttState {
   success,
   failure,
   noContent,
+  campaignScreen,
   connectionScreen,
   noInternet,
   downloading,
@@ -58,14 +59,63 @@ class MqttViewModel extends ChangeNotifier {
 
   PlayListModel? get playListModel => _playListModel;
 
+  CampaignModel? _campaignModel;
+
+  CampaignModel? get campaignModel => _campaignModel;
+
   Map<String, String?> macAddresses = {
     'wlan0': null,
     'eth0': null,
   };
+  Map<String, dynamic> storedJsonObj = {};
+  Future<void> _loadStoredJsonObj() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    String? jsonString = prefs.getString('jsonObj');
+
+    if (jsonString != null) {
+      print('Retrieved JSON from SharedPreferences: $jsonString');
+      storedJsonObj = jsonDecode(jsonString);
+      print('Loaded JSON Object: $storedJsonObj');
+      notifyListeners();
+    } else {
+      print('No JSON Object found in SharedPreferences.');
+    }
+  }
+
+  Future<Map<String, dynamic>?> retrieveStoredResponse() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    String? jsonString = prefs.getString('apiResponse');
+
+    if (jsonString != null) {
+      final jsonResponse = jsonDecode(jsonString) as Map<String, dynamic>;
+      print('Retrieved stored response: $jsonResponse');
+      _topic = jsonResponse["player_code"];
+      debugPrint("This is the response from the$topic API: $jsonResponse");
+      globleTopic = _topic;
+      return jsonResponse;
+    } else {
+      print('No stored response found.');
+      return null;
+    }
+  }
+
+  Future<void> loadDeviceInfoFromSharedPreferences() async {
+    SharedPreferences prefs = await SharedPreferences.getInstance();
+    String? jsonString = prefs.getString('deviceInfoMap');
+
+    if (jsonString != null) {
+      // Decode the JSON string back to a Map
+      deviceInfoMap = Map<String, dynamic>.from(jsonDecode(jsonString));
+      print('Loaded device info from SharedPreferences: $deviceInfoMap');
+    } else {
+      print('No device info found in SharedPreferences.');
+    }
+  }
 
   MqttViewModel(this._mqttClientService) {
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
     _mqttClientService.onMessageReceived = _handleIncomingMessage;
+
     fetchAllInfo();
     _initializeBasedOnPlatform();
     // _mqttConnection();
@@ -73,14 +123,90 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   // Monitor connectivity changes and reinitialize MQTT on connection recovery
-  void _monitorConnectivity() {
-    InternetConnectionChecker().onStatusChange.listen((status) {
+  void _monitorConnectivity() async {
+    await _loadStoredJsonObj();
+    await retrieveStoredResponse();
+    await loadDeviceInfoFromSharedPreferences();
+    InternetConnectionChecker().onStatusChange.listen((status) async {
       final hasConnection = status == InternetConnectionStatus.connected;
+
       if (hasConnection) {
-        _mqttConnection();
+        print("this is data $storedJsonObj");
+
+        if (storedJsonObj["action"] == "publish_playlist") {
+          await _mqttClientService.connect();
+
+          subsibeMessage(_topic);
+
+          publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+          print(
+              "i am in actionPlaylist${storedJsonObj["data"]["playlist"]["media"]}");
+          // _mediaList = jsonObj;
+          _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
+
+          print("model data ${_playListModel!.data.playlist.media}");
+          print(_mediaList);
+          for (var media in _playListModel!.data.playlist.media!) {
+            // String mediaUrl = media["mediaUrl"];
+            print("Media URL: $media");
+
+            // Download the media file
+            _startDownloading();
+          }
+        } else if (storedJsonObj["action"] == "publish_campaign") {
+          await _mqttClientService.connect();
+
+          subsibeMessage(_topic);
+
+          publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+          _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
+          print("model data ${_campaignModel!.data.zones}");
+          print(_mediaList);
+          for (var media in _campaignModel!.data.zones) {
+            // String mediaUrl = media["mediaUrl"];
+            print("Media URL: $media");
+
+            // Download the media file
+            _startDownloadingForCampaign();
+          }
+        } else {
+          _mqttConnection();
+        }
       } else {
-        _state = MqttState.noInternet;
-        notifyListeners();
+        if (storedJsonObj["action"] == "publish_playlist") {
+          print(
+              "i am in actionPlaylist${storedJsonObj["data"]["playlist"]["media"]}");
+          // _mediaList = jsonObj;
+          _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
+
+          print("model data ${_playListModel!.data.playlist.media}");
+          print(_mediaList);
+          for (var media in _playListModel!.data.playlist.media!) {
+            // String mediaUrl = media["mediaUrl"];
+            print("Media URL: $media");
+
+            // Download the media file
+            _startDownloading();
+          }
+        } else if (storedJsonObj["action"] == "publish_playlist") {
+          print(
+              "i am in actionPlaylist${storedJsonObj["data"]["playlist"]["media"]}");
+          // _mediaList = jsonObj;
+          _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
+
+          print("model data ${_playListModel!.data.playlist.media}");
+          print(_mediaList);
+          for (var media in _playListModel!.data.playlist.media!) {
+            // String mediaUrl = media["mediaUrl"];
+            print("Media URL: $media");
+
+            // Download the media file
+            _startDownloading();
+          }
+        } else {
+          _state = MqttState.noInternet;
+          notifyListeners();
+        }
       }
     });
   }
@@ -446,8 +572,8 @@ class MqttViewModel extends ChangeNotifier {
       final result = await getAllSystemInfo();
       if (result.exitCode == 0) {
         final output = result.stdout.trim();
+        print(output);
 
-        // Parse the JSON output from PowerShell
         final Map<String, dynamic> systemInfo = jsonDecode(output);
         devicesinfo["sender"] = "windows";
         devicesinfo["time_zone"] = systemInfo["TimeZone"];
@@ -468,14 +594,11 @@ class MqttViewModel extends ChangeNotifier {
 
         devicesinfo["storage_info"]["available_storage"] =
             systemInfo["Drives"][0]["FreeSpaceGB"].toString();
-        ;
         print(systemInfo["TimeZone"]);
         devicesinfo["hardware_details"]["ram"] = systemInfo["InstalledRAM"];
         devicesinfo["cpu_information"]["cpu_architecture"] =
             systemInfo["CPUArchitecture"];
         devicesinfo["cpu_information"]["processor"] = systemInfo["CPUInfo"];
-
-        // Print all the system information
         systemInfo.forEach((key, value) {
           print('$key: $value');
         });
@@ -708,172 +831,179 @@ EOF
   bool get isDownloading => _isDownloading;
   String get downloadedFilePath => _downloadedFilePath;
 
-  int _downloadCount = 0; //
-  double _overallProgress = 0.0; // Tracks total download progress (0.0 to 1.0)
-  double get overallProgress => _overallProgress; // Getter for UI binding
+  int _downloadCount = 0;
+  double _overallProgress = 0.0;
+  double get overallProgress => _overallProgress;
 
- void _startDownloading() async {
-  if (_state == MqttState.downloading) {
-    print("Downloads are already in progress.");
-    return; // Prevent re-entering the download process
-  }
-
-  _downloadCount = _playListModel!.data.playlist.media!.length; // Set the total count of media files
-  print("Total files ${_playListModel!.data.playlist.media!.length} to download: $_downloadCount");
-
-  if (_downloadCount > 0) {
-    _state = MqttState.downloading; // Set state to downloading before starting downloads
-    notifyListeners(); // Notify the UI that downloading has started
-  } else {
-    _state = MqttState.noContent; // If no files are available to download
-    notifyListeners();
-    return;
-  }
-
-  int completedDownloads = 0; // Track how many downloads have completed
-  _overallProgress = 0.0; // Reset overall progress
-
-  for (var media in _playListModel!.data.playlist.media!) {
-    String mediaUrl = media.mediaUrl;
-    print("Starting download check for Media URL: $mediaUrl");
-
-    String filename = _extractFilename(mediaUrl);
-    print('Extracted filename: $filename');
-
-    // Get platform-specific directory
-    Directory? directory = await _getDirectory();
-    if (directory == null) {
-      print('Unable to determine directory');
-      throw Exception('Unable to determine directory');
+  void _startDownloading() async {
+    if (_state == MqttState.downloading) {
+      print("Downloads are already in progress.");
+      return;
     }
-    print('Download directory: ${directory.path}');
 
-    String filePath = '${directory.path}/$filename';
+    _downloadCount = _playListModel!.data.playlist.media!.length;
+    print(
+        "Total files ${_playListModel!.data.playlist.media!.length} to download: $_downloadCount");
 
-    
-    bool fileExists = await File(filePath).exists();
-    if (fileExists) {
-      print('File already exists: $filePath');
-      _mediaPath.add(filePath); 
-      _updateMediaModel();
-      completedDownloads++;
-      _overallProgress = completedDownloads / _downloadCount;
-      print('Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+    if (_downloadCount > 0) {
+      _state = MqttState.downloading;
       notifyListeners();
     } else {
+      _state = MqttState.noContent;
+      notifyListeners();
+      return;
+    }
 
-      await downloadFile(mediaUrl).then((_) {
+    int completedDownloads = 0;
+    _overallProgress = 0.0;
+
+    for (var media in _playListModel!.data.playlist.media!) {
+      String mediaUrl = media.mediaUrl;
+      print("Starting download check for Media URL: $mediaUrl");
+
+      String filename = _extractFilename(mediaUrl);
+      print('Extracted filename: $filename');
+
+      // Get platform-specific directory
+      Directory? directory = await _getDirectory();
+      if (directory == null) {
+        print('Unable to determine directory');
+        throw Exception('Unable to determine directory');
+      }
+      print('Download directory: ${directory.path}');
+
+      String filePath = '${directory.path}/$filename';
+
+      bool fileExists = await File(filePath).exists();
+      if (fileExists) {
+        print('File already exists: $filePath');
+        _mediaPath.add(filePath);
+        _updateMediaModel();
+
         completedDownloads++;
         _overallProgress = completedDownloads / _downloadCount;
-        print('Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+        print(
+            'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
         notifyListeners();
-      }).catchError((error) {
-        print("Error downloading file: $error");
-        _state = MqttState.failure; // On failure, set state to failure
-        notifyListeners(); // Notify the UI
-      });
-    }
+      } else {
+        await downloadFile(mediaUrl).then((_) {
+          completedDownloads++;
+          _overallProgress = completedDownloads / _downloadCount;
+          print(
+              'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+          notifyListeners();
+        }).catchError((error) {
+          print("Error downloading file: $error");
+          _state = MqttState.failure;
+          notifyListeners();
+        });
+      }
 
-    if (completedDownloads == _downloadCount) {
-      print("All files processed.");
-      _state = MqttState.playlistScreen; // All files processed, change to playlist screen state
-      notifyListeners();
-    }
-  }
-}
-  List<String> _mediaPath = [];
-  List<String> get mediaPath => _mediaPath;
+      if (completedDownloads == _downloadCount) {
+        print("All files processed.");
 
-void _updateMediaModel() {
-  if (_playListModel != null && _playListModel!.data.playlist.media!.isNotEmpty) {
-    for (int i = 0; i < _playListModel!.data.playlist.media!.length; i++) {
-      var mediaItem = _playListModel!.data.playlist.media![i];
-      if (i < _mediaPath.length) {
-        mediaItem.mediaUrl = _mediaPath[i];
+        _state = MqttState.playlistScreen;
+        notifyListeners();
       }
     }
   }
-}
-Future<void> downloadFile(String url) async {
-  if (Platform.isAndroid) {
-    print('Requesting storage permission...');
-    var status = await Permission.storage.request();
-    if (!status.isGranted) {
-      print('Storage permission denied');
-      throw Exception('Storage permission not granted');
-    }
-    print('Storage permission granted');
-  }
 
-  try {
-    String filename = _extractFilename(url);
-    Directory? directory = await _getDirectory();
-    if (directory == null) {
-      print('Unable to determine directory');
-      throw Exception('Unable to determine directory');
-    }
+  final List<String> _mediaPath = [];
+  List<String> get mediaPath => _mediaPath;
 
-    String filePath = '${directory.path}/$filename';
+  List<PlayListModel> storePlaylist = [];
 
-    // Initialize Dio for downloading
-    Dio dio = Dio();
-    print('Starting download from URL: $url to $filePath');
-
-    // Start downloading the file
-    await dio.download(
-      url,
-      filePath,
-      onReceiveProgress: (received, total) {
-        if (total != -1) {
-          double progress = received / total;
-          print('Download progress: ${(progress * 100).toStringAsFixed(2)}%');
+  void _updateMediaModel() {
+    if (_playListModel != null &&
+        _playListModel!.data.playlist.media!.isNotEmpty) {
+      for (int i = 0; i < _playListModel!.data.playlist.media!.length; i++) {
+        var mediaItem = _playListModel!.data.playlist.media![i];
+        if (i < _mediaPath.length) {
+          mediaItem.mediaUrl = _mediaPath[i];
         }
-      },
-    );
-
-    _mediaPath.add(filePath); // Add the newly downloaded file path to the list
-    _updateMediaModel(); // Update the media model with the downloaded file path
-
-    print('File downloaded to: $filePath');
-  } catch (e) {
-    print('Download failed: $e');
-    throw Exception('Download failed: $e');
-  }
-}
-String _extractFilename(String url, {String? mediaType}) {
-  String decodedUrl = Uri.decodeFull(url);
-  String filename = decodedUrl.split('/').last.split('?').first;
-
-  // Determine the file extension based on the media type
-  if (mediaType != null) {
-    switch (mediaType) {
-      case 'audio/mpeg':
-        filename += '.mp3';
-        break;
-      case 'audio/mp4':
-        filename += '.m4a';
-        break;
-      case 'video/mp4':
-        filename += '.mp4';
-        break;
-      case 'image/jpeg':
-      case 'image/png':
-      case 'image/gif':
-        filename += '.jpg'; 
-        break;
-      default:
-        
-        break;
-    }
-  } else {
-  
-    if (url.contains('images')) {
-      filename += '.jpg'; 
+      }
     }
   }
 
-  return filename;
-}
+  Future<void> downloadFile(String url) async {
+    if (Platform.isAndroid) {
+      print('Requesting storage permission...');
+      var status = await Permission.storage.request();
+      if (!status.isGranted) {
+        print('Storage permission denied');
+        throw Exception('Storage permission not granted');
+      }
+      print('Storage permission granted');
+    }
+
+    try {
+      String filename = _extractFilename(url);
+      Directory? directory = await _getDirectory();
+      if (directory == null) {
+        print('Unable to determine directory');
+        throw Exception('Unable to determine directory');
+      }
+
+      String filePath = '${directory.path}/$filename';
+
+      // Initialize Dio for downloading
+      Dio dio = Dio();
+      print('Starting download from URL: $url to $filePath');
+
+      // Start downloading the file
+      await dio.download(
+        url,
+        filePath,
+        onReceiveProgress: (received, total) {
+          if (total != -1) {
+            double progress = received / total;
+            print('Download progress: ${(progress * 100).toStringAsFixed(2)}%');
+          }
+        },
+      );
+
+      _mediaPath.add(filePath);
+      _updateMediaModel();
+
+      print('File downloaded to: $filePath');
+    } catch (e) {
+      print('Download failed: $e');
+      throw Exception('Download failed: $e');
+    }
+  }
+
+  String _extractFilename(String url, {String? mediaType}) {
+    String decodedUrl = Uri.decodeFull(url);
+    String filename = decodedUrl.split('/').last.split('?').first;
+
+    // Determine the file extension based on the media type
+    if (mediaType != null) {
+      switch (mediaType) {
+        case 'audio/mpeg':
+          filename += '.mp3';
+          break;
+        case 'audio/mp4':
+          filename += '.m4a';
+          break;
+        case 'video/mp4':
+          filename += '.mp4';
+          break;
+        case 'image/jpeg':
+        case 'image/png':
+        case 'image/gif':
+          filename += '.jpg';
+          break;
+        default:
+          break;
+      }
+    } else {
+      if (url.contains('images')) {
+        filename += '.jpg';
+      }
+    }
+
+    return filename;
+  }
 
   Future<Directory?> _getDirectory() async {
     if (Platform.isAndroid || Platform.isIOS) {
@@ -884,6 +1014,143 @@ String _extractFilename(String url, {String? mediaType}) {
     return null;
   }
 
+  final Map<int, List<String>> _mediaPaths = {};
+
+  void _startDownloadingForCampaign() async {
+    if (_state == MqttState.downloading) {
+      print("Downloads are already in progress.");
+      return;
+    }
+
+    _downloadCount =
+        _campaignModel!.data.zones.expand((zone) => zone.mediaItems).length;
+
+    print("Total files to download: $_downloadCount");
+
+    if (_downloadCount > 0) {
+      _state = MqttState.downloading;
+      notifyListeners();
+    } else {
+      _state = MqttState.noContent;
+      notifyListeners();
+      return;
+    }
+
+    int completedDownloads = 0;
+    _overallProgress = 0.0;
+
+    for (var zone in _campaignModel!.data.zones) {
+      _mediaPaths[zone.id] = [];
+
+      for (var media in zone.mediaItems) {
+        String mediaUrl = media.mediaUrl;
+        print("Starting download check for Media URL: $mediaUrl");
+
+        String filename = _extractFilename(mediaUrl);
+        print('Extracted filename: $filename');
+
+        Directory? directory = await _getDirectory();
+        if (directory == null) {
+          print('Unable to determine directory');
+          throw Exception('Unable to determine directory');
+        }
+        print('Download directory: ${directory.path}');
+
+        String filePath = '${directory.path}/$filename';
+
+        bool fileExists = await File(filePath).exists();
+        if (fileExists) {
+          print('File already exists: $filePath');
+          _mediaPaths[zone.id]!.add(filePath);
+          _updateMediaModelForCampaign();
+          completedDownloads++;
+          _overallProgress = completedDownloads / _downloadCount;
+          print(
+              'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+          notifyListeners();
+        } else {
+          await downloadFileForCampaign(mediaUrl, zone.id).then((_) {
+            _mediaPaths[zone.id]!.add(filePath);
+            completedDownloads++;
+            _overallProgress = completedDownloads / _downloadCount;
+            print(
+                'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+            notifyListeners();
+          }).catchError((error) {
+            print("Error downloading file: $error");
+            _state = MqttState.failure;
+            notifyListeners();
+          });
+        }
+
+        if (completedDownloads == _downloadCount) {
+          print("All files processed.");
+          _state = MqttState.campaignScreen;
+          notifyListeners();
+        }
+      }
+    }
+  }
+
+  void _updateMediaModelForCampaign() {
+    if (_campaignModel != null) {
+      for (var zone in _campaignModel!.data.zones) {
+        if (_mediaPaths.containsKey(zone.id)) {
+          List<String> zoneMediaPaths = _mediaPaths[zone.id]!;
+          for (int i = 0;
+              i < zone.mediaItems.length && i < zoneMediaPaths.length;
+              i++) {
+            zone.mediaItems[i].mediaUrl = zoneMediaPaths[i];
+          }
+        }
+      }
+    }
+  }
+
+  Future<void> downloadFileForCampaign(String url, int zoneId) async {
+    if (Platform.isAndroid) {
+      print('Requesting storage permission...');
+      var status = await Permission.storage.request();
+      if (!status.isGranted) {
+        print('Storage permission denied');
+        throw Exception('Storage permission not granted');
+      }
+      print('Storage permission granted');
+    }
+
+    try {
+      String filename = _extractFilename(url);
+      Directory? directory = await _getDirectory();
+      if (directory == null) {
+        print('Unable to determine directory');
+        throw Exception('Unable to determine directory');
+      }
+
+      String filePath = '${directory.path}/$filename';
+
+      Dio dio = Dio();
+      print('Starting download from URL: $url to $filePath');
+      await dio.download(
+        url,
+        filePath,
+        onReceiveProgress: (received, total) {
+          if (total != -1) {
+            double progress = received / total;
+            print('Download progress: ${(progress * 100).toStringAsFixed(2)}%');
+          }
+        },
+      );
+
+      _mediaPaths[zoneId]?.add(filePath); // Add file path to the specific zone
+      _updateMediaModelForCampaign();
+
+      print('File downloaded to: $filePath');
+    } catch (e) {
+      print('Download failed: $e');
+      throw Exception('Download failed: $e');
+    }
+  }
+
   Future<void> _checkPairingStatus() async {
     Map<String, dynamic> requestBody;
 
@@ -891,8 +1158,8 @@ String _extractFilename(String url, {String? mediaType}) {
       requestBody = {
         "platform": "android",
         "macAddress": [
-          {"mac": macAddresses['wlan0'], "interface": "wlan0"},
-          {"mac": macAddresses['eth0'], "interface": "eth0"}
+          {"mac": macAddresses['wlan0'] ?? "21342423424", "interface": "wlan0"},
+          {"mac": macAddresses['eth0'] ?? "2342343242324", "interface": "eth0"}
         ]
       };
     } else if (Platform.isIOS || Platform.isMacOS) {
@@ -918,16 +1185,24 @@ String _extractFilename(String url, {String? mediaType}) {
     debugPrint("Request body: $requestBody");
 
     try {
-      final response = await ApiRepository.sendPostRequest(
+      final response = await ApiRepository().postData(
+        "3002/player/connection/",
         requestBody,
-        port,
-        "player/connection/",
         null,
       );
+      final jsonResponse = jsonEncode(response);
+
+      // Store the response in SharedPreferences
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      bool isSaved = await prefs.setString('apiResponse', jsonResponse);
+      print("check status ::::$isSaved");
+      debugPrint("This is the response from the$topic API: $response");
       _topic = response["player_code"];
       debugPrint("This is the response from the$topic API: $response");
       globleTopic = _topic;
       subsibeMessage(topic);
+
+      await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
       print(deviceInfoMap);
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
 
@@ -945,138 +1220,14 @@ String _extractFilename(String url, {String? mediaType}) {
       notifyListeners();
     } catch (error) {
       _state = MqttState.failure;
-      debugPrint("Error:inapi $error");
+      debugPrint("Error: $error");
     }
 
     notifyListeners();
   }
 
-  Future<String> unmuteVolumeForMac() async {
-    const MethodChannel _channel = MethodChannel('com.example/volumeControl');
-    final String result = await _channel.invokeMethod('unmuteVolume');
-    return result;
-  }
 
-  Future<String> restartNetworkForMac() async {
-    const MethodChannel _channel = MethodChannel('com.example/networkControl');
 
-    final String result = await _channel.invokeMethod('restartNetwork');
-    return result;
-  }
-
-  Future<void> muteVolumeForAndroid() async {
-    try {
-      const platform = MethodChannel('com.example/network');
-
-      final result = await platform.invokeMethod('muteVolume');
-      print(
-          result); // Prints "Volume muted" or the success message from Android
-    } on PlatformException catch (e) {
-      print("Failed to mute volume: '${e.message}'.");
-    }
-  }
-
-  static Future<void> setOrientationForAndroid(int orientation) async {
-    try {
-      const MethodChannel _channel = MethodChannel('com.example/network');
-
-      await _channel
-          .invokeMethod('stOrientation', {'orientation': orientation});
-    } on PlatformException catch (e) {
-      print("Failed to set orientation: '${e.message}'.");
-    }
-  }
-
-  Future<void> setBrightnessForMac(double brightness) async {
-    try {
-      const MethodChannel _channel =
-          MethodChannel('com.example/brightnessControl');
-      final String result = await _channel
-          .invokeMethod('setBrightness', {'brightness': brightness});
-      print("this is respone $result");
-    } on PlatformException catch (e) {
-      print("Failed to set brightness: '${e.message}'.");
-    }
-  }
-
-  Future<void> setBrightnessForIOS(double value) async {
-    const platform = MethodChannel('com.example/device_info');
-
-    try {
-      final result =
-          await platform.invokeMethod('setScreenBrightness', {'value': value});
-      print(result);
-    } on PlatformException catch (e) {
-      print("Failed to set brightness: '${e.message}'.");
-    }
-  }
-
-  Future<void> restartNetworkForAndroid() async {
-    try {
-      final result = await platform.invokeMethod('restartNetwork');
-      print(result); // Prints "Wi-Fi restarted" or success message from Android
-    } on PlatformException catch (e) {
-      print("Failed to restart Wi-Fi: '${e.message}'.");
-    }
-  }
-
-  Future<void> setVolumeForIOS(double value) async {
-    const platform = MethodChannel('com.example/device_info');
-
-    try {
-      final result = await platform.invokeMethod('setVolume', {'value': value});
-      print(result);
-    } on PlatformException catch (e) {
-      print("Failed to set volume: '${e.message}'.");
-    }
-  }
-
-  Future<void> setVolumeForAndroid(int level) async {
-    const MethodChannel _channel = MethodChannel('com.example/network');
-
-    await _channel.invokeMethod('setVolume', {'level': level});
-  }
-
-  Future<void> setAppBrightnessForANDROID(double brightness) async {
-    try {
-      double currentBrightnesss = await ScreenBrightness().current;
-
-      // Log the current brightness to verify
-      print('Current brightness is: $currentBrightnesss');
-      // Log the brightness value before setting
-      print('Attempting to set brightness to: $brightness');
-
-      // Set the application screen brightness
-      await ScreenBrightness().setScreenBrightness(brightness);
-
-      // Get the current brightness after setting
-      double currentBrightness = await ScreenBrightness().current;
-
-      // Log the current brightness to verify
-      print('Current brightness is: $currentBrightness');
-    } catch (e) {
-      // Handle any errors
-      print('Failed to set brightness: $e');
-    }
-  }
-
-  Future<void> setVolumeForMac(int volume) async {
-    const platform = MethodChannel('com.example/volumeControl');
-    try {
-      await platform.invokeMethod('setVolume', {'volume': volume});
-    } on PlatformException catch (e) {
-      print("Failed to set volume: ${e.message}");
-    }
-  }
-
-  Future<void> _muteVolumeForMac() async {
-    const platform = MethodChannel('com.example/volumeControl');
-    try {
-      await platform.invokeMethod('muteVolume');
-    } on PlatformException catch (e) {
-      print("Failed to mute volume: ${e.message}");
-    }
-  }
 
   void subsibeMessage(String topic) {
     _mqttClientService.subscribe(topic);
@@ -1086,15 +1237,26 @@ String _extractFilename(String url, {String? mediaType}) {
     _mqttClientService.publish(topic, message);
   }
 
-  void _handleIncomingMessage(String message) {
+  void _handleIncomingMessage(String message) async {
     // Handle the incoming message here
     print('Received message in ViewModel: $message');
     final jsonObj = jsonDecode(message);
+    print('Saving JSON Object: $jsonObj');
+    if (jsonObj["action"] == "publish_playlist" ||
+        jsonObj["action"] == "publish_campaign") {
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      bool isSaved = await prefs.setString('jsonObj', jsonEncode(jsonObj));
 
+      if (isSaved) {
+        print('Data successfully saved to SharedPreferences');
+      } else {
+        print('Failed to save data to SharedPreferences');
+      }
+    }
+    print(jsonObj["action"]);
     if (jsonObj["action"] == "action_reboot") {
       print("action rebooot");
       var data = {"success": true};
-      // playlistViewModel.downloadFile("https://images2.alphacoders.com/597/thumb-1920-597309.jpg");
       publishMessage(globleTopic, jsonEncode(data));
 
       if (Platform.isMacOS) {
@@ -1153,6 +1315,7 @@ String _extractFilename(String url, {String? mediaType}) {
       print("i am in actionPlaylist${jsonObj["data"]["playlist"]["media"]}");
       // _mediaList = jsonObj;
       _playListModel = playListModelFromJson(jsonEncode(jsonObj));
+
       print("model data ${_playListModel!.data.playlist.media}");
       print(_mediaList);
       for (var media in _playListModel!.data.playlist.media!) {
@@ -1162,6 +1325,28 @@ String _extractFilename(String url, {String? mediaType}) {
         // Download the media file
         _startDownloading();
       }
+    } else if (jsonObj["action"] == "publish_campaign") {
+      // _mediaList = jsonObj;
+      _campaignModel = campaignModelFromJson(jsonEncode(jsonObj));
+      print("model data ${_campaignModel!.data.zones}");
+      print(_mediaList);
+      for (var media in _campaignModel!.data.zones) {
+        // String mediaUrl = media["mediaUrl"];
+        print("Media URL: $media");
+
+        // Download the media file
+        _startDownloadingForCampaign();
+      }
+    } else if (jsonObj["action"] == "remove_playlist") {
+      debugPrint("remove playlist and update screen");
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      prefs.clear();
+      await _checkPairingStatus();
+    } else if (jsonObj["action"] == "remove_compaign") {
+      debugPrint("remove playlist and update screen");
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      prefs.clear();
+      await _checkPairingStatus();
     }
   }
 
