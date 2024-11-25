@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
+import 'package:digital_signage/views/campaign_view.dart';
 import 'package:digital_signage/views/connecting_view.dart';
 import 'package:digital_signage/views/digivision_view.dart';
 import 'package:digital_signage/views/downloading_screen.dart';
@@ -46,11 +47,13 @@ class MqttProvider extends StatelessWidget {
 
             case MqttState.noInternet:
               return const NoInternetView();
+            case MqttState.campaignScreen:
+              return  const CampaignView();
 
             case MqttState.pairedScreen:
               return const DigivisionView();
             case MqttState.playlistScreen:
-              return PlaylistScreen();
+              return const PlaylistScreen();
 
             default:
               return const Scaffold(
