@@ -112,7 +112,7 @@ class MqttClientService {
 
     // Call the callback if it is set
     if (onMessageReceived != null) {
-      onMessageReceived!(payload); // Pass the message payload to the callback
+      onMessageReceived!(payload); 
     }
 
     receivedMessageNotifier.value = payload;
@@ -123,7 +123,7 @@ class MqttClientService {
     try {
       jsonDecode(payload);
     } catch (e) {
-      print('Failed to decode JSON: $e');
+    print('Failed to decode JSON: `$e');
     }
   }
 
