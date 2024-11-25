@@ -118,7 +118,6 @@ class MqttViewModel extends ChangeNotifier {
 
     fetchAllInfo();
     _initializeBasedOnPlatform();
-    // _mqttConnection();
     _monitorConnectivity();
   }
 
@@ -137,20 +136,14 @@ class MqttViewModel extends ChangeNotifier {
           await _mqttClientService.connect();
 
           subsibeMessage(_topic);
-
           publishMessage(globleTopic, jsonEncode(deviceInfoMap));
-          print(
-              "i am in actionPlaylist${storedJsonObj["data"]["playlist"]["media"]}");
-          // _mediaList = jsonObj;
           _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
 
           print("model data ${_playListModel!.data.playlist.media}");
           print(_mediaList);
           for (var media in _playListModel!.data.playlist.media!) {
-            // String mediaUrl = media["mediaUrl"];
             print("Media URL: $media");
 
-            // Download the media file
             _startDownloading();
           }
         } else if (storedJsonObj["action"] == "publish_campaign") {
@@ -163,10 +156,8 @@ class MqttViewModel extends ChangeNotifier {
           print("model data ${_campaignModel!.data.zones}");
           print(_mediaList);
           for (var media in _campaignModel!.data.zones) {
-            // String mediaUrl = media["mediaUrl"];
             print("Media URL: $media");
 
-            // Download the media file
             _startDownloadingForCampaign();
           }
         } else {
@@ -176,31 +167,26 @@ class MqttViewModel extends ChangeNotifier {
         if (storedJsonObj["action"] == "publish_playlist") {
           print(
               "i am in actionPlaylist${storedJsonObj["data"]["playlist"]["media"]}");
-          // _mediaList = jsonObj;
+
           _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
 
           print("model data ${_playListModel!.data.playlist.media}");
           print(_mediaList);
           for (var media in _playListModel!.data.playlist.media!) {
-            // String mediaUrl = media["mediaUrl"];
             print("Media URL: $media");
 
-            // Download the media file
             _startDownloading();
           }
         } else if (storedJsonObj["action"] == "publish_playlist") {
           print(
               "i am in actionPlaylist${storedJsonObj["data"]["playlist"]["media"]}");
-          // _mediaList = jsonObj;
+
           _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
 
           print("model data ${_playListModel!.data.playlist.media}");
           print(_mediaList);
           for (var media in _playListModel!.data.playlist.media!) {
-            // String mediaUrl = media["mediaUrl"];
             print("Media URL: $media");
-
-            // Download the media file
             _startDownloading();
           }
         } else {
@@ -499,18 +485,14 @@ class MqttViewModel extends ChangeNotifier {
     }
   }
 
-  // Method to fetch the current location
   Future<void> _fetchCurrentLocation() async {
     try {
-      // Check and request location permissions
       await _getLocation();
 
-      // Get the current position
       Position position = await Geolocator.getCurrentPosition(
         desiredAccuracy: LocationAccuracy.high,
       );
 
-      // Update devicesinfo with latitude and longitude
       devicesinfo["latitude"] = position.latitude;
       devicesinfo["longitude"] = position.longitude;
 
@@ -863,8 +845,6 @@ EOF
 
       String filename = _extractFilename(mediaUrl);
       print('Extracted filename: $filename');
-
-      // Get platform-specific directory
       Directory? directory = await _getDirectory();
       if (directory == null) {
         print('Unable to determine directory');
@@ -945,12 +925,8 @@ EOF
       }
 
       String filePath = '${directory.path}/$filename';
-
-      // Initialize Dio for downloading
       Dio dio = Dio();
       print('Starting download from URL: $url to $filePath');
-
-      // Start downloading the file
       await dio.download(
         url,
         filePath,
@@ -975,8 +951,6 @@ EOF
   String _extractFilename(String url, {String? mediaType}) {
     String decodedUrl = Uri.decodeFull(url);
     String filename = decodedUrl.split('/').last.split('?').first;
-
-    // Determine the file extension based on the media type
     if (mediaType != null) {
       switch (mediaType) {
         case 'audio/mpeg':
@@ -1141,7 +1115,7 @@ EOF
         },
       );
 
-      _mediaPaths[zoneId]?.add(filePath); // Add file path to the specific zone
+      _mediaPaths[zoneId]?.add(filePath);
       _updateMediaModelForCampaign();
 
       print('File downloaded to: $filePath');
@@ -1164,9 +1138,8 @@ EOF
       };
     } else if (Platform.isIOS || Platform.isMacOS) {
       final uuid = Platform.isIOS
-          ? await getDeviceIdentifiers() // Assuming this returns a String
-          : (await getDeviceIdentifiersForMac())?[
-              "uuid"]; // Extract "uuid" from the map
+          ? await getDeviceIdentifiers()
+          : (await getDeviceIdentifiersForMac())?["uuid"];
 
       requestBody = {"platform": "ios", "uuid": uuid ?? "unknown"};
       print(requestBody);
@@ -1192,28 +1165,21 @@ EOF
       );
       final jsonResponse = jsonEncode(response);
 
-      // Store the response in SharedPreferences
       SharedPreferences prefs = await SharedPreferences.getInstance();
       bool isSaved = await prefs.setString('apiResponse', jsonResponse);
       print("check status ::::$isSaved");
-      debugPrint("This is the response from the$topic API: $response");
+
       _topic = response["player_code"];
-      debugPrint("This is the response from the$topic API: $response");
+
       globleTopic = _topic;
       subsibeMessage(topic);
-
       await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
-      print(deviceInfoMap);
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
 
       if (response["paired"] == false) {
         _state = MqttState.pairedScreen;
       } else if (response["paired"] == true) {
         _state = MqttState.noContent;
-        // downloadFile(
-        //     "https://images2.alphacoders.com/597/thumb-1920-597309.jpg");
-
-        // restartNetworkForAndroid();
       } else {
         _state = MqttState.failure;
       }
@@ -1226,9 +1192,6 @@ EOF
     notifyListeners();
   }
 
-
-
-
   void subsibeMessage(String topic) {
     _mqttClientService.subscribe(topic);
   }
@@ -1238,7 +1201,6 @@ EOF
   }
 
   void _handleIncomingMessage(String message) async {
-    // Handle the incoming message here
     print('Received message in ViewModel: $message');
     final jsonObj = jsonDecode(message);
     print('Saving JSON Object: $jsonObj');
@@ -1296,7 +1258,7 @@ EOF
       } else if (jsonObj["settings"]["brightness"]['value'] != null) {
         if (Platform.isMacOS) {
           print("No brightness For Mac");
-          // deviceSettings.unmuteVolumeForMac();
+          deviceSettings.unmuteVolumeForMac();
         } else if (Platform.isAndroid) {
           print("i am here for andorind");
           var value = jsonObj["settings"]["brightness"]['value'];
@@ -1313,28 +1275,21 @@ EOF
       publishMessage(globleTopic, jsonEncode(data));
     } else if (jsonObj["action"] == "publish_playlist") {
       print("i am in actionPlaylist${jsonObj["data"]["playlist"]["media"]}");
-      // _mediaList = jsonObj;
       _playListModel = playListModelFromJson(jsonEncode(jsonObj));
 
       print("model data ${_playListModel!.data.playlist.media}");
       print(_mediaList);
       for (var media in _playListModel!.data.playlist.media!) {
-        // String mediaUrl = media["mediaUrl"];
         print("Media URL: $media");
 
-        // Download the media file
         _startDownloading();
       }
     } else if (jsonObj["action"] == "publish_campaign") {
-      // _mediaList = jsonObj;
       _campaignModel = campaignModelFromJson(jsonEncode(jsonObj));
       print("model data ${_campaignModel!.data.zones}");
       print(_mediaList);
       for (var media in _campaignModel!.data.zones) {
-        // String mediaUrl = media["mediaUrl"];
         print("Media URL: $media");
-
-        // Download the media file
         _startDownloadingForCampaign();
       }
     } else if (jsonObj["action"] == "remove_playlist") {
