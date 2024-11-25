@@ -137,7 +137,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   void initState() {
     super.initState();
     if (widget.playlist.playback!.order == "shuffle") {
-      widget.mediaPaths.shuffle();  // Shuffle media at the start
+      widget.mediaPaths.shuffle();
     }
     _initializeNextMedia();
   }
@@ -147,11 +147,12 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       _opacity = 0.0;
     });
 
+
     Future.delayed(const Duration(milliseconds: 500), () {
       setState(() {
         // For shuffle, randomly select the next media index
         if (widget.playlist.playback!.order == "shuffle") {
-          print("...............shyffle.......");
+          print("...............shuffle.......");
           _currentIndex = Random().nextInt(widget.mediaPaths.length);
         } else if (_currentIndex < widget.mediaPaths.length - 1) {
           _currentIndex++;
@@ -164,13 +165,15 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     });
   }
 
-
   void _initializeNextMedia() {
     if (_currentIndex < widget.mediaPaths.length) {
       Media nextMedia = widget.mediaPaths[_currentIndex];
       print("Loading media at index $_currentIndex: ${nextMedia.mediaUrl}");
       if (nextMedia.schedule.alwaysPlay) {
         print("Always play is true for media: ${nextMedia.mediaUrl}");
+        String duration = nextMedia.settings.duration;
+        print("Loading duration at index $_currentIndex: $duration");
+        _startMediaLoop(duration);
         _loadMedia(nextMedia);
         return;
       }
@@ -183,7 +186,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       print("Media end date: $endDate");
 
       bool isDateInRange = now.isAfter(startDate) &&
-          now.isBefore(endDate.add(Duration(days: 1)));
+          now.isBefore(endDate.add(const Duration(days: 1)));
       print("Is current date in range: $isDateInRange");
 
       bool isDayAllowed =
@@ -194,6 +197,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       String? timeTo = nextMedia.schedule.period!.time.to;
 
       if (timeFrom != null && timeTo != null) {
+        print(timeFrom);
+        print(timeTo);
+
         DateTime currentTime = DateTime.now();
         DateTime fromTime = DateTime.now().copyWith(
           hour: int.parse(timeFrom.split(':')[0]),
@@ -232,6 +238,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       _initializeNextVideo(nextMedia);
     } else {
       print("Current media is an image: ${nextMedia.mediaUrl}");
+      int durationSeconds = int.tryParse(nextMedia.settings.duration) ?? 5;
+      _timer = Timer(Duration(seconds: durationSeconds), _onMediaEnd);
+      setState(() {});
     }
   }
 
@@ -274,7 +283,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       case 7:
         return days.sunday ?? false;
       default:
-        return false; // Should not reach here
+        return false;
     }
   }
 
@@ -296,57 +305,61 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       });
   }
 
-void _startMediaLoop(String duration) {
-  _timer.cancel();  // Cancel any previous timer
-  int durationSeconds = int.tryParse(duration)!;
-  _timer = Timer(Duration(seconds: durationSeconds), _onMediaEnd);
-}
-
-void _checkVideoDuration(Media media) {
-  if (_nextController != null &&
-      _nextController!.value.isInitialized &&
-      !_nextController!.value.isPlaying &&
-      _nextController!.value.position >= _nextController!.value.duration) {
-    _onMediaEnd(); // Ensure to trigger the next media here
+  void _startMediaLoop(String duration) {
+    print("this is duration......$duration");
+    int durationSeconds = int.tryParse(duration) ?? 10;
+    print("this is duration......$durationSeconds");
+    _timer = Timer(Duration(seconds: durationSeconds), _onMediaEnd);
   }
-}
 
-@override
-void dispose() {
-  _timer.cancel();
-  _nextController?.dispose();
-  super.dispose();
-}
+  void _checkVideoDuration(Media media) {
+    if (_nextController != null &&
+        _nextController!.value.isInitialized &&
+        !_nextController!.value.isPlaying &&
+        _nextController!.value.position >= _nextController!.value.duration) {
+      _onMediaEnd();
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer.cancel();
+    _nextController?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     Media currentMedia = widget.mediaPaths[_currentIndex];
-
-    // Debugging: Display media information
     print("Displaying media: ${currentMedia.settings.duration}");
     print("Displaying media: ${currentMedia.settings.ratio}");
     print("Displaying media: ${currentMedia.mediaUrl}");
 
-    return AnimatedOpacity(
-      opacity: _opacity,
-      duration: const Duration(milliseconds: 500),
-      child: AnimatedSwitcher(
+    return Scaffold(
+      backgroundColor: Colors.black,
+      body: AnimatedOpacity(
+        opacity: _opacity,
         duration: const Duration(milliseconds: 500),
-        child: isVideoFile(currentMedia.mediaUrl)
-            ? VideoPlayerWidget(
-                filePath: currentMedia.mediaUrl,
-                onVideoEnd: _onMediaEnd,
-                aspectRatio: getAspectRatio(currentMedia.settings.ratio),
-                transitionType: currentMedia.settings.transition,
-              )
-            : SizedBox.expand(
-                child: ImageWidget(
+        child: AnimatedSwitcher(
+          duration: const Duration(milliseconds: 500),
+          child: isVideoFile(currentMedia.mediaUrl)
+              ? VideoPlayerWidget(
                   filePath: currentMedia.mediaUrl,
-                  onImageEnd: _onMediaEnd,
+                  currentVolume:
+                      double.parse(currentMedia.settings.volume ?? "20"),
+                  onVideoEnd: _onMediaEnd,
                   aspectRatio: getAspectRatio(currentMedia.settings.ratio),
                   transitionType: currentMedia.settings.transition,
+                )
+              : SizedBox.expand(
+                  child: ImageWidget(
+                    filePath: currentMedia.mediaUrl,
+                    onImageEnd: _onMediaEnd,
+                    aspectRatio: getAspectRatio(currentMedia.settings.ratio),
+                    transitionType: currentMedia.settings.transition,
+                  ),
                 ),
-              ),
+        ),
       ),
     );
   }
@@ -370,12 +383,14 @@ class VideoPlayerWidget extends StatefulWidget {
   final String filePath;
   final VoidCallback onVideoEnd;
   final double aspectRatio;
+  final double currentVolume;
   final String transitionType;
 
   const VideoPlayerWidget({
     super.key,
     required this.filePath,
     required this.onVideoEnd,
+    required this.currentVolume,
     required this.aspectRatio,
     required this.transitionType,
   });
@@ -397,23 +412,40 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   }
 
   void _initializeVideo() async {
-    _controller = VideoPlayerController.file(File(widget.filePath));
+    _controller = VideoPlayerController.file(File(widget.filePath))
+      ..initialize().then(
+        (_) {
+          setState(
+            () {
+              _isLoading = false;
+              _controller.setVolume(widget.currentVolume);
+              _controller.setLooping(false);
+              _controller.play();
+            },
+          );
 
-    try {
-      await _controller.initialize();
-      setState(() {
-        _isLoading = false;
-      });
-      _controller.play();
-      _controller.setLooping(false);
-      _controller.addListener(_checkVideoEnd);
-    } catch (error) {
-      setState(() {
-        _isLoading = false;
-      });
-      print("Error initializing video: $error");
-    }
+          _controller.addListener(
+            () {
+              if (_controller.value.position >= _controller.value.duration &&
+                  !_isVideoEnded) {
+                _isVideoEnded = true;
+                widget.onVideoEnd();
+              }
+            },
+          );
+        },
+      ).catchError(
+        (error) {
+          print("Error initializing video: $error");
+          setState(
+            () {
+              _isLoading = false;
+            },
+          );
+        },
+      );
   }
+
 
   void _checkVideoEnd() {
     if (_controller.value.isInitialized &&
