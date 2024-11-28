@@ -177,17 +177,13 @@ class MqttViewModel extends ChangeNotifier {
 
             _startDownloading();
           }
-        } else if (storedJsonObj["action"] == "publish_playlist") {
-          print(
-              "i am in actionPlaylist${storedJsonObj["data"]["playlist"]["media"]}");
+        } else if (storedJsonObj["action"] == "publish_campaign") {
+          _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
 
-          _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
-
-          print("model data ${_playListModel!.data.playlist.media}");
-          print(_mediaList);
-          for (var media in _playListModel!.data.playlist.media!) {
+          for (var media in _campaignModel!.data.zones) {
             print("Media URL: $media");
-            _startDownloading();
+
+            _startDownloadingForCampaign();
           }
         } else {
           _state = MqttState.noInternet;
@@ -906,15 +902,35 @@ EOF
   }
 
   Future<void> downloadFile(String url) async {
-    if (Platform.isAndroid) {
-      print('Requesting storage permission...');
-      var status = await Permission.storage.request();
-      if (!status.isGranted) {
-        print('Storage permission denied');
-        throw Exception('Storage permission not granted');
-      }
-      print('Storage permission granted');
-    }
+    // if (Platform.isAndroid) {
+    //   print('Requesting storage permission...');
+    //   var status = Permission.storage;
+
+    //   if (Platform.version.startsWith('13') ||
+    //       int.parse(Platform.operatingSystemVersion.split(' ').first) >= 13) {
+    //     // Android 13+ requires specific media permissions
+    //     var statuses = await [
+    //       Permission.photos, // READ_MEDIA_IMAGES equivalent
+    //       Permission.videos, // READ_MEDIA_VIDEO equivalent
+    //       Permission.audio // READ_MEDIA_AUDIO equivalent
+    //     ].request();
+
+    //     if (statuses.values
+    //         .any((permissionStatus) => !permissionStatus.isGranted)) {
+    //       print('Media permissions denied');
+    //       throw Exception('Required media permissions not granted');
+    //     }
+    //     print('Media permissions granted');
+    //   } else {
+    //     // Older Android versions
+    //     var status = await Permission.storage.request();
+    //     if (!status.isGranted) {
+    //       print('Storage permission denied $status');
+    //       throw Exception('Storage permission not granted');
+    //     }
+    //     print('Storage permission granted');
+    //   }
+    // }
 
     try {
       String filename = _extractFilename(url);
@@ -979,14 +995,24 @@ EOF
     return filename;
   }
 
-  Future<Directory?> _getDirectory() async {
-    if (Platform.isAndroid || Platform.isIOS) {
+Future<Directory?> _getDirectory() async {
+  if (Platform.isAndroid || Platform.isIOS) {
+    // Use the application documents directory for Android and iOS
+    return await getApplicationDocumentsDirectory();
+  } else if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+    // For desktop platforms, we can use getDownloadsDirectory() or application documents
+    try {
+      // Check if a method for getting downloads directory exists for the platform
+      // For Windows/Linux/macOS, this may not exist, so fallback to applicationDocumentsDirectory
+      return await getDownloadsDirectory() ?? await getApplicationDocumentsDirectory();
+    } catch (e) {
+      // Fallback if getDownloadsDirectory doesn't work
+      print('Error getting downloads directory, falling back to applicationDocumentsDirectory: $e');
       return await getApplicationDocumentsDirectory();
-    } else if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      return await getDownloadsDirectory();
     }
-    return null;
   }
+  return null;
+}
 
   final Map<int, List<String>> _mediaPaths = {};
 
@@ -1081,16 +1107,40 @@ EOF
     }
   }
 
-  Future<void> downloadFileForCampaign(String url, int zoneId) async {
-    if (Platform.isAndroid) {
-      print('Requesting storage permission...');
-      var status = await Permission.storage.request();
-      if (!status.isGranted) {
-        print('Storage permission denied');
-        throw Exception('Storage permission not granted');
-      }
+Future<void> requestStoragePermission() async {
+  var status = await Permission.storage.status;
+  if (!status.isGranted) {
+    var result = await Permission.storage.request();
+    if (result.isGranted) {
       print('Storage permission granted');
+    } else {
+      print('Storage permission denied');
+      throw Exception('Storage permission not granted');
     }
+  }
+
+  // For Android 11 and above
+  if (Platform.isAndroid && await Permission.manageExternalStorage.isGranted == false) {
+    var result = await Permission.manageExternalStorage.request();
+    if (result.isGranted) {
+      print('External storage management permission granted');
+    } else {
+      print('External storage management permission denied');
+      throw Exception('External storage management permission not granted');
+    }
+  }
+}
+
+  Future<void> downloadFileForCampaign(String url, int zoneId) async {
+    // if (Platform.isAndroid) {
+    //   print('Requesting storage permission...');
+    //   var status = await Permission.storage.request();
+    //   if (!status.isGranted) {
+    //     print('Storage permission denied $status');
+    //     throw Exception('Storage permission not granted');
+    //   }
+    //   print('Storage permission granted');
+    // }
 
     try {
       String filename = _extractFilename(url);
@@ -1132,8 +1182,8 @@ EOF
       requestBody = {
         "platform": "android",
         "macAddress": [
-          {"mac": macAddresses['wlan0'] ?? "", "interface": "wlan0"},
-          {"mac": macAddresses['eth0'] ?? "", "interface": "eth0"}
+          {"mac": macAddresses['wlan0'] ?? "123123", "interface": "wlan0"},
+          {"mac": macAddresses['eth0'] ?? "123213", "interface": "eth0"}
         ]
       };
     } else if (Platform.isIOS || Platform.isMacOS) {
