@@ -23,7 +23,6 @@ class PlaylistScreen extends StatelessWidget {
     var playlistSchedule =
         mqttViewModel.playListModel!.data.playlist.playlistSchedule;
 
-    // Check if always_play is true
     if (playlistSchedule!.alwaysPlay) {
       return Scaffold(
         body: mqttViewModel.mediaPath.isNotEmpty
@@ -37,7 +36,6 @@ class PlaylistScreen extends StatelessWidget {
       );
     }
 
-    // Call _isPlaylistDateInRange with DateTime arguments
     bool isPlaylistDateInRange = _isPlaylistDateInRange(
       playlistSchedule.period!.date.start,
       playlistSchedule.period!.date.end,
@@ -65,14 +63,12 @@ class PlaylistScreen extends StatelessWidget {
     );
   }
 
-  // Change the argument types to DateTime
   bool _isPlaylistDateInRange(DateTime startDate, DateTime endDate) {
     DateTime now = DateTime.now();
     return now.isAfter(startDate) &&
-        now.isBefore(endDate.add(Duration(days: 1)));
+        now.isBefore(endDate.add(const Duration(days: 1)));
   }
 
-  // Check if the current day is allowed based on the schedule
   bool _isCurrentDayAllowed(dynamic days, DateTime now) {
     switch (now.weekday) {
       case 1:
@@ -94,7 +90,6 @@ class PlaylistScreen extends StatelessWidget {
     }
   }
 
-  // Check if the current time is within the allowed time range
   bool _isTimeInRange(String timeFrom, String timeTo) {
     DateTime currentTime = DateTime.now();
     DateTime fromTime = DateTime.now().copyWith(
@@ -147,10 +142,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       _opacity = 0.0;
     });
 
-
     Future.delayed(const Duration(milliseconds: 500), () {
       setState(() {
-        // For shuffle, randomly select the next media index
         if (widget.playlist.playback!.order == "shuffle") {
           print("...............shuffle.......");
           _currentIndex = Random().nextInt(widget.mediaPaths.length);
@@ -197,9 +190,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       String? timeTo = nextMedia.schedule.period!.time.to;
 
       if (timeFrom != null && timeTo != null) {
-        print(timeFrom);
-        print(timeTo);
-
         DateTime currentTime = DateTime.now();
         DateTime fromTime = DateTime.now().copyWith(
           hour: int.parse(timeFrom.split(':')[0]),
@@ -334,7 +324,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     print("Displaying media: ${currentMedia.settings.duration}");
     print("Displaying media: ${currentMedia.settings.ratio}");
     print("Displaying media: ${currentMedia.mediaUrl}");
-
     return Scaffold(
       backgroundColor: Colors.black,
       body: AnimatedOpacity(
@@ -342,8 +331,151 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         duration: const Duration(milliseconds: 500),
         child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 500),
+          transitionBuilder: (child, animation) {
+            print("this is transition${currentMedia.settings.transition}");
+
+            switch (currentMedia.settings.transition) {
+              case "fadeIn":
+                return FadeTransition(opacity: animation, child: child);
+              case "slideOverLeftToRight":
+                return SlideTransition(
+                  position: animation.drive(
+                    Tween(
+                      begin: const Offset(-1, 0), // From left
+                      end: Offset.zero,
+                    ).chain(CurveTween(curve: Curves.easeInOut)),
+                  ),
+                  child: child,
+                );
+              case "slideOverRightToLeft":
+                return SlideTransition(
+                  position: animation.drive(
+                    Tween(
+                      begin: const Offset(1, 0),
+                      end: Offset.zero,
+                    ).chain(CurveTween(curve: Curves.easeInOut)),
+                  ),
+                  child: child,
+                );
+              case "slideOverTopToBottom":
+                return SlideTransition(
+                  position: animation.drive(
+                    Tween(
+                      begin: const Offset(0, -1), // From top
+                      end: Offset.zero,
+                    ).chain(CurveTween(curve: Curves.easeInOut)),
+                  ),
+                  child: child,
+                );
+              case "slideOverBottomToTop":
+                return SlideTransition(
+                  position: animation.drive(
+                    Tween(
+                      begin: const Offset(0, 1), // From bottom
+                      end: Offset.zero,
+                    ).chain(CurveTween(curve: Curves.easeInOut)),
+                  ),
+                  child: child,
+                );
+              case "slideInOutLeftToRight":
+                return Stack(
+                  children: [
+                    SlideTransition(
+                      position: animation.drive(
+                        Tween(
+                          begin: const Offset(-1, 0), // From left
+                          end: Offset.zero,
+                        ).chain(CurveTween(curve: Curves.easeInOut)),
+                      ),
+                      child: child,
+                    ),
+                    SlideTransition(
+                      position: animation.drive(
+                        Tween(
+                          begin: Offset.zero,
+                          end: const Offset(1, 0), // Slide out to right
+                        ).chain(CurveTween(curve: Curves.easeInOut)),
+                      ),
+                      child: child,
+                    ),
+                  ],
+                );
+              case "slideInOutRightToLeft":
+                return Stack(
+                  children: [
+                    SlideTransition(
+                      position: animation.drive(
+                        Tween(
+                          begin: const Offset(1, 0), // From right
+                          end: Offset.zero,
+                        ).chain(CurveTween(curve: Curves.easeInOut)),
+                      ),
+                      child: child,
+                    ),
+                    SlideTransition(
+                      position: animation.drive(
+                        Tween(
+                          begin: Offset.zero,
+                          end: const Offset(-1, 0), // Slide out to left
+                        ).chain(CurveTween(curve: Curves.easeInOut)),
+                      ),
+                      child: child,
+                    ),
+                  ],
+                );
+              case "slideInOutTopToBottom":
+                return Stack(
+                  children: [
+                    SlideTransition(
+                      position: animation.drive(
+                        Tween(
+                          begin: const Offset(0, -1), // From top
+                          end: Offset.zero,
+                        ).chain(CurveTween(curve: Curves.easeInOut)),
+                      ),
+                      child: child,
+                    ),
+                    SlideTransition(
+                      position: animation.drive(
+                        Tween(
+                          begin: Offset.zero,
+                          end: const Offset(0, 1), // Slide out to bottom
+                        ).chain(CurveTween(curve: Curves.easeInOut)),
+                      ),
+                      child: child,
+                    ),
+                  ],
+                );
+              case "slideInOutBottomToTop":
+                return Stack(
+                  children: [
+                    SlideTransition(
+                      position: animation.drive(
+                        Tween(
+                          begin: const Offset(0, 1), // From bottom
+                          end: Offset.zero,
+                        ).chain(CurveTween(curve: Curves.easeInOut)),
+                      ),
+                      child: child,
+                    ),
+                    SlideTransition(
+                      position: animation.drive(
+                        Tween(
+                          begin: Offset.zero,
+                          end: const Offset(0, -1), // Slide out to top
+                        ).chain(CurveTween(curve: Curves.easeInOut)),
+                      ),
+                      child: child,
+                    ),
+                  ],
+                );
+              default:
+                return child; // No transition applied
+            }
+          },
           child: isVideoFile(currentMedia.mediaUrl)
               ? VideoPlayerWidget(
+                  key: ValueKey(currentMedia.mediaUrl),
                   filePath: currentMedia.mediaUrl,
                   currentVolume:
                       double.parse(currentMedia.settings.volume ?? "20"),
@@ -352,6 +484,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   transitionType: currentMedia.settings.transition,
                 )
               : SizedBox.expand(
+                  key: ValueKey(currentMedia.mediaUrl),
                   child: ImageWidget(
                     filePath: currentMedia.mediaUrl,
                     onImageEnd: _onMediaEnd,
@@ -445,7 +578,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         },
       );
   }
-
 
   void _checkVideoEnd() {
     if (_controller.value.isInitialized &&
