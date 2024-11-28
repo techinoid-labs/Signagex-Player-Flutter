@@ -29,6 +29,7 @@ class CampaignView extends StatelessWidget {
         children: zones.map((zone) {
           print(
               "Rendering Zone ID: ${zone.id} with Media Items: ${zone.mediaItems.map((item) => item.mediaUrl).toList()}");
+
           return Positioned(
             left: zone.x.toDouble(),
             top: zone.y.toDouble(),
@@ -243,6 +244,148 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       duration: const Duration(milliseconds: 500),
       child: AnimatedSwitcher(
         duration: const Duration(milliseconds: 500),
+        transitionBuilder: (child, animation) {
+          print("this is transition${currentMedia.settings.transition}");
+
+          switch (currentMedia.settings.transition) {
+            case "fadeIn":
+              return FadeTransition(opacity: animation, child: child);
+            case "slideOverLeftToRight":
+              return SlideTransition(
+                position: animation.drive(
+                  Tween(
+                    begin: const Offset(-1, 0), // From left
+                    end: Offset.zero,
+                  ).chain(CurveTween(curve: Curves.easeInOut)),
+                ),
+                child: child,
+              );
+            case "slideOverRightToLeft":
+              return SlideTransition(
+                position: animation.drive(
+                  Tween(
+                    begin: const Offset(1, 0),
+                    end: Offset.zero,
+                  ).chain(CurveTween(curve: Curves.easeInOut)),
+                ),
+                child: child,
+              );
+            case "slideOverTopToBottom":
+              return SlideTransition(
+                position: animation.drive(
+                  Tween(
+                    begin: const Offset(0, -1), // From top
+                    end: Offset.zero,
+                  ).chain(CurveTween(curve: Curves.easeInOut)),
+                ),
+                child: child,
+              );
+            case "slideOverBottomToTop":
+              return SlideTransition(
+                position: animation.drive(
+                  Tween(
+                    begin: const Offset(0, 1), // From bottom
+                    end: Offset.zero,
+                  ).chain(CurveTween(curve: Curves.easeInOut)),
+                ),
+                child: child,
+              );
+            case "slideInOutLeftToRight":
+              return Stack(
+                children: [
+                  SlideTransition(
+                    position: animation.drive(
+                      Tween(
+                        begin: const Offset(-1, 0), // From left
+                        end: Offset.zero,
+                      ).chain(CurveTween(curve: Curves.easeInOut)),
+                    ),
+                    child: child,
+                  ),
+                  SlideTransition(
+                    position: animation.drive(
+                      Tween(
+                        begin: Offset.zero,
+                        end: const Offset(1, 0), // Slide out to right
+                      ).chain(CurveTween(curve: Curves.easeInOut)),
+                    ),
+                    child: child,
+                  ),
+                ],
+              );
+            case "slideInOutRightToLeft":
+              return Stack(
+                children: [
+                  SlideTransition(
+                    position: animation.drive(
+                      Tween(
+                        begin: const Offset(1, 0), // From right
+                        end: Offset.zero,
+                      ).chain(CurveTween(curve: Curves.easeInOut)),
+                    ),
+                    child: child,
+                  ),
+                  SlideTransition(
+                    position: animation.drive(
+                      Tween(
+                        begin: Offset.zero,
+                        end: const Offset(-1, 0), // Slide out to left
+                      ).chain(CurveTween(curve: Curves.easeInOut)),
+                    ),
+                    child: child,
+                  ),
+                ],
+              );
+            case "slideInOutTopToBottom":
+              return Stack(
+                children: [
+                  SlideTransition(
+                    position: animation.drive(
+                      Tween(
+                        begin: const Offset(0, -1), // From top
+                        end: Offset.zero,
+                      ).chain(CurveTween(curve: Curves.easeInOut)),
+                    ),
+                    child: child,
+                  ),
+                  SlideTransition(
+                    position: animation.drive(
+                      Tween(
+                        begin: Offset.zero,
+                        end: const Offset(0, 1), // Slide out to bottom
+                      ).chain(CurveTween(curve: Curves.easeInOut)),
+                    ),
+                    child: child,
+                  ),
+                ],
+              );
+            case "slideInOutBottomToTop":
+              return Stack(
+                children: [
+                  SlideTransition(
+                    position: animation.drive(
+                      Tween(
+                        begin: const Offset(0, 1), // From bottom
+                        end: Offset.zero,
+                      ).chain(CurveTween(curve: Curves.easeInOut)),
+                    ),
+                    child: child,
+                  ),
+                  SlideTransition(
+                    position: animation.drive(
+                      Tween(
+                        begin: Offset.zero,
+                        end: const Offset(0, -1), // Slide out to top
+                      ).chain(CurveTween(curve: Curves.easeInOut)),
+                    ),
+                    child: child,
+                  ),
+                ],
+              );
+            default:
+              return child; // No transition applied
+          }
+        },
         child: isVideoFile(currentMedia.mediaUrl)
             ? VideoPlayerWidget(
                 key: ValueKey(currentMedia.id), // Unique key
@@ -390,8 +533,12 @@ class ImageWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget imageWidget =
-        SizedBox.expand(child: Image.file(File(filePath), fit: BoxFit.cover));
+    Widget imageWidget = Image.file(
+      File(filePath),
+      fit: BoxFit.cover,
+      height: MediaQuery.sizeOf(context).height,
+      width: MediaQuery.sizeOf(context).width,
+    );
 
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 500),
