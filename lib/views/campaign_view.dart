@@ -498,7 +498,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   Widget build(BuildContext context) {
     Widget videoWidget = _isLoading
         ? const Center(child: CircularProgressIndicator())
-        : VideoPlayer(_controller);
+        : SizedBox.expand(child: VideoPlayer(_controller));
 
     if (!_isLoading && !_controller.value.isInitialized) {
       videoWidget = const Center(child: CircularProgressIndicator());
@@ -533,11 +533,13 @@ class ImageWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget imageWidget = Image.file(
-      File(filePath),
-      fit: BoxFit.cover,
-      height: MediaQuery.sizeOf(context).height,
-      width: MediaQuery.sizeOf(context).width,
+    Widget imageWidget = SizedBox.expand(
+      child: Image.file(
+        File(filePath),
+        fit: BoxFit.cover,
+        height: MediaQuery.sizeOf(context).height,
+        width: MediaQuery.sizeOf(context).width,
+      ),
     );
 
     return AnimatedSwitcher(
