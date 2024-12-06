@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
@@ -139,12 +140,16 @@ class MqttViewModel extends ChangeNotifier {
           publishMessage(globleTopic, jsonEncode(deviceInfoMap));
           _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
 
-          print("model data ${_playListModel!.data.playlist.media}");
-          print(_mediaList);
-          for (var media in _playListModel!.data.playlist.media!) {
-            print("Media URL: $media");
+          for (var playlist in _playListModel!.data.playlist) {
+            // Check if the playlist contains any media
+            if (playlist.media != null && playlist.media!.isNotEmpty) {
+              for (var media in playlist.media!) {
+                print("Media URL: ${media.mediaUrl}");
 
-            _startDownloading();
+                // Start downloading for each media item
+                _startDownloadingForPlaylist();
+              }
+            }
           }
         } else if (storedJsonObj["action"] == "publish_campaign") {
           await _mqttClientService.connect();
@@ -161,6 +166,7 @@ class MqttViewModel extends ChangeNotifier {
             _startDownloadingForCampaign();
           }
         } else {
+          print("elssssssssssssssssssssse caseeeeeee}");
           _mqttConnection();
         }
       } else {
@@ -169,13 +175,17 @@ class MqttViewModel extends ChangeNotifier {
               "i am in actionPlaylist${storedJsonObj["data"]["playlist"]["media"]}");
 
           _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
-
-          print("model data ${_playListModel!.data.playlist.media}");
           print(_mediaList);
-          for (var media in _playListModel!.data.playlist.media!) {
-            print("Media URL: $media");
+          for (var playlist in _playListModel!.data.playlist) {
+            // Check if the playlist contains any media
+            if (playlist.media != null && playlist.media!.isNotEmpty) {
+              for (var media in playlist.media!) {
+                print("Media URL: ${media.mediaUrl}");
 
-            _startDownloading();
+                // Start downloading for each media item
+                _startDownloadingForPlaylist();
+              }
+            }
           }
         } else if (storedJsonObj["action"] == "publish_campaign") {
           _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
@@ -550,7 +560,6 @@ class MqttViewModel extends ChangeNotifier {
       final result = await getAllSystemInfo();
       if (result.exitCode == 0) {
         final output = result.stdout.trim();
-        print(output);
 
         final Map<String, dynamic> systemInfo = jsonDecode(output);
         devicesinfo["sender"] = "windows";
@@ -749,7 +758,7 @@ EOF
           devicesinfo["mac_address"]["macAddress"][0]["mac"] =
               systemInfo["uuid"];
         }
-        print("System Info: $systemInfo"); // Print all system information
+        print("System Info: $systemInfo");
         devicesinfo["android_version"] = systemInfo["os_version"];
         devicesinfo["platform"] = "macos";
         devicesinfo["device_resolution"] = systemInfo["device_resolution"];
@@ -813,125 +822,101 @@ EOF
   double _overallProgress = 0.0;
   double get overallProgress => _overallProgress;
 
-  void _startDownloading() async {
-    if (_state == MqttState.downloading) {
-      print("Downloads are already in progress.");
-      return;
-    }
+  final Map<String, List<String>> _mediaPath = {};
+  Map<String, List<String>> get mediaPath => _mediaPath;
 
-    _downloadCount = _playListModel!.data.playlist.media!.length;
-    print(
-        "Total files ${_playListModel!.data.playlist.media!.length} to download: $_downloadCount");
+void _startDownloadingForPlaylist() async {
+  if (_state == MqttState.downloading) {
+    print("Downloads are already in progress.");
+    return;
+  }
 
-    if (_downloadCount > 0) {
-      _state = MqttState.downloading;
-      notifyListeners();
-    } else {
-      _state = MqttState.noContent;
-      notifyListeners();
-      return;
-    }
+  _downloadCount = _playListModel!.data.playlist.fold(
+    0,
+    (count, playlist) => count + (playlist.media?.length ?? 0),
+  );
 
-    int completedDownloads = 0;
-    _overallProgress = 0.0;
+  print("Total media files to download: $_downloadCount");
 
-    for (var media in _playListModel!.data.playlist.media!) {
+  if (_downloadCount > 0) {
+    _state = MqttState.downloading;
+    notifyListeners();
+  } else {
+    _state = MqttState.noContent;
+    notifyListeners();
+    return;
+  }
+
+  int completedDownloads = 0;
+  _overallProgress = 0.0;
+
+  for (var playlist in _playListModel!.data.playlist) {
+    _mediaPath[playlist.id] = [];
+
+    for (var media in playlist.media!) {
       String mediaUrl = media.mediaUrl;
       print("Starting download check for Media URL: $mediaUrl");
 
       String filename = _extractFilename(mediaUrl);
-      print('Extracted filename: $filename');
       Directory? directory = await _getDirectory();
       if (directory == null) {
         print('Unable to determine directory');
         throw Exception('Unable to determine directory');
       }
-      print('Download directory: ${directory.path}');
 
       String filePath = '${directory.path}/$filename';
 
       bool fileExists = await File(filePath).exists();
       if (fileExists) {
         print('File already exists: $filePath');
-        _mediaPath.add(filePath);
-        _updateMediaModel();
-
+        _mediaPath[playlist.id]!.add(filePath);
+        _updateMediaModelForPlaylist();
         completedDownloads++;
-        _overallProgress = completedDownloads / _downloadCount;
-        print(
-            'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
-        notifyListeners();
+        _updateOverallProgress(completedDownloads);
       } else {
-        await downloadFile(mediaUrl).then((_) {
+        await downloadFileForPlaylist(mediaUrl, playlist.id).then((_) {
+          _mediaPath[playlist.id]!.add(filePath);
           completedDownloads++;
-          _overallProgress = completedDownloads / _downloadCount;
-          print(
-              'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
-          notifyListeners();
+          _updateOverallProgress(completedDownloads);
         }).catchError((error) {
           print("Error downloading file: $error");
           _state = MqttState.failure;
           notifyListeners();
         });
       }
-
-      if (completedDownloads == _downloadCount) {
-        print("All files processed.");
-
-        _state = MqttState.playlistScreen;
-        notifyListeners();
-      }
     }
   }
 
-  final List<String> _mediaPath = [];
-  List<String> get mediaPath => _mediaPath;
+  // After all playlists are processed
+  if (completedDownloads == _downloadCount) {
+    print("All media files for all playlists have been downloaded.");
+    _state = MqttState.playlistScreen;
+    notifyListeners();
+  }
+}
 
-  List<PlayListModel> storePlaylist = [];
+void _updateOverallProgress(int completedDownloads) {
+  _overallProgress = completedDownloads / _downloadCount;
+  print('Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+  notifyListeners();
+}
 
-  void _updateMediaModel() {
-    if (_playListModel != null &&
-        _playListModel!.data.playlist.media!.isNotEmpty) {
-      for (int i = 0; i < _playListModel!.data.playlist.media!.length; i++) {
-        var mediaItem = _playListModel!.data.playlist.media![i];
-        if (i < _mediaPath.length) {
-          mediaItem.mediaUrl = _mediaPath[i];
+  void _updateMediaModelForPlaylist() {
+    if (_playListModel != null) {
+      for (var playlist in _playListModel!.data.playlist) {
+        if (_mediaPath.containsKey(playlist.id)) {
+          List<String> playlistMediaPaths = _mediaPath[playlist.id]!;
+          for (int i = 0;
+              i < playlist.media!.length && i < playlistMediaPaths.length;
+              i++) {
+            playlist.media![i].mediaUrl = playlistMediaPaths[i];
+          }
         }
       }
     }
   }
 
-  Future<void> downloadFile(String url) async {
-    // if (Platform.isAndroid) {
-    //   print('Requesting storage permission...');
-    //   var status = Permission.storage;
-
-    //   if (Platform.version.startsWith('13') ||
-    //       int.parse(Platform.operatingSystemVersion.split(' ').first) >= 13) {
-    //     // Android 13+ requires specific media permissions
-    //     var statuses = await [
-    //       Permission.photos, // READ_MEDIA_IMAGES equivalent
-    //       Permission.videos, // READ_MEDIA_VIDEO equivalent
-    //       Permission.audio // READ_MEDIA_AUDIO equivalent
-    //     ].request();
-
-    //     if (statuses.values
-    //         .any((permissionStatus) => !permissionStatus.isGranted)) {
-    //       print('Media permissions denied');
-    //       throw Exception('Required media permissions not granted');
-    //     }
-    //     print('Media permissions granted');
-    //   } else {
-    //     // Older Android versions
-    //     var status = await Permission.storage.request();
-    //     if (!status.isGranted) {
-    //       print('Storage permission denied $status');
-    //       throw Exception('Storage permission not granted');
-    //     }
-    //     print('Storage permission granted');
-    //   }
-    // }
-
+  Future<void> downloadFileForPlaylist(String url, String playlistId) async {
     try {
       String filename = _extractFilename(url);
       Directory? directory = await _getDirectory();
@@ -941,8 +926,10 @@ EOF
       }
 
       String filePath = '${directory.path}/$filename';
+
       Dio dio = Dio();
       print('Starting download from URL: $url to $filePath');
+
       await dio.download(
         url,
         filePath,
@@ -954,8 +941,8 @@ EOF
         },
       );
 
-      _mediaPath.add(filePath);
-      _updateMediaModel();
+      _mediaPath[playlistId]?.add(filePath);
+      _updateMediaModelForPlaylist();
 
       print('File downloaded to: $filePath');
     } catch (e) {
@@ -964,55 +951,6 @@ EOF
     }
   }
 
-  String _extractFilename(String url, {String? mediaType}) {
-    String decodedUrl = Uri.decodeFull(url);
-    String filename = decodedUrl.split('/').last.split('?').first;
-    if (mediaType != null) {
-      switch (mediaType) {
-        case 'audio/mpeg':
-          filename += '.mp3';
-          break;
-        case 'audio/mp4':
-          filename += '.m4a';
-          break;
-        case 'video/mp4':
-          filename += '.mp4';
-          break;
-        case 'image/jpeg':
-        case 'image/png':
-        case 'image/gif':
-          filename += '.jpg';
-          break;
-        default:
-          break;
-      }
-    } else {
-      if (url.contains('images')) {
-        filename += '.jpg';
-      }
-    }
-
-    return filename;
-  }
-
-Future<Directory?> _getDirectory() async {
-  if (Platform.isAndroid || Platform.isIOS) {
-    // Use the application documents directory for Android and iOS
-    return await getApplicationDocumentsDirectory();
-  } else if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-    // For desktop platforms, we can use getDownloadsDirectory() or application documents
-    try {
-      // Check if a method for getting downloads directory exists for the platform
-      // For Windows/Linux/macOS, this may not exist, so fallback to applicationDocumentsDirectory
-      return await getDownloadsDirectory() ?? await getApplicationDocumentsDirectory();
-    } catch (e) {
-      // Fallback if getDownloadsDirectory doesn't work
-      print('Error getting downloads directory, falling back to applicationDocumentsDirectory: $e');
-      return await getApplicationDocumentsDirectory();
-    }
-  }
-  return null;
-}
 
   final Map<int, List<String>> _mediaPaths = {};
 
@@ -1107,29 +1045,30 @@ Future<Directory?> _getDirectory() async {
     }
   }
 
-Future<void> requestStoragePermission() async {
-  var status = await Permission.storage.status;
-  if (!status.isGranted) {
-    var result = await Permission.storage.request();
-    if (result.isGranted) {
-      print('Storage permission granted');
-    } else {
-      print('Storage permission denied');
-      throw Exception('Storage permission not granted');
+  Future<void> requestStoragePermission() async {
+    var status = await Permission.storage.status;
+    if (!status.isGranted) {
+      var result = await Permission.storage.request();
+      if (result.isGranted) {
+        print('Storage permission granted');
+      } else {
+        print('Storage permission denied');
+        throw Exception('Storage permission not granted');
+      }
     }
-  }
 
-  // For Android 11 and above
-  if (Platform.isAndroid && await Permission.manageExternalStorage.isGranted == false) {
-    var result = await Permission.manageExternalStorage.request();
-    if (result.isGranted) {
-      print('External storage management permission granted');
-    } else {
-      print('External storage management permission denied');
-      throw Exception('External storage management permission not granted');
+    // For Android 11 and above
+    if (Platform.isAndroid &&
+        await Permission.manageExternalStorage.isGranted == false) {
+      var result = await Permission.manageExternalStorage.request();
+      if (result.isGranted) {
+        print('External storage management permission granted');
+      } else {
+        print('External storage management permission denied');
+        throw Exception('External storage management permission not granted');
+      }
     }
   }
-}
 
   Future<void> downloadFileForCampaign(String url, int zoneId) async {
     // if (Platform.isAndroid) {
@@ -1174,6 +1113,59 @@ Future<void> requestStoragePermission() async {
       throw Exception('Download failed: $e');
     }
   }
+
+    String _extractFilename(String url, {String? mediaType}) {
+    String decodedUrl = Uri.decodeFull(url);
+    String filename = decodedUrl.split('/').last.split('?').first;
+    if (mediaType != null) {
+      switch (mediaType) {
+        case 'audio/mpeg':
+          filename += '.mp3';
+          break;
+        case 'audio/mp4':
+          filename += '.m4a';
+          break;
+        case 'video/mp4':
+          filename += '.mp4';
+          break;
+        case 'image/jpeg':
+        case 'image/png':
+        case 'image/gif':
+          filename += '.jpg';
+          break;
+        default:
+          break;
+      }
+    } else {
+      if (url.contains('images')) {
+        filename += '.jpg';
+      }
+    }
+
+    return filename;
+  }
+
+  Future<Directory?> _getDirectory() async {
+    if (Platform.isAndroid || Platform.isIOS) {
+      // Use the application documents directory for Android and iOS
+      return await getApplicationDocumentsDirectory();
+    } else if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
+      // For desktop platforms, we can use getDownloadsDirectory() or application documents
+      try {
+        // Check if a method for getting downloads directory exists for the platform
+        // For Windows/Linux/macOS, this may not exist, so fallback to applicationDocumentsDirectory
+        return await getDownloadsDirectory() ??
+            await getApplicationDocumentsDirectory();
+      } catch (e) {
+        // Fallback if getDownloadsDirectory doesn't work
+        print(
+            'Error getting downloads directory, falling back to applicationDocumentsDirectory: $e');
+        return await getApplicationDocumentsDirectory();
+      }
+    }
+    return null;
+  }
+
 
   Future<void> _checkPairingStatus() async {
     Map<String, dynamic> requestBody;
@@ -1220,6 +1212,7 @@ Future<void> requestStoragePermission() async {
       print("check status ::::$isSaved");
 
       _topic = response["player_code"];
+
 
       globleTopic = _topic;
       subsibeMessage(topic);
@@ -1324,15 +1317,23 @@ Future<void> requestStoragePermission() async {
       var data = {"success": true};
       publishMessage(globleTopic, jsonEncode(data));
     } else if (jsonObj["action"] == "publish_playlist") {
-      print("i am in actionPlaylist${jsonObj["data"]["playlist"]["media"]}");
+// Deserialize the JSON into the model
       _playListModel = playListModelFromJson(jsonEncode(jsonObj));
 
-      print("model data ${_playListModel!.data.playlist.media}");
-      print(_mediaList);
-      for (var media in _playListModel!.data.playlist.media!) {
-        print("Media URL: $media");
+      print(
+          "model data ${_playListModel!.data.playlist}"); // This should print the list of Playlist objects
 
-        _startDownloading();
+// Iterate through the playlist list
+      for (var playlist in _playListModel!.data.playlist) {
+        // Check if the playlist contains any media
+        if (playlist.media != null && playlist.media!.isNotEmpty) {
+          for (var media in playlist.media!) {
+            print("Media URL: ${media.mediaUrl}");
+
+            // Start downloading for each media item
+            _startDownloadingForPlaylist();
+          }
+        }
       }
     } else if (jsonObj["action"] == "publish_campaign") {
       _campaignModel = campaignModelFromJson(jsonEncode(jsonObj));
@@ -1357,6 +1358,116 @@ Future<void> requestStoragePermission() async {
 
   void _updateMessage() {
     notifyListeners();
+  }
+
+  int _currentIndex = 0;
+  Timer? _timer;
+
+  int get currentIndex => _currentIndex;
+
+  int get currentDuration {
+    final currentPlaylist = playListModel!.data.playlist[_currentIndex];
+    final playlistSchedule = currentPlaylist.playlistSchedule;
+
+    int duration = 0;
+
+    // Check if the item is in the schedule or should always play
+    if (playlistSchedule!.alwaysPlay ||
+        _isPlaylistDateInRange(
+              playlistSchedule.period!.date.start,
+              playlistSchedule.period!.date.end,
+            ) &&
+            _isCurrentDayAllowed(
+              playlistSchedule.period!.days,
+              DateTime.now(),
+            ) &&
+            _isTimeInRange(
+              playlistSchedule.period!.time.from,
+              playlistSchedule.period!.time.to,
+            )) {
+      duration = currentPlaylist.playlistDefault!.duration;
+    }
+
+    // Log the state
+    print(
+        "Current Index: $_currentIndex, Duration: $duration seconds, Always Play: ${playlistSchedule.alwaysPlay}");
+
+    return duration;
+  }
+
+  void startPlaylistTimer() {
+    _timer?.cancel();
+
+    // If the duration is 0, directly update the index and skip the timer setup
+    if (currentDuration == 0) {
+      _updateIndex();
+      print("Playlist item not in schedule, skipping timer setup.");
+    } else {
+      // Only start the timer if the duration is greater than 0
+      _timer = Timer(Duration(seconds: currentDuration), _updateIndex);
+    }
+  }
+
+  void _updateIndex() {
+    _currentIndex = (_currentIndex + 1) % playListModel!.data.playlist.length;
+    notifyListeners();
+    startPlaylistTimer();
+  }
+
+  void resetTimer() {
+    _timer?.cancel();
+    notifyListeners();
+  }
+
+// Clean up timer
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  bool _isPlaylistDateInRange(DateTime startDate, DateTime endDate) {
+    DateTime now = DateTime.now();
+    return now.isAfter(startDate) &&
+        now.isBefore(endDate.add(const Duration(days: 1)));
+  }
+
+  bool _isCurrentDayAllowed(dynamic days, DateTime now) {
+    switch (now.weekday) {
+      case 1:
+        return days.monday ?? false;
+      case 2:
+        return days.tuesday ?? false;
+      case 3:
+        return days.wednesday ?? false;
+      case 4:
+        return days.thursday ?? false;
+      case 5:
+        return days.friday ?? false;
+      case 6:
+        return days.saturday ?? false;
+      case 7:
+        return days.sunday ?? false;
+      default:
+        return false;
+    }
+  }
+
+  bool _isTimeInRange(String timeFrom, String timeTo) {
+    DateTime currentTime = DateTime.now();
+    DateTime fromTime = DateTime.now().copyWith(
+      hour: int.parse(timeFrom.split(':')[0]),
+      minute: int.parse(timeFrom.split(':')[1]),
+      second: int.parse(timeFrom.split(':')[2]),
+    );
+
+    DateTime toTime = DateTime.now().copyWith(
+      hour: int.parse(timeTo.split(':')[0]),
+      minute: int.parse(timeTo.split(':')[1]),
+      second: int.parse(timeTo.split(':')[2]),
+    );
+
+    return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
   }
 
   Future<void> launchUrl(String url) async {
