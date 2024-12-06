@@ -1,6 +1,6 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools"
-    package="your.package.name">
+    package="com.example.digital_signage">
 
     <!-- Permissions for accessing external storage -->
     <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" tools:ignore="ScopedStorage" />
@@ -70,6 +70,9 @@
         <meta-data
             android:name="flutterEmbedding"
             android:value="2" />
+        <meta-data
+        android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        android:value="true" />
     </application>
 
     <!-- Add TV-related feature query -->
