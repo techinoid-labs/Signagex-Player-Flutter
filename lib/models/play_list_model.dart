@@ -32,7 +32,7 @@ class Data {
   bool success;
   String message;
   String playbackType;
-  Playlist playlist;
+  List<Playlist> playlist;
 
   Data({
     required this.success,
@@ -45,56 +45,64 @@ class Data {
         success: json["success"],
         message: json["message"],
         playbackType: json["playback_type"],
-        playlist: Playlist.fromJson(json["playlist"]),
+        playlist: List<Playlist>.from(json["playlists"].map((x) => Playlist.fromJson(x))),
       );
 
   Map<String, dynamic> toJson() => {
         "success": success,
         "message": message,
         "playback_type": playbackType,
-        "playlist": playlist.toJson(),
+        "playlist": List<dynamic>.from(playlist.map((x) => x.toJson())),
       };
 }
 
 class Playlist {
-  dynamic name;
-  String? id;
-  Schedule? playlistSchedule;
+  String name;
+  String id;
+  SchedulePlaylist? playlistSchedule;
   Playback? playback;
   Default? playlistDefault;
   List<Media>? media;
+  bool isPaused;
 
   Playlist({
     required this.name,
     required this.id,
-    required this.playlistSchedule,
-    required this.playback,
-    required this.playlistDefault,
-    required this.media,
+    this.playlistSchedule,
+    this.playback,
+    this.playlistDefault,
+    this.media,
+    required this.isPaused,
   });
 
   factory Playlist.fromJson(Map<String, dynamic> json) => Playlist(
         name: json["name"],
         id: json["id"],
-        playlistSchedule: Schedule.fromJson(json["playlist_schedule"]),
-        playback: Playback.fromJson(json["playback"]),
-        playlistDefault: Default.fromJson(json["default"]),
-        media: List<Media>.from(json["media"].map((x) => Media.fromJson(x))),
+        playlistSchedule: json["playlist_schedule"] != null
+            ? SchedulePlaylist.fromJson(json["playlist_schedule"])
+            : null,
+        playback: json["playback"] != null ? Playback.fromJson(json["playback"]) : null,
+        playlistDefault: json["default"] != null ? Default.fromJson(json["default"]) : null,
+        media: json["media"] != null
+            ? List<Media>.from(json["media"].map((x) => Media.fromJson(x)))
+            : null,
+        isPaused: json["is_paused"],
       );
 
   Map<String, dynamic> toJson() => {
         "name": name,
         "id": id,
-        "playlist_schedule": playlistSchedule!.toJson(),
-        "playback": playback!.toJson(),
-        "default": playlistDefault!.toJson(),
-        "media": List<dynamic>.from(media!.map((x) => x.toJson())),
+        "playlist_schedule": playlistSchedule?.toJson(),
+        "playback": playback?.toJson(),
+        "default": playlistDefault?.toJson(),
+        "media": media != null ? List<dynamic>.from(media!.map((x) => x.toJson())) : null,
+        "is_paused": isPaused,
       };
 }
 
 class Media {
   Default settings;
-  Schedule schedule;
+  SchedulePlaylist schedule;
   String mediaType;
   String mediaUrl;
 
@@ -107,7 +115,7 @@ class Media {
 
   factory Media.fromJson(Map<String, dynamic> json) => Media(
         settings: Default.fromJson(json["settings"]),
-        schedule: Schedule.fromJson(json["schedule"]),
+        schedule: SchedulePlaylist.fromJson(json["schedule"]),
         mediaType: json["mediaType"],
         mediaUrl: json["mediaUrl"],
       );
@@ -120,18 +128,20 @@ class Media {
       };
 }
 
-class Schedule {
+class SchedulePlaylist {
   bool alwaysPlay;
   Period? period;
 
-  Schedule({
+  SchedulePlaylist({
     required this.alwaysPlay,
     this.period,
   });
 
-  factory Schedule.fromJson(Map<String, dynamic> json) => Schedule(
+  factory SchedulePlaylist.fromJson(Map<String, dynamic> json) => SchedulePlaylist(
         alwaysPlay: json["always_play"],
-        period: json.containsKey("period") ? Period.fromJson(json["period"]) : null,
+        period: json.containsKey("period") && json["period"] != null
+            ? Period.fromJson(json["period"])
+            : null,
       );
 
   Map<String, dynamic> toJson() => {
@@ -174,9 +184,27 @@ class Date {
   });
 
   factory Date.fromJson(Map<String, dynamic> json) => Date(
-        start: DateTime.parse(json["start"]),
-        end: DateTime.parse(json["end"]),
+        start: _parseDate(json["start"]),
+        end: _parseDate(json["end"]),
       );
+
+  // Helper method to handle different date formats
+  static DateTime _parseDate(String dateStr) {
+    try {
+      return DateTime.parse(dateStr);
+    } catch (e) {
+      // Attempt to fix malformed date strings
+      final parts = dateStr.split('-');
+      if (parts.length == 3) {
+        return DateTime(
+          int.parse(parts[0]),
+          int.parse(parts[1]),
+          int.parse(parts[2].padLeft(2, '0')), // Add leading zero if missing
+        );
+      }
+      throw FormatException('Invalid date format: $dateStr');
+    }
+  }
 
   Map<String, dynamic> toJson() => {
         "start": "${start.year.toString().padLeft(4, '0')}-${start.month.toString().padLeft(2, '0')}-${start.day.toString().padLeft(2, '0')}",
@@ -245,12 +273,12 @@ class Time {
 }
 
 class Default {
-  String duration;
+  int duration;
   String transition;
-  String? volume; // Optional
+  int? volume;
   bool isPaused;
-  String? otherMediaDefaultVolume; // Optional
-  String? ratio; // Optional
+  String? otherMediaDefaultVolume;
+  String? ratio;
 
   Default({
     required this.duration,
@@ -264,8 +292,8 @@ class Default {
   factory Default.fromJson(Map<String, dynamic> json) => Default(
         duration: json["duration"],
         transition: json["transition"],
-        volume: json["volume"] ?? null, // Use null if the key is not present
-        isPaused: json["is_paused"] ?? false, // Default to false if not present
+        volume: json["volume"] ?? null,
+        isPaused: json["is_paused"] ?? false,
         otherMediaDefaultVolume: json["other_media_default_volume"],
         ratio: json["ratio"],
       );
@@ -279,6 +307,7 @@ class Default {
         "ratio": ratio,
       };
 }
+
 class Playback {
   String mode;
   int count;
