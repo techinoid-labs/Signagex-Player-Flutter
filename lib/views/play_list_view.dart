@@ -16,25 +16,30 @@ class PlaylistScreen extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mqttViewModel = Provider.of<MqttViewModel>(context);
-    print(
-        "this is playlist media ... ${mqttViewModel.playListModel!.data.playlist.playlistSchedule!.period!.date.start}");
 
-    DateTime now = DateTime.now();
-    var playlistSchedule =
-        mqttViewModel.playListModel!.data.playlist.playlistSchedule;
+    // Ensure timer starts
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      mqttViewModel.startPlaylistTimer();
+    });
+
+    final currentPlaylist =
+        mqttViewModel.playListModel!.data.playlist[mqttViewModel.currentIndex];
+    final playlistSchedule = currentPlaylist.playlistSchedule;
 
     if (playlistSchedule!.alwaysPlay) {
       return Scaffold(
         body: mqttViewModel.mediaPath.isNotEmpty
             ? VideoPlaylistWidget(
-                mediaPaths: mqttViewModel.playListModel!.data.playlist.media!,
-                playlist: mqttViewModel.playListModel!.data.playlist,
+                mediaPaths: currentPlaylist.media!,
+                playlist: currentPlaylist,
               )
             : const Center(
                 child: Text("No media available"),
               ),
       );
     }
+
+    DateTime now = DateTime.now();
 
     bool isPlaylistDateInRange = _isPlaylistDateInRange(
       playlistSchedule.period!.date.start,
@@ -54,8 +59,8 @@ class PlaylistScreen extends StatelessWidget {
               isPlaylistDayAllowed &&
               isTimeInRange
           ? VideoPlaylistWidget(
-              mediaPaths: mqttViewModel.playListModel!.data.playlist.media!,
-              playlist: mqttViewModel.playListModel!.data.playlist,
+              mediaPaths: currentPlaylist.media!,
+              playlist: currentPlaylist,
             )
           : const Center(
               child: Text("No media available"),
@@ -164,7 +169,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       print("Loading media at index $_currentIndex: ${nextMedia.mediaUrl}");
       if (nextMedia.schedule.alwaysPlay) {
         print("Always play is true for media: ${nextMedia.mediaUrl}");
-        String duration = nextMedia.settings.duration;
+        String duration = nextMedia.settings.duration.toString();
         print("Loading duration at index $_currentIndex: $duration");
         _startMediaLoop(duration);
         _loadMedia(nextMedia);
@@ -208,7 +213,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         print("Is current time in range: $isTimeInRange");
 
         if (isDateInRange && isDayAllowed && isTimeInRange) {
-          String duration = nextMedia.settings.duration;
+          String duration = nextMedia.settings.duration.toString();
           print("Loading duration at index $_currentIndex: $duration");
           _startMediaLoop(duration);
           _loadMedia(nextMedia);
@@ -228,7 +233,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       _initializeNextVideo(nextMedia);
     } else {
       print("Current media is an image: ${nextMedia.mediaUrl}");
-      int durationSeconds = int.tryParse(nextMedia.settings.duration) ?? 5;
+      int durationSeconds =
+          int.tryParse(nextMedia.settings.duration.toString()) ?? 5;
       _timer = Timer(Duration(seconds: durationSeconds), _onMediaEnd);
       setState(() {});
     }
@@ -371,7 +377,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                 return SlideTransition(
                   position: animation.drive(
                     Tween(
-                      begin: const Offset(0, 1), // From bottom
+                      begin: const Offset(0, 1),
                       end: Offset.zero,
                     ).chain(CurveTween(curve: Curves.easeInOut)),
                   ),
@@ -383,7 +389,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                     SlideTransition(
                       position: animation.drive(
                         Tween(
-                          begin: const Offset(-1, 0), // From left
+                          begin: const Offset(-1, 0),
                           end: Offset.zero,
                         ).chain(CurveTween(curve: Curves.easeInOut)),
                       ),
@@ -393,7 +399,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                       position: animation.drive(
                         Tween(
                           begin: Offset.zero,
-                          end: const Offset(1, 0), // Slide out to right
+                          end: const Offset(1, 0),
                         ).chain(CurveTween(curve: Curves.easeInOut)),
                       ),
                       child: child,
@@ -477,8 +483,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               ? VideoPlayerWidget(
                   key: ValueKey(currentMedia.mediaUrl),
                   filePath: currentMedia.mediaUrl,
-                  currentVolume:
-                      double.parse(currentMedia.settings.volume ?? "20"),
+                  currentVolume: double.parse(
+                      currentMedia.settings.volume.toString()),
                   onVideoEnd: _onMediaEnd,
                   aspectRatio: getAspectRatio(currentMedia.settings.ratio),
                   transitionType: currentMedia.settings.transition,
@@ -646,9 +652,11 @@ class ImageWidget extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    Widget imageWidget = AspectRatio(
-      aspectRatio: aspectRatio,
-      child: Image.file(File(filePath), fit: BoxFit.cover),
+    Widget imageWidget = SizedBox.expand(
+      child: AspectRatio(
+        aspectRatio: aspectRatio,
+        child: Image.file(File(filePath), fit: BoxFit.cover),
+      ),
     );
 
     return AnimatedSwitcher(
