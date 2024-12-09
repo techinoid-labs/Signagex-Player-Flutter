@@ -33,35 +33,99 @@ class AppDelegate: FlutterAppDelegate {
                 result(FlutterMethodNotImplemented)
             }
         }
-       // Brightness Control Channel
-         let brightnessChannel = FlutterMethodChannel(name: "com.example/brightness",
-                                                      binaryMessenger: controller.engine.binaryMessenger)
-        brightnessChannel.setMethodCallHandler { (call, result) in
-            if call.method == "setBrightness" {
-                if let args = call.arguments as? [String: Any],
-                   let brightness = args["brightness"] as? Double {
-                    self.setBrightness(brightness: brightness)
-                    result(nil) // Indicate success
-                } else {
-                    result(FlutterError(code: "INVALID_ARGUMENTS", message: "Invalid brightness value", details: nil))
-                }
+
+     // Brightness Control Channel
+            let brightnessChannel = FlutterMethodChannel(name: "com.example/brightnessControl", binaryMessenger: controller.engine.binaryMessenger)
+        brightnessChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
+            if call.method == "setBrightness", let args = call.arguments as? [String: Any],
+               let brightness = args["brightness"] as? Float {
+                self.setBrightnessLevel(level: brightness)
+                result("Brightness set to \(brightness)")
             } else {
                 result(FlutterMethodNotImplemented)
             }
         }
 
-    
+
     // Volume Control Channel (new)
+
     let volumeChannel = FlutterMethodChannel(name: "com.example/volumeControl", binaryMessenger: controller.engine.binaryMessenger)
     volumeChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
         if call.method == "setVolume", let args = call.arguments as? [String: Any],
            let volume = args["volume"] as? Int {
             self.setVolume(volume: volume)
             result("Volume set to \(volume)%")
+        } else if call.method == "muteVolume" {
+            self.muteVolume()
+            result("Volume muted")
+        } else if call.method == "unmuteVolume" {
+            self.unmuteVolume()
+            result("Volume unmuted")
         } else {
             result(FlutterMethodNotImplemented)
         }
     }
+
+    let networkChannel = FlutterMethodChannel(name: "com.example/networkControl", binaryMessenger: controller.engine.binaryMessenger)
+        networkChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
+            if call.method == "restartNetwork" {
+                self.restartNetwork()
+                result("Network restart initiated")
+            } else {
+                result(FlutterMethodNotImplemented)
+            }
+        }
+    }
+
+  
+    func setBrightnessLevel(level: Float) {
+    var iterator: io_iterator_t = 0
+    print("Setting brightness to \(level)")
+
+    if IOServiceGetMatchingServices(kIOMasterPortDefault, IOServiceMatching("IODisplayConnect"), &iterator) == kIOReturnSuccess {
+        var service: io_object_t = 1
+        var count = 0 // To track the number of displays
+
+        while service != 0 {
+            service = IOIteratorNext(iterator)
+            IODisplaySetFloatParameter(service, 0, kIODisplayBrightnessKey as CFString, level)
+            IOObjectRelease(service)
+            count += 1
+        }
+        print("Number of displays adjusted: \(count)")
+    } else {
+        print("Failed to get matching services")
+    }
+}
+func unmuteVolume() {
+    let appleScript = """
+    set volume output muted false
+    """
+    var error: NSDictionary?
+    if let scriptObject = NSAppleScript(source: appleScript) {
+        scriptObject.executeAndReturnError(&error)
+        if let error = error {
+            print("AppleScript error: \(error)")
+        }
+    } else {
+        print("Failed to create AppleScript object")
+    }
+}
+
+
+        func muteVolume() {
+        let appleScript = """
+        set volume output muted true
+        """
+        var error: NSDictionary?
+        if let scriptObject = NSAppleScript(source: appleScript) {
+            scriptObject.executeAndReturnError(&error)
+            if let error = error {
+                print("AppleScript error: \(error)")
+            }
+        } else {
+            print("Failed to create AppleScript object")
+        }
     }
 
     // Reboot macOS function
@@ -79,6 +143,22 @@ class AppDelegate: FlutterAppDelegate {
         print("Failed to create AppleScript object")
     }
 }
+
+  // Restart Network function
+    func restartNetwork() {
+        let appleScript = """
+        do shell script "networksetup -setnetworkserviceenabled Wi-Fi off; networksetup -setnetworkserviceenabled Wi-Fi on" with administrator privileges
+        """
+        var error: NSDictionary?
+        if let scriptObject = NSAppleScript(source: appleScript) {
+            scriptObject.executeAndReturnError(&error)
+            if let error = error {
+                print("AppleScript error: \(error)")
+            }
+        } else {
+            print("Failed to create AppleScript object")
+        }
+    }
 
     // Fetch system information
     private func getSystemInformation() -> [String: Any] {
@@ -132,50 +212,7 @@ class AppDelegate: FlutterAppDelegate {
             "count_cores": getCoreCount()
         ]
     }
-func setBrightness(brightness: Double) {
-    let brightnessValue = max(0.0, min(1.0, brightness)) // Clamp brightness between 0.0 and 1.0
-    let checkCommand = "which brightness"
-    let output = shell(checkCommand)
-    
-    if output.contains("/usr/local/bin/brightness") || output.contains("/opt/homebrew/bin/brightness") {
-        // Brightness tool is available, adjust brightness
-        _ = shell("brightness \(brightnessValue)")
-    } else {
-        // Open Terminal for user to manually install Homebrew and brightness tool
-        let script = """
-        tell application "Terminal"
-            do script "brew install brightness"
-            activate
-        end tell
-        """
-        let appleScriptCommand = "osascript -e '\(script)'"
-        _ = shell(appleScriptCommand)
-        
-        // Inform the user they need to install the tool manually
-        let alert = NSAlert()
-        alert.messageText = "Brightness Tool Not Installed"
-        alert.informativeText = "The tool is being installed. Please follow the instructions in the terminal window to complete the process."
-        alert.alertStyle = .warning
-        alert.runModal()
-    }
-}
 
-
-   func shell(_ command: String) -> String {
-    let process = Process()
-    process.launchPath = "/bin/bash"
-    process.arguments = ["-c", command]
-
-    let pipe = Pipe()
-    process.standardOutput = pipe
-    process.standardError = pipe // Capture error output
-    process.launch()
-
-    let data = pipe.fileHandleForReading.readDataToEndOfFile()
-    let output = String(data: data, encoding: .utf8) ?? ""
-    print("Shell Output: \(output)") // Log output
-    return output
-}
 
     func setVolume(volume: Int) {
         let appleScript = """
