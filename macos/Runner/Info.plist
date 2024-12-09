@@ -29,6 +29,14 @@
 	<string>Your message to users about why you need their location</string>
 	<key>NSLocationAlwaysUsageDescription</key>
 	<string>Your message to users about why you need their location</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>We need access to control the system settings.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>This app needs access to your microphone.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>This app needs access to your camera.</string>
+	<key>NSBrightnessControlUsageDescription</key>
+	<string>This app needs access to control your display brightness.</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>NSPrincipalClass</key>
