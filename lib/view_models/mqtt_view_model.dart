@@ -1,17 +1,22 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import 'package:battery_plus/battery_plus.dart';
 import 'package:dio/dio.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:image/image.dart' as img;
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
+import 'package:screenshot/screenshot.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:system_info2/system_info2.dart';
 import 'package:url_launcher/url_launcher.dart';
@@ -71,6 +76,7 @@ class MqttViewModel extends ChangeNotifier {
   Map<String, dynamic> storedJsonObj = {};
   Future<void> _loadStoredJsonObj() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
+
     String? jsonString = prefs.getString('jsonObj');
 
     if (jsonString != null) {
@@ -80,6 +86,21 @@ class MqttViewModel extends ChangeNotifier {
       notifyListeners();
     } else {
       print('No JSON Object found in SharedPreferences.');
+    }
+  }
+
+  bool? storeState;
+  Future<void> getStoredState() async {
+    final prefs = await SharedPreferences.getInstance();
+
+    // Retrieve the 'storeState' value
+    storeState = prefs.getBool('storeState');
+
+    if (storeState != null) {
+      debugPrint("Stored State: $storeState");
+      // Use the value as needed
+    } else {
+      debugPrint("No 'storeState' value found.");
     }
   }
 
@@ -103,7 +124,7 @@ class MqttViewModel extends ChangeNotifier {
   Future<void> loadDeviceInfoFromSharedPreferences() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     String? jsonString = prefs.getString('deviceInfoMap');
-
+// prefs.clear();
     if (jsonString != null) {
       // Decode the JSON string back to a Map
       deviceInfoMap = Map<String, dynamic>.from(jsonDecode(jsonString));
@@ -112,6 +133,8 @@ class MqttViewModel extends ChangeNotifier {
       print('No device info found in SharedPreferences.');
     }
   }
+
+  final ScreenshotController _screenshotController = ScreenshotController();
 
   MqttViewModel(this._mqttClientService) {
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
@@ -122,9 +145,62 @@ class MqttViewModel extends ChangeNotifier {
     _monitorConnectivity();
   }
 
+  Future<void> captureAndSendScreenshot(String topic) async {
+    try {
+      // Find the render boundary for the widget
+      RenderRepaintBoundary boundary = boundaryKey.currentContext!
+          .findRenderObject() as RenderRepaintBoundary;
+
+      if (boundary.debugNeedsPaint) {
+        debugPrint("Widget not rendered yet. Waiting for rendering...");
+        await Future.delayed(const Duration(milliseconds: 100));
+      }
+
+      // Capture the screenshot as an image with lower pixel ratio
+      final image =
+          await boundary.toImage(pixelRatio: 0.5); // Reduce pixel ratio
+
+      // Convert the image to byte data
+      final ByteData? byteData = await image.toByteData(
+          format: ImageByteFormat.png); // Use PNG for better quality
+
+      if (byteData != null) {
+        final Uint8List imageBytes = byteData.buffer.asUint8List();
+        debugPrint("Original image size: ${imageBytes.length}");
+
+        // Compress the image further
+        final compressedImageBytes = await _compressImage(imageBytes);
+        debugPrint("Compressed image size: ${compressedImageBytes.length}");
+
+        // Convert to Base64 string
+        final base64String = base64Encode(compressedImageBytes);
+
+        // Publish the Base64-encoded string
+        _mqttClientService.publishMessage(topic, utf8.encode(base64String));
+      } else {
+        debugPrint("Failed to capture screenshot: ByteData is null.");
+      }
+    } catch (error) {
+      debugPrint("Error capturing or sending screenshot: $error");
+    }
+  }
+
+  Future<Uint8List> _compressImage(Uint8List imageBytes) async {
+    // Compress the image further by lowering quality and size
+    final compressedBytes = await FlutterImageCompress.compressWithList(
+      imageBytes,
+      minWidth: 400, // Further reduce width
+      minHeight: 300, // Further reduce height
+      quality: 5, // Lower quality for smaller size
+      format: CompressFormat.jpeg, // Use JPEG for better compression
+    );
+    return compressedBytes;
+  }
+
   // Monitor connectivity changes and reinitialize MQTT on connection recovery
   void _monitorConnectivity() async {
     await _loadStoredJsonObj();
+    await getStoredState();
     await retrieveStoredResponse();
     await loadDeviceInfoFromSharedPreferences();
     InternetConnectionChecker().onStatusChange.listen((status) async {
@@ -158,12 +234,15 @@ class MqttViewModel extends ChangeNotifier {
 
           publishMessage(globleTopic, jsonEncode(deviceInfoMap));
           _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
-          print("model data ${_campaignModel!.data.zones}");
-          print(_mediaList);
-          for (var media in _campaignModel!.data.zones) {
-            print("Media URL: $media");
 
-            _startDownloadingForCampaign();
+          print(_mediaList);
+          for (var campaign in _campaignModel!.data) {
+            for (var zone in campaign.zones) {
+              for (var media in zone.mediaItems) {
+                print("Media URL: ${media.mediaUrl}");
+                _startDownloadingForCampaign();
+              }
+            }
           }
         } else {
           print("elssssssssssssssssssssse caseeeeeee}");
@@ -171,9 +250,6 @@ class MqttViewModel extends ChangeNotifier {
         }
       } else {
         if (storedJsonObj["action"] == "publish_playlist") {
-          print(
-              "i am in actionPlaylist${storedJsonObj["data"]["playlist"]["media"]}");
-
           _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
           print(_mediaList);
           for (var playlist in _playListModel!.data.playlist) {
@@ -190,10 +266,13 @@ class MqttViewModel extends ChangeNotifier {
         } else if (storedJsonObj["action"] == "publish_campaign") {
           _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
 
-          for (var media in _campaignModel!.data.zones) {
-            print("Media URL: $media");
-
-            _startDownloadingForCampaign();
+          for (var campaign in _campaignModel!.data) {
+            for (var zone in campaign.zones) {
+              for (var media in zone.mediaItems) {
+                print("Media URL: ${media.mediaUrl}");
+                _startDownloadingForCampaign();
+              }
+            }
           }
         } else {
           _state = MqttState.noInternet;
@@ -825,81 +904,81 @@ EOF
   final Map<String, List<String>> _mediaPath = {};
   Map<String, List<String>> get mediaPath => _mediaPath;
 
-void _startDownloadingForPlaylist() async {
-  if (_state == MqttState.downloading) {
-    print("Downloads are already in progress.");
-    return;
-  }
+  void _startDownloadingForPlaylist() async {
+    if (_state == MqttState.downloading) {
+      print("Downloads are already in progress.");
+      return;
+    }
 
-  _downloadCount = _playListModel!.data.playlist.fold(
-    0,
-    (count, playlist) => count + (playlist.media?.length ?? 0),
-  );
+    _downloadCount = _playListModel!.data.playlist.fold(
+      0,
+      (count, playlist) => count + (playlist.media?.length ?? 0),
+    );
 
-  print("Total media files to download: $_downloadCount");
+    print("Total media files to download: $_downloadCount");
 
-  if (_downloadCount > 0) {
-    _state = MqttState.downloading;
-    notifyListeners();
-  } else {
-    _state = MqttState.noContent;
-    notifyListeners();
-    return;
-  }
+    if (_downloadCount > 0) {
+      _state = MqttState.downloading;
+      notifyListeners();
+    } else {
+      _state = MqttState.noContent;
+      notifyListeners();
+      return;
+    }
 
-  int completedDownloads = 0;
-  _overallProgress = 0.0;
+    int completedDownloads = 0;
+    _overallProgress = 0.0;
 
-  for (var playlist in _playListModel!.data.playlist) {
-    _mediaPath[playlist.id] = [];
+    for (var playlist in _playListModel!.data.playlist) {
+      _mediaPath[playlist.id] = [];
 
-    for (var media in playlist.media!) {
-      String mediaUrl = media.mediaUrl;
-      print("Starting download check for Media URL: $mediaUrl");
+      for (var media in playlist.media!) {
+        String mediaUrl = media.mediaUrl;
+        print("Starting download check for Media URL: $mediaUrl");
 
-      String filename = _extractFilename(mediaUrl);
-      Directory? directory = await _getDirectory();
-      if (directory == null) {
-        print('Unable to determine directory');
-        throw Exception('Unable to determine directory');
-      }
+        String filename = _extractFilename(mediaUrl);
+        Directory? directory = await _getDirectory();
+        if (directory == null) {
+          print('Unable to determine directory');
+          throw Exception('Unable to determine directory');
+        }
 
-      String filePath = '${directory.path}/$filename';
+        String filePath = '${directory.path}/$filename';
 
-      bool fileExists = await File(filePath).exists();
-      if (fileExists) {
-        print('File already exists: $filePath');
-        _mediaPath[playlist.id]!.add(filePath);
-        _updateMediaModelForPlaylist();
-        completedDownloads++;
-        _updateOverallProgress(completedDownloads);
-      } else {
-        await downloadFileForPlaylist(mediaUrl, playlist.id).then((_) {
+        bool fileExists = await File(filePath).exists();
+        if (fileExists) {
+          print('File already exists: $filePath');
           _mediaPath[playlist.id]!.add(filePath);
+          _updateMediaModelForPlaylist();
           completedDownloads++;
           _updateOverallProgress(completedDownloads);
-        }).catchError((error) {
-          print("Error downloading file: $error");
-          _state = MqttState.failure;
-          notifyListeners();
-        });
+        } else {
+          await downloadFileForPlaylist(mediaUrl, playlist.id).then((_) {
+            _mediaPath[playlist.id]!.add(filePath);
+            completedDownloads++;
+            _updateOverallProgress(completedDownloads);
+          }).catchError((error) {
+            print("Error downloading file: $error");
+            _state = MqttState.failure;
+            notifyListeners();
+          });
+        }
       }
+    }
+
+    // After all playlists are processed
+    if (completedDownloads == _downloadCount) {
+      print("All media files for all playlists have been downloaded.");
+      _state = MqttState.playlistScreen;
+      notifyListeners();
     }
   }
 
-  // After all playlists are processed
-  if (completedDownloads == _downloadCount) {
-    print("All media files for all playlists have been downloaded.");
-    _state = MqttState.playlistScreen;
+  void _updateOverallProgress(int completedDownloads) {
+    _overallProgress = completedDownloads / _downloadCount;
+    print('Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
     notifyListeners();
   }
-}
-
-void _updateOverallProgress(int completedDownloads) {
-  _overallProgress = completedDownloads / _downloadCount;
-  print('Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
-  notifyListeners();
-}
 
   void _updateMediaModelForPlaylist() {
     if (_playListModel != null) {
@@ -916,41 +995,54 @@ void _updateOverallProgress(int completedDownloads) {
     }
   }
 
-  Future<void> downloadFileForPlaylist(String url, String playlistId) async {
-    try {
-      String filename = _extractFilename(url);
-      Directory? directory = await _getDirectory();
-      if (directory == null) {
-        print('Unable to determine directory');
-        throw Exception('Unable to determine directory');
+  Future<void> downloadFileForPlaylist(String url, String playlistId,
+      {int retries = 3}) async {
+    int attempt = 0;
+    while (attempt < retries) {
+      try {
+        attempt++;
+        String filename = _extractFilename(url);
+        Directory? directory = await _getDirectory();
+        if (directory == null) {
+          print('Unable to determine directory');
+          throw Exception('Unable to determine directory');
+        }
+
+        String filePath = '${directory.path}/$filename';
+
+        Dio dio = Dio();
+        print(
+            'Attempt $attempt: Starting download from URL: $url to $filePath');
+
+        await dio.download(
+          url,
+          filePath,
+          onReceiveProgress: (received, total) {
+            if (total != -1) {
+              double progress = received / total;
+              print(
+                  'Download progress: ${(progress * 100).toStringAsFixed(2)}%');
+            }
+          },
+        );
+
+        _mediaPath[playlistId]?.add(filePath);
+        _updateMediaModelForPlaylist();
+
+        print('File downloaded to: $filePath');
+        return; // Exit on successful download
+      } catch (e) {
+        print('Download attempt $attempt failed: $e');
+        if (attempt >= retries) {
+          print('Maximum retry attempts reached. Download failed.');
+          throw Exception('Download failed after $retries attempts: $e');
+        } else {
+          print('Retrying download...');
+          await Future.delayed(Duration(seconds: 2)); // Wait before retrying
+        }
       }
-
-      String filePath = '${directory.path}/$filename';
-
-      Dio dio = Dio();
-      print('Starting download from URL: $url to $filePath');
-
-      await dio.download(
-        url,
-        filePath,
-        onReceiveProgress: (received, total) {
-          if (total != -1) {
-            double progress = received / total;
-            print('Download progress: ${(progress * 100).toStringAsFixed(2)}%');
-          }
-        },
-      );
-
-      _mediaPath[playlistId]?.add(filePath);
-      _updateMediaModelForPlaylist();
-
-      print('File downloaded to: $filePath');
-    } catch (e) {
-      print('Download failed: $e');
-      throw Exception('Download failed: $e');
     }
   }
-
 
   final Map<int, List<String>> _mediaPaths = {};
 
@@ -960,8 +1052,13 @@ void _updateOverallProgress(int completedDownloads) {
       return;
     }
 
-    _downloadCount =
-        _campaignModel!.data.zones.expand((zone) => zone.mediaItems).length;
+    // Calculate the total number of files to download from all zones
+    _downloadCount = _campaignModel!.data
+        .expand((campaign) =>
+            campaign.zones) // Flatten all zones from all campaigns
+        .expand(
+            (zone) => zone.mediaItems) // Flatten mediaItems within each zone
+        .length;
 
     print("Total files to download: $_downloadCount");
 
@@ -977,54 +1074,57 @@ void _updateOverallProgress(int completedDownloads) {
     int completedDownloads = 0;
     _overallProgress = 0.0;
 
-    for (var zone in _campaignModel!.data.zones) {
-      _mediaPaths[zone.id] = [];
+    // Iterate through all campaigns, and then all zones within each campaign
+    for (var campaign in _campaignModel!.data) {
+      for (var zone in campaign.zones) {
+        _mediaPaths[zone.id] = [];
 
-      for (var media in zone.mediaItems) {
-        String mediaUrl = media.mediaUrl;
-        print("Starting download check for Media URL: $mediaUrl");
+        for (var media in zone.mediaItems) {
+          String mediaUrl = media.mediaUrl;
+          print("Starting download check for Media URL: $mediaUrl");
 
-        String filename = _extractFilename(mediaUrl);
-        print('Extracted filename: $filename');
+          String filename = _extractFilename(mediaUrl);
+          print('Extracted filename: $filename');
 
-        Directory? directory = await _getDirectory();
-        if (directory == null) {
-          print('Unable to determine directory');
-          throw Exception('Unable to determine directory');
-        }
-        print('Download directory: ${directory.path}');
+          Directory? directory = await _getDirectory();
+          if (directory == null) {
+            print('Unable to determine directory');
+            throw Exception('Unable to determine directory');
+          }
+          print('Download directory: ${directory.path}');
 
-        String filePath = '${directory.path}/$filename';
+          String filePath = '${directory.path}/$filename';
 
-        bool fileExists = await File(filePath).exists();
-        if (fileExists) {
-          print('File already exists: $filePath');
-          _mediaPaths[zone.id]!.add(filePath);
-          _updateMediaModelForCampaign();
-          completedDownloads++;
-          _overallProgress = completedDownloads / _downloadCount;
-          print(
-              'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
-          notifyListeners();
-        } else {
-          await downloadFileForCampaign(mediaUrl, zone.id).then((_) {
+          bool fileExists = await File(filePath).exists();
+          if (fileExists) {
+            print('File already exists: $filePath');
             _mediaPaths[zone.id]!.add(filePath);
+            _updateMediaModelForCampaign();
             completedDownloads++;
             _overallProgress = completedDownloads / _downloadCount;
             print(
                 'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
             notifyListeners();
-          }).catchError((error) {
-            print("Error downloading file: $error");
-            _state = MqttState.failure;
-            notifyListeners();
-          });
-        }
+          } else {
+            await downloadFileForCampaign(mediaUrl, zone.id).then((_) {
+              _mediaPaths[zone.id]!.add(filePath);
+              completedDownloads++;
+              _overallProgress = completedDownloads / _downloadCount;
+              print(
+                  'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+              notifyListeners();
+            }).catchError((error) {
+              print("Error downloading file: $error");
+              _state = MqttState.failure;
+              notifyListeners();
+            });
+          }
 
-        if (completedDownloads == _downloadCount) {
-          print("All files processed.");
-          _state = MqttState.campaignScreen;
-          notifyListeners();
+          if (completedDownloads == _downloadCount) {
+            print("All files processed.");
+            _state = MqttState.campaignScreen;
+            notifyListeners();
+          }
         }
       }
     }
@@ -1032,14 +1132,65 @@ void _updateOverallProgress(int completedDownloads) {
 
   void _updateMediaModelForCampaign() {
     if (_campaignModel != null) {
-      for (var zone in _campaignModel!.data.zones) {
-        if (_mediaPaths.containsKey(zone.id)) {
-          List<String> zoneMediaPaths = _mediaPaths[zone.id]!;
-          for (int i = 0;
-              i < zone.mediaItems.length && i < zoneMediaPaths.length;
-              i++) {
-            zone.mediaItems[i].mediaUrl = zoneMediaPaths[i];
+      for (var campaign in _campaignModel!.data) {
+        for (var zone in campaign.zones) {
+          if (_mediaPaths.containsKey(zone.id)) {
+            List<String> zoneMediaPaths = _mediaPaths[zone.id]!;
+            for (int i = 0;
+                i < zone.mediaItems.length && i < zoneMediaPaths.length;
+                i++) {
+              zone.mediaItems[i].mediaUrl = zoneMediaPaths[i];
+            }
           }
+        }
+      }
+    }
+  }
+
+  Future<void> downloadFileForCampaign(String url, int zoneId,
+      {int retries = 3}) async {
+    int attempt = 0;
+    while (attempt < retries) {
+      try {
+        attempt++;
+        String filename = _extractFilename(url);
+        Directory? directory = await _getDirectory();
+        if (directory == null) {
+          print('Unable to determine directory');
+          throw Exception('Unable to determine directory');
+        }
+
+        String filePath = '${directory.path}/$filename';
+
+        Dio dio = Dio();
+        print(
+            'Attempt $attempt: Starting download from URL: $url to $filePath');
+
+        await dio.download(
+          url,
+          filePath,
+          onReceiveProgress: (received, total) {
+            if (total != -1) {
+              double progress = received / total;
+              print(
+                  'Download progress: ${(progress * 100).toStringAsFixed(2)}%');
+            }
+          },
+        );
+
+        _mediaPaths[zoneId]?.add(filePath);
+        _updateMediaModelForCampaign();
+
+        print('File downloaded to: $filePath');
+        return; // Exit on successful download
+      } catch (e) {
+        print('Download attempt $attempt failed: $e');
+        if (attempt >= retries) {
+          print('Maximum retry attempts reached. Download failed.');
+          throw Exception('Download failed after $retries attempts: $e');
+        } else {
+          print('Retrying download...');
+          await Future.delayed(Duration(seconds: 2)); // Wait before retrying
         }
       }
     }
@@ -1070,51 +1221,7 @@ void _updateOverallProgress(int completedDownloads) {
     }
   }
 
-  Future<void> downloadFileForCampaign(String url, int zoneId) async {
-    // if (Platform.isAndroid) {
-    //   print('Requesting storage permission...');
-    //   var status = await Permission.storage.request();
-    //   if (!status.isGranted) {
-    //     print('Storage permission denied $status');
-    //     throw Exception('Storage permission not granted');
-    //   }
-    //   print('Storage permission granted');
-    // }
-
-    try {
-      String filename = _extractFilename(url);
-      Directory? directory = await _getDirectory();
-      if (directory == null) {
-        print('Unable to determine directory');
-        throw Exception('Unable to determine directory');
-      }
-
-      String filePath = '${directory.path}/$filename';
-
-      Dio dio = Dio();
-      print('Starting download from URL: $url to $filePath');
-      await dio.download(
-        url,
-        filePath,
-        onReceiveProgress: (received, total) {
-          if (total != -1) {
-            double progress = received / total;
-            print('Download progress: ${(progress * 100).toStringAsFixed(2)}%');
-          }
-        },
-      );
-
-      _mediaPaths[zoneId]?.add(filePath);
-      _updateMediaModelForCampaign();
-
-      print('File downloaded to: $filePath');
-    } catch (e) {
-      print('Download failed: $e');
-      throw Exception('Download failed: $e');
-    }
-  }
-
-    String _extractFilename(String url, {String? mediaType}) {
+  String _extractFilename(String url, {String? mediaType}) {
     String decodedUrl = Uri.decodeFull(url);
     String filename = decodedUrl.split('/').last.split('?').first;
     if (mediaType != null) {
@@ -1166,7 +1273,6 @@ void _updateOverallProgress(int completedDownloads) {
     return null;
   }
 
-
   Future<void> _checkPairingStatus() async {
     Map<String, dynamic> requestBody;
 
@@ -1213,15 +1319,22 @@ void _updateOverallProgress(int completedDownloads) {
 
       _topic = response["player_code"];
 
-
       globleTopic = _topic;
       subsibeMessage(topic);
       await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
-
+      // await captureAndSendScreenshot(globleTopic);
       if (response["paired"] == false) {
+        print("this is state screeen ${response["paired"]}");
+        await prefs.setBool('storeState', response["paired"]);
+
         _state = MqttState.pairedScreen;
       } else if (response["paired"] == true) {
+        // Start capturing screenshots every second
+        // Timer.periodic(Duration(seconds: 1), (timer) async {
+        //   await captureAndSendScreenshot(globleTopic);
+        // });
+
         _state = MqttState.noContent;
       } else {
         _state = MqttState.failure;
@@ -1245,8 +1358,12 @@ void _updateOverallProgress(int completedDownloads) {
 
   void _handleIncomingMessage(String message) async {
     print('Received message in ViewModel: $message');
+    print('Received message in store state: $storeState');
+
     final jsonObj = jsonDecode(message);
+
     print('Saving JSON Object: $jsonObj');
+
     if (jsonObj["action"] == "publish_playlist" ||
         jsonObj["action"] == "publish_campaign") {
       SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -1275,7 +1392,12 @@ void _updateOverallProgress(int completedDownloads) {
         deviceSettings.rebootDeviceForLinux();
       }
     } else if (jsonObj["action"] == "action_setup_player") {
-      print("action mute${jsonObj["settings"]["mute_audio"]}");
+      if (storeState != null) {
+        if (storeState == false) {
+          await _checkPairingStatus();
+        }
+      }
+      // print("action mute${jsonObj["settings"]["mute_audio"]}");
       if (jsonObj["settings"]["mute_audio"] == true) {
         if (Platform.isMacOS) {
           deviceSettings.muteVolumeForMac();
@@ -1313,6 +1435,22 @@ void _updateOverallProgress(int completedDownloads) {
           var res = jsonObj["settings"]["brightness"]['value'];
           deviceSettings.changeBrightnessForLinux(res);
         }
+      } else if (jsonObj["settings"]["volume"] != null) {
+        if (Platform.isMacOS) {
+          print("No Volue For Mac");
+          var res = jsonObj["settings"]["volume"];
+          deviceSettings.setVolumeForMac(res);
+        } else if (Platform.isAndroid) {
+          print("i am here for andorind");
+          var value = jsonObj["settings"]["volume"];
+          deviceSettings.setVolumeForAndroid(value);
+        } else if (Platform.isWindows) {
+          var res = jsonObj["settings"]["volume"];
+          deviceSettings.adjustBrightnessForWindows(res);
+        } else if (Platform.isLinux) {
+          var res = jsonObj["settings"]["brightness"];
+          deviceSettings.changeBrightnessForLinux(res);
+        }
       }
       var data = {"success": true};
       publishMessage(globleTopic, jsonEncode(data));
@@ -1337,23 +1475,137 @@ void _updateOverallProgress(int completedDownloads) {
       }
     } else if (jsonObj["action"] == "publish_campaign") {
       _campaignModel = campaignModelFromJson(jsonEncode(jsonObj));
-      print("model data ${_campaignModel!.data.zones}");
-      print(_mediaList);
-      for (var media in _campaignModel!.data.zones) {
-        print("Media URL: $media");
-        _startDownloadingForCampaign();
+      for (var campaign in _campaignModel!.data) {
+        for (var zone in campaign.zones) {
+          for (var media in zone.mediaItems) {
+            print("Media URL: ${media.mediaUrl}");
+            _startDownloadingForCampaign();
+          }
+        }
       }
+      // print(_mediaList);
+      // for (var media in _campaignModel!.data[].zones) {
+      //   print("Media URL: $media");
+      //   _startDownloadingForCampaign();
+      // }
     } else if (jsonObj["action"] == "remove_playlist") {
       debugPrint("remove playlist and update screen");
       SharedPreferences prefs = await SharedPreferences.getInstance();
       prefs.clear();
       await _checkPairingStatus();
+    } else if (jsonObj["action"] == "action_delete") {
+      debugPrint("remove playlist and update screen");
+      SharedPreferences prefs = await SharedPreferences.getInstance();
+      prefs.clear();
+      await _checkPairingStatus();
+      await getStoredState();
     } else if (jsonObj["action"] == "remove_compaign") {
       debugPrint("remove playlist and update screen");
       SharedPreferences prefs = await SharedPreferences.getInstance();
       prefs.clear();
       await _checkPairingStatus();
     }
+  }
+
+  int _currentIndexOfCapmaign = 0;
+  Timer? _timerOfCampaign;
+
+  int get currentIndexOfCapmaign => _currentIndexOfCapmaign;
+
+  int get currentDurationOfCampaign {
+    final currentCampaign = campaignModel!.data[_currentIndexOfCapmaign];
+    final campaignSchedule = currentCampaign.campaignSchedule;
+
+    int durationcampagin = 0;
+
+    // Check if the item is in the schedule or should always play
+    if (campaignSchedule.alwaysPlay ||
+        _isPlaylistDateInRangeForCampagin(campaignSchedule.period.date.start,
+                campaignSchedule.period.date.end) &&
+            _isCurrentDayAllowedForCampain(
+              campaignSchedule.period.days,
+              DateTime.now(),
+            ) &&
+            _isTimeInRangeForCampaign(
+              campaignSchedule.period.time.from,
+              campaignSchedule.period.time.to,
+            )) {
+      durationcampagin = currentCampaign.campaignSettings.duration;
+    }
+
+    // Log the state
+    print(
+        "Current Index: $_currentIndexOfCapmaign, Duration: $durationcampagin seconds, Always Play: ${campaignSchedule.alwaysPlay}");
+
+    return durationcampagin;
+  }
+
+  void startPlaylistTimerForCampaign() {
+    _timerOfCampaign?.cancel();
+
+    // If the duration is 0, directly update the index and skip the timer setup
+    if (currentDurationOfCampaign == 0) {
+      _updateIndexForCampain();
+      print("Playlist item not in schedule, skipping timer setup.");
+    } else {
+      // Only start the timer if the duration is greater than 0
+      _timerOfCampaign = Timer(
+          Duration(seconds: currentDurationOfCampaign), _updateIndexForCampain);
+    }
+  }
+
+  void _updateIndexForCampain() {
+    _currentIndexOfCapmaign =
+        (_currentIndexOfCapmaign + 1) % campaignModel!.data.length;
+    notifyListeners();
+    startPlaylistTimerForCampaign();
+  }
+
+  void resetTimerForCapmpain() {
+    _timerOfCampaign?.cancel();
+    notifyListeners();
+  }
+
+  bool _isPlaylistDateInRangeForCampagin(DateTime startDate, DateTime endDate) {
+    DateTime now = DateTime.now();
+    return now.isAfter(startDate) &&
+        now.isBefore(endDate.add(const Duration(days: 1)));
+  }
+
+  bool _isCurrentDayAllowedForCampain(dynamic days, DateTime now) {
+    switch (now.weekday) {
+      case 1:
+        return days.monday ?? false;
+      case 2:
+        return days.tuesday ?? false;
+      case 3:
+        return days.wednesday ?? false;
+      case 4:
+        return days.thursday ?? false;
+      case 5:
+        return days.friday ?? false;
+      case 6:
+        return days.saturday ?? false;
+      case 7:
+        return days.sunday ?? false;
+      default:
+        return false;
+    }
+  }
+
+  bool _isTimeInRangeForCampaign(String timeFrom, String timeTo) {
+    DateTime currentTime = DateTime.now();
+    DateTime fromTime = DateTime.now().copyWith(
+      hour: int.parse(timeFrom.split(':')[0]),
+      minute: int.parse(timeFrom.split(':')[1]),
+    );
+
+    DateTime toTime = DateTime.now().copyWith(
+      hour: int.parse(timeTo.split(':')[0]),
+      minute: int.parse(timeTo.split(':')[1]),
+    );
+
+    return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
   }
 
   void _updateMessage() {
@@ -1385,7 +1637,7 @@ void _updateOverallProgress(int completedDownloads) {
               playlistSchedule.period!.time.from,
               playlistSchedule.period!.time.to,
             )) {
-      duration = currentPlaylist.playlistDefault!.duration;
+      duration = int.parse(currentPlaylist.playlistDefault!.duration);
     }
 
     // Log the state
@@ -1422,6 +1674,7 @@ void _updateOverallProgress(int completedDownloads) {
 // Clean up timer
   @override
   void dispose() {
+    _timerOfCampaign?.cancel();
     _timer?.cancel();
     super.dispose();
   }
@@ -1462,10 +1715,9 @@ void _updateOverallProgress(int completedDownloads) {
     );
 
     DateTime toTime = DateTime.now().copyWith(
-      hour: int.parse(timeTo.split(':')[0]),
-      minute: int.parse(timeTo.split(':')[1]),
-      second: int.parse(timeTo.split(':')[2]),
-    );
+        hour: int.parse(timeTo.split(':')[0]),
+        minute: int.parse(timeTo.split(':')[1]),
+        second: int.parse(timeFrom.split(':')[2]));
 
     return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
   }
