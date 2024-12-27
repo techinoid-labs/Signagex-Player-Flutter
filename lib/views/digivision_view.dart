@@ -16,7 +16,7 @@ const DigivisionView({super.key});
 class _DigivisionViewState extends State<DigivisionView> {
   @override
   void initState() {
-    // TODO: implement initState
+
     super.initState();
     
   }
@@ -26,64 +26,70 @@ class _DigivisionViewState extends State<DigivisionView> {
    final urlLauncherViewModel = Provider.of<MqttViewModel>(context,listen: false);
     
     return Scaffold(
-      body: Stack(
-        children: [
-          Image.asset(
-            "assets/images/background.png",
-            fit: BoxFit.cover,
-            height: MediaQuery.of(context).size.height,
-            width: MediaQuery.of(context).size.width,
-          ),
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Padding(
-                padding: EdgeInsets.symmetric(
-                  horizontal: screenWidth * 0.05, 
-                  vertical: 20,
+      body: GestureDetector(
+          onPanUpdate: (details) {
+          // This will print the touch position whenever the user touches or drags on the screen.
+          print("Touch Position: ${details.localPosition}");
+        },
+        child: Stack(
+          children: [
+            Image.asset(
+              "assets/images/background.png",
+              fit: BoxFit.cover,
+              height: MediaQuery.of(context).size.height,
+              width: MediaQuery.of(context).size.width,
+            ),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.spaceBetween,
+              children: [
+                Padding(
+                  padding: EdgeInsets.symmetric(
+                    horizontal: screenWidth * 0.05, 
+                    vertical: 20,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Image.asset(
+                        "assets/images/Logo.png",
+                        height: 220,
+                        width: 220,
+                      ),
+                      const CustomImageWidget(
+                        imagePath: 'assets/images/barcode.png',
+                      ),
+                    ],
+                  ),
                 ),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Image.asset(
-                      "assets/images/Logo.png",
-                      height: 220,
-                      width: 220,
-                    ),
-                    const CustomImageWidget(
-                      imagePath: 'assets/images/barcode.png',
-                    ),
-                  ],
-                ),
-              ),
-               Padding(
-                padding: const EdgeInsets.fromLTRB(30.0, 0, 0, 20),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    const SimpleText(
-                      text: "To get started enter the code below at ",
-                    ),
-                    GestureDetector(
-                       onTap: () => urlLauncherViewModel.launchUrl('https://norwinsol.tv'),
-                      child: const SimpleText(
-                        text: "https://norwinsol.tv/ setup",
-                        fontSize: 18,
+                 Padding(
+                  padding: const EdgeInsets.fromLTRB(30.0, 0, 0, 20),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const SimpleText(
+                        text: "To get started enter the code below at ",
+                      ),
+                      GestureDetector(
+                         onTap: () => urlLauncherViewModel.launchUrl('https://norwinsol.com/'),
+                        child: const SimpleText(
+                          text: "https://norwinsol.com/ setup",
+                          fontSize: 18,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                       SimpleText(
+                        text: urlLauncherViewModel.topic,
+                        fontSize: 24,
                         fontWeight: FontWeight.bold,
                       ),
-                    ),
-                     SimpleText(
-                      text: urlLauncherViewModel.topic,
-                      fontSize: 24,
-                      fontWeight: FontWeight.bold,
-                    ),
-                  ],
-                ),
-              )
-            ],
-          ),
-        ],
+                    ],
+                  ),
+                )
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }
