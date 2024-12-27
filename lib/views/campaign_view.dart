@@ -3,7 +3,6 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
-import 'package:intl/intl.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
@@ -16,17 +15,74 @@ class CampaignView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final mqttViewModel = Provider.of<MqttViewModel>(context);
-    var zones = mqttViewModel.campaignModel!.data.zones;
-    print(zones[0].mediaItems[0].mediaUrl);
-    print(zones[1].mediaItems[0].mediaUrl);
-    print(zones[2].mediaItems[0].mediaUrl);
-    print("this h:::${MediaQuery.sizeOf(context).height}");
-    print("this w:::${MediaQuery.sizeOf(context).width}");
 
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      mqttViewModel.startPlaylistTimerForCampaign();
+    });
+    final campaignModel = mqttViewModel.campaignModel;
+    print(
+        "this is  idddd${campaignModel!.data[mqttViewModel.currentIndexOfCapmaign].campaignId}");
+    print(
+        "this is duration of campaign ${campaignModel.data[mqttViewModel.currentIndexOfCapmaign].campaignSettings.duration}");
+    if (campaignModel == null || campaignModel.data.isEmpty) {
+      return const Scaffold(
+        backgroundColor: Colors.black,
+        body: Center(
+          child: Text(
+            "No campaign data available",
+            style: TextStyle(color: Colors.white),
+          ),
+        ),
+      );
+    }
+
+    final campaign = campaignModel.data[mqttViewModel.currentIndexOfCapmaign];
+    final campaignSchedule = campaign.campaignSchedule;
+
+    // Check scheduling logic
+    if (campaignSchedule.alwaysPlay) {
+      return _buildZones(campaign);
+    }
+
+    DateTime now = DateTime.now();
+
+    bool isCampaignDateInRange = _isCampaignDateInRange(
+      campaignSchedule.period.date.start,
+      campaignSchedule.period.date.end,
+    );
+
+    bool isCampaignDayAllowed = _isCurrentDayAllowed(
+      campaignSchedule.period.days,
+      now,
+    );
+
+    bool isCampaignTimeInRange = _isTimeInRange(
+      campaignSchedule.period.time.from,
+      campaignSchedule.period.time.to,
+    );
+
+    if (isCampaignDateInRange &&
+        isCampaignDayAllowed &&
+        isCampaignTimeInRange) {
+      return _buildZones(campaign);
+    }
+
+    return const Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Text(
+          "Campaign is not scheduled to play at this time.",
+          style: TextStyle(color: Colors.white),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildZones(Data campaign) {
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
-        children: zones.map((zone) {
+        children: campaign.zones.map((zone) {
           print(
               "Rendering Zone ID: ${zone.id} with Media Items: ${zone.mediaItems.map((item) => item.mediaUrl).toList()}");
 
@@ -43,6 +99,48 @@ class CampaignView extends StatelessWidget {
         }).toList(),
       ),
     );
+  }
+
+  bool _isCampaignDateInRange(DateTime startDate, DateTime endDate) {
+    DateTime now = DateTime.now();
+    return now.isAfter(startDate) &&
+        now.isBefore(endDate.add(const Duration(days: 1)));
+  }
+
+  bool _isCurrentDayAllowed(dynamic days, DateTime now) {
+    switch (now.weekday) {
+      case 1:
+        return days.monday ?? false;
+      case 2:
+        return days.tuesday ?? false;
+      case 3:
+        return days.wednesday ?? false;
+      case 4:
+        return days.thursday ?? false;
+      case 5:
+        return days.friday ?? false;
+      case 6:
+        return days.saturday ?? false;
+      case 7:
+        return days.sunday ?? false;
+      default:
+        return false;
+    }
+  }
+
+  bool _isTimeInRange(String timeFrom, String timeTo) {
+    DateTime currentTime = DateTime.now();
+    DateTime fromTime = DateTime.now().copyWith(
+      hour: int.parse(timeFrom.split(':')[0]),
+      minute: int.parse(timeFrom.split(':')[1]),
+    );
+
+    DateTime toTime = DateTime.now().copyWith(
+      hour: int.parse(timeTo.split(':')[0]),
+      minute: int.parse(timeTo.split(':')[1]),
+    );
+
+    return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
   }
 }
 
@@ -122,17 +220,15 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
   bool _isMediaAllowed(MediaItem media) {
     DateTime now = DateTime.now();
-    DateTime startDate =
-        DateFormat('M/d/yyyy').parse(media.schedule.period!.date.start);
-    DateTime endDate =
-        DateFormat('M/d/yyyy').parse(media.schedule.period!.date.end);
+    DateTime startDate = media.schedule.period.date.start;
+    DateTime endDate = media.schedule.period.date.end;
 
     bool isDateInRange = now.isAfter(startDate) &&
         now.isBefore(endDate.add(const Duration(days: 1)));
-    bool isDayAllowed = _isCurrentDayAllowed(media.schedule.period!.days, now);
+    bool isDayAllowed = _isCurrentDayAllowed(media.schedule.period.days, now);
     bool isTimeInRange = _isTimeInRange(
-      media.schedule.period!.time.from,
-      media.schedule.period!.time.to,
+      media.schedule.period.time.from,
+      media.schedule.period.time.to,
     );
 
     return isDateInRange && isDayAllowed && isTimeInRange;
