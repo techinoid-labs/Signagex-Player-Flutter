@@ -1,9 +1,11 @@
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import 'package:mqtt_client/mqtt_client.dart';
 import 'package:mqtt_client/mqtt_server_client.dart';
+import 'package:typed_data/typed_data.dart';
 
 import 'package:digital_signage/utils/globle_variable.dart';
 
@@ -127,6 +129,31 @@ class MqttClientService {
     }
   }
 
+  /// Publish binary data to a specific topic
+  void publishMessage(String topic, Uint8List payload) {
+    if (_client.connectionStatus!.state == MqttConnectionState.connected) {
+      final MqttClientPayloadBuilder builder = MqttClientPayloadBuilder();
+      
+      // Convert Uint8List to Uint8Buffer
+      final Uint8Buffer buffer = Uint8Buffer();
+      buffer.addAll(payload);
+
+      builder.addBuffer(buffer);  // Add binary data
+
+      _client.publishMessage(
+        topic,
+        MqttQos.atLeastOnce,
+        builder.payload!,
+        retain: false,
+      );
+
+      print('Message published to topic: $topic');
+    } else {
+      print('Cannot publish: MQTT client not connected.');
+    }
+  }
+  
+  
   void publish(String topic, String message) {
     var pubTopic = topic;
     final builder = MqttClientPayloadBuilder();
