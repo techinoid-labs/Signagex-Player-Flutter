@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'package:digital_signage/provider/main_provider.dart';
+import 'package:digital_signage/utils/globle_variable.dart';
 
 class MyHttpOverrides extends HttpOverrides {
   @override
@@ -16,10 +17,11 @@ void main() {
    HttpOverrides.global = MyHttpOverrides();
   runApp(
     MaterialApp(
-      home: MqttProvider(
+      home: RepaintBoundary(
+      key: boundaryKey,child:  MqttProvider(
         child: MyHomePage(), 
       ),
-    ),
+    ))
   );
 }
 
