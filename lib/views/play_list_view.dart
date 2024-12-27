@@ -139,6 +139,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     if (widget.playlist.playback!.order == "shuffle") {
       widget.mediaPaths.shuffle();
     }
+
     _initializeNextMedia();
   }
 
@@ -235,29 +236,18 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       print("Current media is an image: ${nextMedia.mediaUrl}");
       int durationSeconds =
           int.tryParse(nextMedia.settings.duration.toString()) ?? 5;
-      _timer = Timer(Duration(seconds: durationSeconds), _onMediaEnd);
-      setState(() {});
-    }
-  }
 
-  String _getCurrentDayString(int weekday) {
-    switch (weekday) {
-      case 1:
-        return 'monday';
-      case 2:
-        return 'tuesday';
-      case 3:
-        return 'wednesday';
-      case 4:
-        return 'thursday';
-      case 5:
-        return 'friday';
-      case 6:
-        return 'saturday';
-      case 7:
-        return 'sunday';
-      default:
-        return '';
+      // Set a timer for images with a duration
+      _timer = Timer(Duration(seconds: durationSeconds), () {
+        _onMediaEnd();
+      });
+
+      // If the playlist has only one media (image), force the transition after duration
+      if (widget.mediaPaths.length == 1) {
+        Future.delayed(Duration(seconds: durationSeconds), _onMediaEnd);
+      }
+
+      setState(() {});
     }
   }
 
@@ -326,7 +316,12 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
   @override
   Widget build(BuildContext context) {
+    if (_currentIndex >= widget.mediaPaths.length || _currentIndex < 0) {
+      _currentIndex = 0; // Reset to a valid index
+    }
     Media currentMedia = widget.mediaPaths[_currentIndex];
+
+    print("Displaying indezzzz $_currentIndex");
     print("Displaying media: ${currentMedia.settings.duration}");
     print("Displaying media: ${currentMedia.settings.ratio}");
     print("Displaying media: ${currentMedia.mediaUrl}");
@@ -347,7 +342,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                 return SlideTransition(
                   position: animation.drive(
                     Tween(
-                      begin: const Offset(-1, 0), // From left
+                      begin: const Offset(-1, 0),
                       end: Offset.zero,
                     ).chain(CurveTween(curve: Curves.easeInOut)),
                   ),
@@ -483,8 +478,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               ? VideoPlayerWidget(
                   key: ValueKey(currentMedia.mediaUrl),
                   filePath: currentMedia.mediaUrl,
-                  currentVolume: double.parse(
-                      currentMedia.settings.volume.toString()),
+                  currentVolume:
+                      double.parse(currentMedia.settings.volume.toString()),
                   onVideoEnd: _onMediaEnd,
                   aspectRatio: getAspectRatio(currentMedia.settings.ratio),
                   transitionType: currentMedia.settings.transition,
