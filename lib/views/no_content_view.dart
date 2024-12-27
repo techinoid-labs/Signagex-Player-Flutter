@@ -15,45 +15,63 @@ class NoContentView extends StatefulWidget {
 }
 
 class _NoContentViewState extends State<NoContentView> {
+  Offset? _touchPosition;
   @override
   Widget build(BuildContext context) {
    final urlLauncherViewModel = Provider.of<MqttViewModel>(context,listen: false);
 
     return Scaffold(
-      body: Stack(
-        children: [
-        
-          Image.asset(
-            "assets/images/background.png",
-            fit: BoxFit.cover, 
-            height: MediaQuery.of(context).size.height,
-            width: MediaQuery.of(context).size.width,
-          ),
-        
-           Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                
-               const CustomImageWidget(
-                  imagePath: 'assets/images/Browser.png',
-                ),
-                const SimpleText(
-                  text: "No Content Available for Playback",
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-                GestureDetector(
-                    onTap: () => urlLauncherViewModel.launchUrl('https://norwinsol.tv'),
-                  child: const SimpleText(
-                    text:
-                      "Go to https://onsign.tv to publish one or remove restriction.",
-                  ),
-                )
-              ],
+      body: GestureDetector(
+          onPanUpdate: (details) {
+             _touchPosition = details.localPosition;
+          // This will print the touch position whenever the user touches or drags on the screen.
+          print("Touch Position: ${details.localPosition}");
+        },
+        child: Stack(
+          children: [
+          
+            Image.asset(
+              "assets/images/background.png",
+              fit: BoxFit.cover, 
+              height: MediaQuery.of(context).size.height,
+              width: MediaQuery.of(context).size.width,
             ),
-          ),
-        ],
+          
+             Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  
+                 const CustomImageWidget(
+                    imagePath: 'assets/images/Browser.png',
+                  ),
+                  const SimpleText(
+                    text: "No Content Available for Playback",
+                    fontSize: 24,
+                    fontWeight: FontWeight.bold,
+                  ),
+                  GestureDetector(
+                      onTap: () => urlLauncherViewModel.launchUrl('https://norwinsol.com/'),
+                    child: const SimpleText(
+                      text:
+                        "Go to https://norwinsol.com/ to publish one or remove restriction.",
+                    ),
+                  ),
+                    if (_touchPosition != null)
+              Positioned(
+                left: _touchPosition!.dx - 15, // Adjust for the size of the indicator
+                top: _touchPosition!.dy - 15, // Adjust for the size of the indicator
+                child: Icon(
+                  Icons.touch_app,
+                  size: 30,
+                  color: Colors.red,
+                ),
+              ),
+                ],
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
