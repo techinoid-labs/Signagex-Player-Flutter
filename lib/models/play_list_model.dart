@@ -41,24 +41,27 @@ class Data {
     required this.playlist,
   });
 
-  factory Data.fromJson(Map<String, dynamic> json) => Data(
-        success: json["success"],
-        message: json["message"],
-        playbackType: json["playback_type"],
-        playlist: List<Playlist>.from(json["playlists"].map((x) => Playlist.fromJson(x))),
-      );
+factory Data.fromJson(Map<String, dynamic> json) => Data(
+      success: json["success"],
+      message: json["message"],
+      playbackType: json["playback_type"],
+      playlist: json["playlists"] != null
+          ? List<Playlist>.from(json["playlists"].map((x) => Playlist.fromJson(x)))
+          : [], // Provide an empty list if null
+    );
 
   Map<String, dynamic> toJson() => {
         "success": success,
         "message": message,
         "playback_type": playbackType,
-        "playlist": List<dynamic>.from(playlist.map((x) => x.toJson())),
+        "playlists": List<dynamic>.from(playlist.map((x) => x.toJson())),
       };
 }
 
 class Playlist {
   String name;
   String id;
+    String playbackType;
   SchedulePlaylist? playlistSchedule;
   Playback? playback;
   Default? playlistDefault;
@@ -69,6 +72,7 @@ class Playlist {
     required this.name,
     required this.id,
     this.playlistSchedule,
+    required this.playbackType,
     this.playback,
     this.playlistDefault,
     this.media,
@@ -81,6 +85,7 @@ class Playlist {
         playlistSchedule: json["playlist_schedule"] != null
             ? SchedulePlaylist.fromJson(json["playlist_schedule"])
             : null,
+            playbackType: json["playback_type"],
         playback: json["playback"] != null ? Playback.fromJson(json["playback"]) : null,
         playlistDefault: json["default"] != null ? Default.fromJson(json["default"]) : null,
         media: json["media"] != null
@@ -273,9 +278,9 @@ class Time {
 }
 
 class Default {
-  int duration;
+  String duration;
   String transition;
-  int? volume;
+  String? volume;
   bool isPaused;
   String? otherMediaDefaultVolume;
   String? ratio;
