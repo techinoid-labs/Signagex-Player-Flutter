@@ -7,7 +7,7 @@ import 'package:digital_signage/widgets/center_image_widget.dart';
 import 'package:digital_signage/widgets/text_widget.dart';
 
 class DigivisionView extends StatefulWidget {
-const DigivisionView({super.key});
+  const DigivisionView({super.key});
 
   @override
   State<DigivisionView> createState() => _DigivisionViewState();
@@ -16,19 +16,18 @@ const DigivisionView({super.key});
 class _DigivisionViewState extends State<DigivisionView> {
   @override
   void initState() {
-
     super.initState();
-    
   }
+
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
-   final urlLauncherViewModel = Provider.of<MqttViewModel>(context,listen: false);
-    
+    final urlLauncherViewModel =
+        Provider.of<MqttViewModel>(context, listen: false);
+
     return Scaffold(
       body: GestureDetector(
-          onPanUpdate: (details) {
-          // This will print the touch position whenever the user touches or drags on the screen.
+        onPanUpdate: (details) {
           print("Touch Position: ${details.localPosition}");
         },
         child: Stack(
@@ -45,7 +44,7 @@ class _DigivisionViewState extends State<DigivisionView> {
               children: [
                 Padding(
                   padding: EdgeInsets.symmetric(
-                    horizontal: screenWidth * 0.05, 
+                    horizontal: screenWidth * 0.05,
                     vertical: 20,
                   ),
                   child: Row(
@@ -62,7 +61,7 @@ class _DigivisionViewState extends State<DigivisionView> {
                     ],
                   ),
                 ),
-                 Padding(
+                Padding(
                   padding: const EdgeInsets.fromLTRB(30.0, 0, 0, 20),
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
@@ -71,14 +70,15 @@ class _DigivisionViewState extends State<DigivisionView> {
                         text: "To get started enter the code below at ",
                       ),
                       GestureDetector(
-                         onTap: () => urlLauncherViewModel.launchUrl('https://norwinsol.com/'),
+                        onTap: () => urlLauncherViewModel
+                            .launchUrl('https://norwinsol.com/'),
                         child: const SimpleText(
                           text: "https://norwinsol.com/ setup",
                           fontSize: 18,
                           fontWeight: FontWeight.bold,
                         ),
                       ),
-                       SimpleText(
+                      SimpleText(
                         text: urlLauncherViewModel.topic,
                         fontSize: 24,
                         fontWeight: FontWeight.bold,
