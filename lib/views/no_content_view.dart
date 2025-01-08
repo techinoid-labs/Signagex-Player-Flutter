@@ -25,7 +25,7 @@ class _NoContentViewState extends State<NoContentView> {
           onPanUpdate: (details) {
              _touchPosition = details.localPosition;
           // This will print the touch position whenever the user touches or drags on the screen.
-          print("Touch Position: ${details.localPosition}");
+          print(" Position: ${_touchPosition}");
         },
         child: Stack(
           children: [
@@ -56,17 +56,7 @@ class _NoContentViewState extends State<NoContentView> {
                       text:
                         "Go to https://norwinsol.com/ to publish one or remove restriction.",
                     ),
-                  ),
-                    if (_touchPosition != null)
-              Positioned(
-                left: _touchPosition!.dx - 15, // Adjust for the size of the indicator
-                top: _touchPosition!.dy - 15, // Adjust for the size of the indicator
-                child: Icon(
-                  Icons.touch_app,
-                  size: 30,
-                  color: Colors.red,
-                ),
-              ),
+                  )
                 ],
               ),
             ),
