@@ -16,6 +16,7 @@ class ApiRepository {
 
   Future<dynamic> postData(String url, dynamic data, String? authToken) async {
     try {
+      print(baseurl+url);
       return await _apiService.postApiResponse(baseurl+url, data, authToken);
     } catch (e) {
       rethrow;
