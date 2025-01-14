@@ -11,17 +11,16 @@ import 'package:battery_plus/battery_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:geolocator/geolocator.dart';
-import 'package:image/image.dart' as img;
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
-import 'package:screenshot/screenshot.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:system_info2/system_info2.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:digital_signage/models/compaign_model.dart';
+import 'package:digital_signage/models/intractivity_model.dart';
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
@@ -68,6 +67,10 @@ class MqttViewModel extends ChangeNotifier {
   CampaignModel? _campaignModel;
 
   CampaignModel? get campaignModel => _campaignModel;
+
+  InteractivityModel? _interactivityModel;
+
+  InteractivityModel? get interactivityModel => _interactivityModel;
 
   Map<String, String?> macAddresses = {
     'wlan0': null,
@@ -124,7 +127,7 @@ class MqttViewModel extends ChangeNotifier {
   Future<void> loadDeviceInfoFromSharedPreferences() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     String? jsonString = prefs.getString('deviceInfoMap');
-prefs.clear();
+    prefs.clear();
     if (jsonString != null) {
       // Decode the JSON string back to a Map
       deviceInfoMap = Map<String, dynamic>.from(jsonDecode(jsonString));
@@ -133,8 +136,6 @@ prefs.clear();
       print('No device info found in SharedPreferences.');
     }
   }
-
-  final ScreenshotController _screenshotController = ScreenshotController();
 
   MqttViewModel(this._mqttClientService) {
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
@@ -198,10 +199,10 @@ prefs.clear();
     // Compress the image further by lowering quality and size
     final compressedBytes = await FlutterImageCompress.compressWithList(
       imageBytes,
-      minWidth: 400, // Further reduce width
-      minHeight: 300, // Further reduce height
-      quality: 5, // Lower quality for smaller size
-      format: CompressFormat.jpeg, // Use JPEG for better compression
+      minWidth: 400, 
+      minHeight: 300, 
+      quality: 5,
+      format: CompressFormat.jpeg,
     );
     return compressedBytes;
   }
@@ -245,7 +246,7 @@ prefs.clear();
           _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
 
           print(_mediaList);
-          for (var campaign in _campaignModel!.data) {
+          for (var campaign in _campaignModel!.data.playerCampaigns) {
             for (var zone in campaign.zones) {
               for (var media in zone.mediaItems) {
                 print("Media URL: ${media.mediaUrl}");
@@ -275,7 +276,7 @@ prefs.clear();
         } else if (storedJsonObj["action"] == "publish_campaign") {
           _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
 
-          for (var campaign in _campaignModel!.data) {
+          for (var campaign in _campaignModel!.data.playerCampaigns) {
             for (var zone in campaign.zones) {
               for (var media in zone.mediaItems) {
                 print("Media URL: ${media.mediaUrl}");
@@ -913,163 +914,167 @@ EOF
   final Map<String, List<String>> _mediaPath = {};
   Map<String, List<String>> get mediaPath => _mediaPath;
 
- void _startDownloadingForPlaylist() async {
-  if (_state == MqttState.downloading) {
-    print("Downloads are already in progress.");
-    return;
-  }
+  void _startDownloadingForPlaylist() async {
+    if (_state == MqttState.downloading) {
+      print("Downloads are already in progress.");
+      return;
+    }
 
-  _downloadCount = _playListModel!.data.playlist.fold(
-    0,
-    (count, playlist) => count + (playlist.media?.length ?? 0),
-  );
+    _downloadCount = _playListModel!.data.playlist.fold(
+      0,
+      (count, playlist) => count + (playlist.media?.length ?? 0),
+    );
 
-  Map<String, dynamic> sendLog = {
-    "action": "player_logs",
-    "log": "Download Playlist",
-    "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-    "type": "info",
-    "date_time": DateTime.now().toIso8601String(),
-  };
-  _mqttClientService.publish(topic, jsonEncode(sendLog));
-  print("Total media files to download: $_downloadCount");
+    Map<String, dynamic> sendLog = {
+      "action": "player_logs",
+      "log": "Download Playlist",
+      "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+      "type": "info",
+      "date_time": DateTime.now().toIso8601String(),
+    };
+    _mqttClientService.publish(topic, jsonEncode(sendLog));
+    print("Total media files to download: $_downloadCount");
 
-  if (_downloadCount > 0) {
-    _state = MqttState.downloading;
-    notifyListeners();
-  } else {
-    _state = MqttState.noContent;
-    notifyListeners();
-    return;
-  }
+    if (_downloadCount > 0) {
+      _state = MqttState.downloading;
+      notifyListeners();
+    } else {
+      _state = MqttState.noContent;
+      notifyListeners();
+      return;
+    }
 
-  int completedDownloads = 0;
-  _overallProgress = 0.0;
+    int completedDownloads = 0;
+    _overallProgress = 0.0;
 
-  for (var playlist in _playListModel!.data.playlist) {
-    _mediaPath[playlist.id] = [];
+    for (var playlist in _playListModel!.data.playlist) {
+      _mediaPath[playlist.id] = [];
 
-    for (var media in playlist.media!) {
-      String mediaUrl = media.mediaUrl;
-      String filename = _extractFilename(mediaUrl);
-      Directory? directory = await _getDirectory();
-      if (directory == null) {
-        print('Unable to determine directory');
-        throw Exception('Unable to determine directory');
-      }
+      for (var media in playlist.media!) {
+        String mediaUrl = media.mediaUrl;
+        String filename = _extractFilename(mediaUrl);
+        Directory? directory = await _getDirectory();
+        if (directory == null) {
+          print('Unable to determine directory');
+          throw Exception('Unable to determine directory');
+        }
 
-      String filePath = '${directory.path}/$filename';
-      bool fileExists = await File(filePath).exists();
+        String filePath = '${directory.path}/$filename';
+        bool fileExists = await File(filePath).exists();
 
-      if (fileExists) {
-        _mediaPath[playlist.id]!.add(filePath);
-        completedDownloads++;
-        _updateOverallProgress(completedDownloads);
-      } else {
-        try {
-          await downloadFileForPlaylist(mediaUrl, playlist.id);
+        if (fileExists) {
           _mediaPath[playlist.id]!.add(filePath);
           completedDownloads++;
           _updateOverallProgress(completedDownloads);
-        } catch (error) {
-          print("Error downloading file: $error");
-          Map<String, dynamic> errorLog = {
-            "action": "player_logs",
-            "log": "Download Playlist",
-            "name":
-                "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-            "type": "error",
-            "date_time": DateTime.now().toIso8601String(),
-          };
+        } else {
+          try {
+            await downloadFileForPlaylist(mediaUrl, playlist.id);
+            _mediaPath[playlist.id]!.add(filePath);
+            completedDownloads++;
+            _updateOverallProgress(completedDownloads);
+          } catch (error) {
+            print("Error downloading file: $error");
+            Map<String, dynamic> errorLog = {
+              "action": "player_logs",
+              "log": "Download Playlist",
+              "name":
+                  "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+              "type": "error",
+              "date_time": DateTime.now().toIso8601String(),
+            };
 
-          _mqttClientService.publish(topic, jsonEncode(errorLog));
-          _state = MqttState.failure;
-          notifyListeners();
+            _mqttClientService.publish(topic, jsonEncode(errorLog));
+            _state = MqttState.failure;
+            notifyListeners();
+          }
         }
       }
     }
+
+    if (completedDownloads == _downloadCount) {
+      print("All media files for all playlists have been downloaded.");
+      _updateMediaModelForPlaylist(); // Update model with local file paths
+      _state = MqttState.playlistScreen;
+      notifyListeners();
+    }
   }
 
-  if (completedDownloads == _downloadCount) {
-    print("All media files for all playlists have been downloaded.");
-    _updateMediaModelForPlaylist(); // Update model with local file paths
-    _state = MqttState.playlistScreen;
-    notifyListeners();
-  }
-}
   void _updateOverallProgress(int completedDownloads) {
     _overallProgress = completedDownloads / _downloadCount;
     print('Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
     notifyListeners();
   }
 
-void _updateMediaModelForPlaylist() {
-  if (_playListModel != null) {
-    for (var playlist in _playListModel!.data.playlist) {
-      if (_mediaPath.containsKey(playlist.id)) {
-        List<String> playlistMediaPaths = _mediaPath[playlist.id]!;
-        for (int i = 0; i < playlist.media!.length; i++) {
-          if (i < playlistMediaPaths.length) {
-            String localPath = playlistMediaPaths[i];
-            if (File(localPath).existsSync()) {
-              playlist.media![i].mediaUrl = localPath; // Update to local path
-            } else {
-              print("File not found: $localPath");
+  void _updateMediaModelForPlaylist() {
+    if (_playListModel != null) {
+      for (var playlist in _playListModel!.data.playlist) {
+        if (_mediaPath.containsKey(playlist.id)) {
+          List<String> playlistMediaPaths = _mediaPath[playlist.id]!;
+          for (int i = 0; i < playlist.media!.length; i++) {
+            if (i < playlistMediaPaths.length) {
+              String localPath = playlistMediaPaths[i];
+              if (File(localPath).existsSync()) {
+                playlist.media![i].mediaUrl = localPath; // Update to local path
+              } else {
+                print("File not found: $localPath");
+              }
             }
           }
         }
       }
-    }
-    _playListModel!.data.playlist.forEach((playlist) {
-      playlist.media!.forEach((media) {
-        print("Updated Media URL: ${media.mediaUrl}");
+      _playListModel!.data.playlist.forEach((playlist) {
+        playlist.media!.forEach((media) {
+          print("Updated Media URL: ${media.mediaUrl}");
+        });
       });
-    });
-    notifyListeners();
+      notifyListeners();
+    }
   }
-}
- Future<void> downloadFileForPlaylist(String url, String playlistId,{int retries = 3}) async {
-  int attempt = 0;
-  while (attempt < retries) {
-    try {
-      attempt++;
-      String filename = _extractFilename(url);
-      Directory? directory = await _getDirectory();
-      if (directory == null) {
-        print('Unable to determine directory');
-        throw Exception('Unable to determine directory');
-      }
 
-      String filePath = '${directory.path}/$filename';
-      print('Downloading from URL: $url to $filePath');
+  Future<void> downloadFileForPlaylist(String url, String playlistId,
+      {int retries = 3}) async {
+    int attempt = 0;
+    while (attempt < retries) {
+      try {
+        attempt++;
+        String filename = _extractFilename(url);
+        Directory? directory = await _getDirectory();
+        if (directory == null) {
+          print('Unable to determine directory');
+          throw Exception('Unable to determine directory');
+        }
 
-      Dio dio = Dio();
-      await dio.download(
-        url,
-        filePath,
-        onReceiveProgress: (received, total) {
-          if (total != -1) {
-            double progress = received / total;
-            print('Download progress: ${(progress * 100).toStringAsFixed(2)}%');
-          }
-        },
-      );
+        String filePath = '${directory.path}/$filename';
+        print('Downloading from URL: $url to $filePath');
 
-      _mediaPath[playlistId]?.add(filePath);
-      print('Download complete: $filePath');
-      return; // Exit on successful download
-    } catch (e) {
-      print('Download attempt $attempt failed: $e');
-      if (attempt >= retries) {
-        print('Maximum retry attempts reached. Download failed.');
-        throw Exception('Download failed after $retries attempts: $e');
-      } else {
-        print('Retrying download...');
-        await Future.delayed(Duration(seconds: 2)); // Wait before retrying
+        Dio dio = Dio();
+        await dio.download(
+          url,
+          filePath,
+          onReceiveProgress: (received, total) {
+            if (total != -1) {
+              double progress = received / total;
+              print(
+                  'Download progress: ${(progress * 100).toStringAsFixed(2)}%');
+            }
+          },
+        );
+
+        _mediaPath[playlistId]?.add(filePath);
+        print('Download complete: $filePath');
+        return; // Exit on successful download
+      } catch (e) {
+        print('Download attempt $attempt failed: $e');
+        if (attempt >= retries) {
+          print('Maximum retry attempts reached. Download failed.');
+          throw Exception('Download failed after $retries attempts: $e');
+        } else {
+          print('Retrying download...');
+          await Future.delayed(Duration(seconds: 2));
+        }
       }
     }
   }
-}
 
   final Map<int, List<String>> _mediaPaths = {};
 
@@ -1088,7 +1093,7 @@ void _updateMediaModelForPlaylist() {
 
     _mqttClientService.publish(topic, jsonEncode(sendLog));
     // Calculate the total number of files to download from all zones
-    _downloadCount = _campaignModel!.data
+    _downloadCount = _campaignModel!.data.playerCampaigns
         .expand((campaign) =>
             campaign.zones) // Flatten all zones from all campaigns
         .expand(
@@ -1101,15 +1106,6 @@ void _updateMediaModelForPlaylist() {
       _state = MqttState.downloading;
       notifyListeners();
     } else {
-      //  Map<String, dynamic> sendLog = {
-      //     "action": "player_logs",
-      //     "log":"Publish Playlist",
-      //     "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-      //     "type": "info",
-      //     "dateTime": DateTime.now().toIso8601String(),
-      //   };
-
-      //   _mqttClientService.publish(topic, jsonEncode(sendLog));
       _state = MqttState.noContent;
       notifyListeners();
       return;
@@ -1119,7 +1115,7 @@ void _updateMediaModelForPlaylist() {
     _overallProgress = 0.0;
 
     // Iterate through all campaigns, and then all zones within each campaign
-    for (var campaign in _campaignModel!.data) {
+    for (var campaign in _campaignModel!.data.playerCampaigns) {
       for (var zone in campaign.zones) {
         _mediaPaths[zone.id] = [];
 
@@ -1186,7 +1182,7 @@ void _updateMediaModelForPlaylist() {
 
   void _updateMediaModelForCampaign() {
     if (_campaignModel != null) {
-      for (var campaign in _campaignModel!.data) {
+      for (var campaign in _campaignModel!.data.playerCampaigns) {
         for (var zone in campaign.zones) {
           if (_mediaPaths.containsKey(zone.id)) {
             List<String> zoneMediaPaths = _mediaPaths[zone.id]!;
@@ -1587,10 +1583,8 @@ void _updateMediaModelForPlaylist() {
 // Deserialize the JSON into the model
       _playListModel = playListModelFromJson(jsonEncode(jsonObj));
 
-      print(
-          "model data ${_playListModel!.data.playlist}"); // This should print the list of Playlist objects
+      print("model data ${_playListModel!.data.playlist}");
 
-// Iterate through the playlist list
       for (var playlist in _playListModel!.data.playlist) {
         // Check if the playlist contains any media
         if (playlist.media != null && playlist.media!.isNotEmpty) {
@@ -1613,7 +1607,7 @@ void _updateMediaModelForPlaylist() {
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       _campaignModel = campaignModelFromJson(jsonEncode(jsonObj));
-      for (var campaign in _campaignModel!.data) {
+      for (var campaign in _campaignModel!.data.playerCampaigns) {
         for (var zone in campaign.zones) {
           for (var media in zone.mediaItems) {
             print("Media URL: ${media.mediaUrl}");
@@ -1621,11 +1615,9 @@ void _updateMediaModelForPlaylist() {
           }
         }
       }
-      // print(_mediaList);
-      // for (var media in _campaignModel!.data[].zones) {
-      //   print("Media URL: $media");
-      //   _startDownloadingForCampaign();
-      // }
+    } else if (jsonObj["action"] == "publish_interactivity") {
+      _interactivityModel = interactivityModelFromJson(jsonEncode(jsonObj));
+      print("i am in intractvity");
     } else if (jsonObj["action"] == "remove_playlist") {
       debugPrint("remove playlist and update screen");
       Map<String, dynamic> sendLog = {
@@ -1679,7 +1671,8 @@ void _updateMediaModelForPlaylist() {
   int get currentIndexOfCapmaign => _currentIndexOfCapmaign;
 
   int get currentDurationOfCampaign {
-    final currentCampaign = campaignModel!.data[_currentIndexOfCapmaign];
+    final currentCampaign =
+        campaignModel!.data.playerCampaigns[_currentIndexOfCapmaign];
     final campaignSchedule = currentCampaign.campaignSchedule;
 
     int durationcampagin = 0;
@@ -1696,7 +1689,7 @@ void _updateMediaModelForPlaylist() {
               campaignSchedule.period.time.from,
               campaignSchedule.period.time.to,
             )) {
-      durationcampagin = currentCampaign.campaignSettings.duration;
+      durationcampagin = int.parse(currentCampaign.campaignSettings.duration);
     }
 
     // Log the state
@@ -1743,12 +1736,12 @@ void _updateMediaModelForPlaylist() {
   }
 
   void _updateIndexForCampain() {
-    _currentIndexOfCapmaign =
-        (_currentIndexOfCapmaign + 1) % campaignModel!.data.length;
+    _currentIndexOfCapmaign = (_currentIndexOfCapmaign + 1) %
+        campaignModel!.data.playerCampaigns.length;
     Map<String, dynamic> sendLog = {
       "action": "player_logs",
       "log": "Current Campaign",
-      "name": "${_playListModel!.data.playlist[_currentIndex].name}",
+      "name": "${_campaignModel?.data.playerCampaigns[_currentIndex].campaignName ?? ""}",
       "type": "info",
       "date_time": DateTime.now().toIso8601String(),
     };
