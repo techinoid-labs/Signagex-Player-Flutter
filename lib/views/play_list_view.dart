@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
@@ -154,8 +155,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
       Future.delayed(const Duration(milliseconds: 500), () {
         if (!_isDisposed) {
-     
-
           setState(() {
             if (widget.playlist.playback!.order == "shuffle") {
               print(".......i am in shuffle .....");
@@ -174,9 +173,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   }
 
   void _initializeNextMedia() {
-         widget.mediaPaths.forEach((media) {
-            print("This is listsssss ${media.mediaUrl}");
-          });
+    widget.mediaPaths.forEach((media) {
+      print("This is listsssss ${media.mediaUrl}");
+    });
     if (_currentIndex < widget.mediaPaths.length) {
       Media nextMedia = widget.mediaPaths[_currentIndex];
       print("Loading media at index $_currentIndex: ${nextMedia.mediaUrl}");
@@ -207,39 +206,39 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       String? timeFrom = nextMedia.schedule.period!.time.from;
       String? timeTo = nextMedia.schedule.period!.time.to;
 
-      if (timeFrom != null && timeTo != null) {
-        DateTime currentTime = DateTime.now();
-        DateTime fromTime = DateTime.now().copyWith(
-          hour: int.parse(timeFrom.split(':')[0]),
-          minute: int.parse(timeFrom.split(':')[1]),
-          second: int.parse(timeFrom.split(':')[2]),
-        );
+      DateTime currentTime = DateTime.now();
+      DateTime fromTime = DateTime.now().copyWith(
+        hour: int.parse(timeFrom.split(':')[0]),
+        minute: int.parse(timeFrom.split(':')[1]),
+        second: int.parse(timeFrom.split(':')[2]),
+      );
 
-        DateTime toTime = DateTime.now().copyWith(
-          hour: int.parse(timeTo.split(':')[0]),
-          minute: int.parse(timeTo.split(':')[1]),
-          second: int.parse(timeTo.split(':')[2]),
-        );
+      DateTime toTime = DateTime.now().copyWith(
+        hour: int.parse(timeTo.split(':')[0]),
+        minute: int.parse(timeTo.split(':')[1]),
+        second: int.parse(timeTo.split(':')[2]),
+      );
 
-        bool isTimeInRange =
-            currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
-        print("Is current time in range: $isTimeInRange");
+      bool isTimeInRange =
+          currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
+      print("Is current time in range: $isTimeInRange");
 
-        if (isDateInRange && isDayAllowed && isTimeInRange) {
-          String duration = nextMedia.settings.duration.toString();
-          print("Loading duration at index $_currentIndex: $duration");
-          _startMediaLoop(duration);
-          _loadMedia(nextMedia);
-        } else {
-          print("Skipping media not allowed by schedule.");
-          print("Current date, day, or time is not allowed for this media.");
-          _onMediaEnd();
-        }
+      if (isDateInRange && isDayAllowed && isTimeInRange) {
+        String duration = nextMedia.settings.duration.toString();
+        print("Loading duration at index $_currentIndex: $duration");
+        _startMediaLoop(duration);
+        _loadMedia(nextMedia);
       } else {
-        print("Time range not defined for this media.");
+        print("Skipping media not allowed by schedule.");
+        print("Current date, day, or time is not allowed for this media.");
         _onMediaEnd();
       }
     }
+  }
+
+  bool isWebFile(String path) {
+    final webExtensions = ['.html'];
+    return webExtensions.any((ext) => path.endsWith(ext));
   }
 
   void _loadMedia(Media nextMedia) {
@@ -514,15 +513,24 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   aspectRatio: getAspectRatio(currentMedia.settings.ratio),
                   transitionType: currentMedia.settings.transition,
                 )
-              : SizedBox.expand(
-                  key: ValueKey(currentMedia.mediaUrl),
-                  child: ImageWidget(
-                    filePath: currentMedia.mediaUrl,
-                    onImageEnd: _onMediaEnd,
-                    aspectRatio: getAspectRatio(currentMedia.settings.ratio),
-                    transitionType: currentMedia.settings.transition,
-                  ),
-                ),
+              : isWebFile(currentMedia.mediaUrl)
+                  ? SizedBox.expand(
+                      key: ValueKey(currentMedia.mediaUrl),
+                      child: WBViewWidget(
+                          media: currentMedia.mediaUrl,
+                          onMediaEnd: _onMediaEnd,
+                          transitionType: currentMedia.settings.transition),
+                    )
+                  : SizedBox.expand(
+                      key: ValueKey(currentMedia.mediaUrl),
+                      child: ImageWidget(
+                        filePath: currentMedia.mediaUrl,
+                        onImageEnd: _onMediaEnd,
+                        aspectRatio:
+                            getAspectRatio(currentMedia.settings.ratio),
+                        transitionType: currentMedia.settings.transition,
+                      ),
+                    ),
         ),
       ),
     );
@@ -687,6 +695,60 @@ class ImageWidget extends StatelessWidget {
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 500),
       child: imageWidget,
+    );
+  }
+}
+
+class WBViewWidget extends StatefulWidget {
+  final String media; // Absolute file path
+  final VoidCallback onMediaEnd;
+  final String transitionType;
+
+  const WBViewWidget({
+    Key? key,
+    required this.media,
+    required this.onMediaEnd,
+    required this.transitionType,
+  }) : super(key: key);
+
+  @override
+  _WBViewWidgetState createState() => _WBViewWidgetState();
+}
+
+class _WBViewWidgetState extends State<WBViewWidget> {
+  InAppWebViewController? _webViewController;
+  double progress = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    String fileUrl = 'file://${widget.media}';
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 500),
+      child: Column(
+        children: [
+          if (progress < 1.0) LinearProgressIndicator(value: progress),
+          Expanded(
+            child: InAppWebView(
+              initialUrlRequest: URLRequest(url:WebUri.uri(Uri.parse(fileUrl)) ),
+              onWebViewCreated: (InAppWebViewController controller) {
+                _webViewController = controller;
+              },
+              onProgressChanged: (controller, newProgress) {
+                setState(() {
+                  progress = newProgress / 100.0;
+                });
+              },
+              onLoadError: (controller, url, code, message) {
+                print("Load error: $message");
+              },
+              onLoadHttpError: (controller, url, statusCode, description) {
+                print("HTTP error: $description");
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
