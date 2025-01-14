@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
@@ -21,10 +22,10 @@ class CampaignView extends StatelessWidget {
     });
     final campaignModel = mqttViewModel.campaignModel;
     print(
-        "this is  idddd${campaignModel!.data[mqttViewModel.currentIndexOfCapmaign].campaignId}");
+        "this is id ${campaignModel!.data.playerCampaigns[mqttViewModel.currentIndexOfCapmaign].campaignId}");
     print(
-        "this is duration of campaign ${campaignModel.data[mqttViewModel.currentIndexOfCapmaign].campaignSettings.duration}");
-    if (campaignModel == null || campaignModel.data.isEmpty) {
+        "this is duration of campaign ${campaignModel.data.playerCampaigns[mqttViewModel.currentIndexOfCapmaign].campaignSettings.duration}");
+    if (campaignModel.data.playerCampaigns.isEmpty) {
       return const Scaffold(
         backgroundColor: Colors.black,
         body: Center(
@@ -36,10 +37,10 @@ class CampaignView extends StatelessWidget {
       );
     }
 
-    final campaign = campaignModel.data[mqttViewModel.currentIndexOfCapmaign];
+    final campaign = campaignModel
+        .data.playerCampaigns[mqttViewModel.currentIndexOfCapmaign];
     final campaignSchedule = campaign.campaignSchedule;
 
-    // Check scheduling logic
     if (campaignSchedule.alwaysPlay) {
       return _buildZones(campaign);
     }
@@ -78,7 +79,7 @@ class CampaignView extends StatelessWidget {
     );
   }
 
-  Widget _buildZones(Data campaign) {
+  Widget _buildZones(PlayerCampaign campaign) {
     return Scaffold(
       backgroundColor: Colors.black,
       body: Stack(
@@ -269,11 +270,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   }
 
   void _onMediaEnd() {
+    if (!mounted) return;
     setState(() {
       _opacity = 0.0;
     });
 
     Future.delayed(const Duration(milliseconds: 500), () {
+      if (!mounted) return;
       setState(() {
         if (_currentMediaIndex < widget.mediaItems.length - 1) {
           _currentMediaIndex++;
@@ -319,6 +322,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     );
 
     return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
+  }
+
+  bool isWebFile(String path) {
+    final webExtensions = ['.html'];
+    return webExtensions.any((ext) => path.endsWith(ext));
   }
 
   @override
@@ -489,12 +497,17 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                 onVideoEnd: _onMediaEnd,
                 transitionType: currentMedia.settings.transition,
               )
-            : ImageWidget(
-                key: ValueKey(currentMedia.id), // Unique key
-                filePath: currentMedia.mediaUrl,
-                onImageEnd: _onMediaEnd,
-                transitionType: currentMedia.settings.transition,
-              ),
+            : isWebFile(currentMedia.mediaUrl)
+                ? WBViewWidget(
+                    key: ValueKey(currentMedia.id),
+                    media: currentMedia.mediaUrl,
+                    onMediaEnd: _onMediaEnd)
+                : ImageWidget(
+                    key: ValueKey(currentMedia.id), // Unique key
+                    filePath: currentMedia.mediaUrl,
+                    onImageEnd: _onMediaEnd,
+                    transitionType: currentMedia.settings.transition,
+                  ),
       ),
     );
   }
@@ -641,6 +654,59 @@ class ImageWidget extends StatelessWidget {
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 500),
       child: imageWidget,
+    );
+  }
+}
+
+class WBViewWidget extends StatefulWidget {
+  final String media; // Absolute file path
+  final VoidCallback onMediaEnd;
+
+  const WBViewWidget({
+    Key? key,
+    required this.media,
+    required this.onMediaEnd,
+  }) : super(key: key);
+
+  @override
+  _WBViewWidgetState createState() => _WBViewWidgetState();
+}
+
+class _WBViewWidgetState extends State<WBViewWidget> {
+  InAppWebViewController? _webViewController;
+  double progress = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    String fileUrl = 'file://${widget.media}';
+
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 500),
+      child: Column(
+        children: [
+          if (progress < 1.0) LinearProgressIndicator(value: progress),
+          Expanded(
+            child: InAppWebView(
+              initialUrlRequest:
+                  URLRequest(url: WebUri.uri(Uri.parse(fileUrl))),
+              onWebViewCreated: (InAppWebViewController controller) {
+                _webViewController = controller;
+              },
+              onProgressChanged: (controller, newProgress) {
+                setState(() {
+                  progress = newProgress / 100.0;
+                });
+              },
+              onLoadError: (controller, url, code, message) {
+                print("Load error: $message");
+              },
+              onLoadHttpError: (controller, url, statusCode, description) {
+                print("HTTP error: $description");
+              },
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
