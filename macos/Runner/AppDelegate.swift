@@ -45,6 +45,15 @@ class AppDelegate: FlutterAppDelegate {
                 result(FlutterMethodNotImplemented)
             }
         }
+        let reloadChannel = FlutterMethodChannel(name: "com.example/reloadApp", binaryMessenger: controller.engine.binaryMessenger)
+        reloadChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
+            if call.method == "reloadApp" {
+                self.reloadApp()
+                result("App reload initiated")
+            } else {
+                result(FlutterMethodNotImplemented)
+            }
+        }
 
 
     // Volume Control Channel (new)
@@ -112,6 +121,21 @@ func unmuteVolume() {
     }
 }
 
+func reloadApp() {
+        // Programmatically restart the app
+        let appleScript = """
+        do shell script "killall -9 \(ProcessInfo.processInfo.processName)"
+        """
+        var error: NSDictionary?
+        if let scriptObject = NSAppleScript(source: appleScript) {
+            scriptObject.executeAndReturnError(&error)
+            if let error = error {
+                print("AppleScript error: \(error)")
+            }
+        } else {
+            print("Failed to create AppleScript object")
+        }
+    }
 
         func muteVolume() {
         let appleScript = """
