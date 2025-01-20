@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import 'package:flutter_phoenix/flutter_phoenix.dart';
+
 import 'package:digital_signage/provider/main_provider.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
 
@@ -16,12 +18,14 @@ class MyHttpOverrides extends HttpOverrides {
 void main() {
    HttpOverrides.global = MyHttpOverrides();
   runApp(
-    MaterialApp(
-      home: RepaintBoundary(
-      key: boundaryKey,child:  MqttProvider(
-        child: MyHomePage(), 
-      ),
-    ))
+    Phoenix(
+      child: MaterialApp(
+        home: RepaintBoundary(
+        key: boundaryKey,child:  MqttProvider(
+          child: MyHomePage(), 
+        ),
+      )),
+    )
   );
 }
 
