@@ -188,10 +188,17 @@ class Date {
     required this.end,
   });
 
-  factory Date.fromJson(Map<String, dynamic> json) => Date(
-        start: _parseDate(json["start"]),
-        end: _parseDate(json["end"]),
-      );
+  factory Date.fromJson(Map<String, dynamic> json) {
+    DateTime startDate = _parseDate(json["start"]);
+
+    // Calculate the next 5 days from the start date
+    DateTime endDate = json["end"] != null ? _parseDate(json["end"]) : startDate.add(Duration(days: 5));
+
+    return Date(
+      start: startDate,
+      end: endDate,
+    );
+  }
 
   // Helper method to handle different date formats
   static DateTime _parseDate(String dateStr) {
