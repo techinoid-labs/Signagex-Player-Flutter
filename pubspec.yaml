@@ -64,6 +64,8 @@ dependencies:
   flutter_inappwebview: ^6.1.5
   # webview_flutter_wkwebview: ^3.17.0
   flutter_html: ^3.0.0-beta.2
+  flutter_phoenix: ^1.1.1
+  restartfromos: ^0.0.3
   # device_info_plus: ^10.0.0
   # battery_plus: ^3.0.0
   # network_info_plus: ^3.0.0
