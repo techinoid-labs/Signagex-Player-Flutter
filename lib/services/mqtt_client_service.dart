@@ -158,6 +158,7 @@ class MqttClientService {
     var pubTopic = topic;
     final builder = MqttClientPayloadBuilder();
     builder.addString(message);
+  
 
     if (_client.connectionStatus?.state == MqttConnectionState.connected) {
       _client.publishMessage(pubTopic, MqttQos.atMostOnce, builder.payload!,
