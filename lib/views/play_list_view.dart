@@ -245,6 +245,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     print("[LOG] Loading media: ${nextMedia.mediaUrl}");
     if (isVideoFile(nextMedia.mediaUrl)) {
       _initializeNextVideo(nextMedia);
+    } else if (isWebFile(nextMedia.mediaUrl)) {
+      // Ensure you are not reinitializing the WebView if the file is the same
+      if (_currentIndex > 0 &&
+          widget.mediaPaths[_currentIndex - 1].mediaUrl == nextMedia.mediaUrl) {
+        print("[LOG] Skipping recreation of the same WebView");
+        return;
+      }
     } else {
       print("[LOG] Current media is an image: ${nextMedia.mediaUrl}");
       int durationSeconds =
@@ -718,6 +725,11 @@ class WBViewWidget extends StatefulWidget {
 class _WBViewWidgetState extends State<WBViewWidget> {
   InAppWebViewController? _webViewController;
   double progress = 0;
+  @override
+  void dispose() {
+    _webViewController?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -730,7 +742,8 @@ class _WBViewWidgetState extends State<WBViewWidget> {
           if (progress < 1.0) LinearProgressIndicator(value: progress),
           Expanded(
             child: InAppWebView(
-              initialUrlRequest: URLRequest(url:WebUri.uri(Uri.parse(fileUrl)) ),
+              initialUrlRequest:
+                  URLRequest(url: WebUri.uri(Uri.parse(fileUrl))),
               onWebViewCreated: (InAppWebViewController controller) {
                 _webViewController = controller;
               },
