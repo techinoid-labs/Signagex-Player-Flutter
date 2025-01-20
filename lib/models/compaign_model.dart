@@ -96,7 +96,7 @@ class PlayerCampaign {
 
 class CampaignSchedule {
   bool alwaysPlay;
-  dynamic period;
+  Period? period;
 
   CampaignSchedule({
     required this.alwaysPlay,
@@ -106,14 +106,135 @@ class CampaignSchedule {
   factory CampaignSchedule.fromJson(Map<String, dynamic> json) =>
       CampaignSchedule(
         alwaysPlay: json["always_play"],
-        period: json["period"],
+        period:
+            json["period"] != null ? Period.fromJson(json["period"]) : null,
       );
 
   Map<String, dynamic> toJson() => {
         "always_play": alwaysPlay,
-        "period": period,
+        "period": period?.toJson(),
       };
 }
+
+class Period {
+  Days days;
+  Time time;
+  Date date;
+
+  Period({
+    required this.days,
+    required this.time,
+    required this.date,
+  });
+
+  factory Period.fromJson(Map<String, dynamic> json) => Period(
+        days: Days.fromJson(json["days"]),
+        time: Time.fromJson(json["time"]),
+        date: Date.fromJson(json["date"]),
+      );
+
+  Map<String, dynamic> toJson() => {
+        "days": days.toJson(),
+        "time": time.toJson(),
+        "date": date.toJson(),
+      };
+}
+
+class Days {
+  bool monday;
+  bool tuesday;
+  bool wednesday;
+  bool thursday;
+  bool friday;
+  bool saturday;
+  bool sunday;
+
+  Days({
+    required this.monday,
+    required this.tuesday,
+    required this.wednesday,
+    required this.thursday,
+    required this.friday,
+    required this.saturday,
+    required this.sunday,
+  });
+
+  factory Days.fromJson(Map<String, dynamic> json) => Days(
+        monday: json["monday"],
+        tuesday: json["tuesday"],
+        wednesday: json["wednesday"],
+        thursday: json["thursday"],
+        friday: json["friday"],
+        saturday: json["saturday"],
+        sunday: json["sunday"],
+      );
+
+  Map<String, dynamic> toJson() => {
+        "monday": monday,
+        "tuesday": tuesday,
+        "wednesday": wednesday,
+        "thursday": thursday,
+        "friday": friday,
+        "saturday": saturday,
+        "sunday": sunday,
+      };
+}
+
+class Time {
+  String from;
+  String to;
+
+  Time({
+    required this.from,
+    required this.to,
+  });
+
+  factory Time.fromJson(Map<String, dynamic> json) => Time(
+        from: json["from"],
+        to: json["to"],
+      );
+
+  Map<String, dynamic> toJson() => {
+        "from": from,
+        "to": to,
+      };
+}
+
+class Date {
+  String start;
+  String? end;
+
+  Date({
+    required this.start,
+    this.end,
+  });
+
+  factory Date.fromJson(Map<String, dynamic> json) {
+    // Get the current date
+    DateTime currentDate = DateTime.now();
+    
+    // Calculate the next 5 days
+    DateTime nextFiveDays = currentDate.add(Duration(days: 5));
+    
+    // Format the date to ISO8601 string (or any format you require)
+    String nextFiveDaysFormatted = nextFiveDays.toIso8601String();
+
+    // Check if end date is null and set to the next 5 days if it is
+    String? endDate = json["end"];
+    endDate ??= nextFiveDaysFormatted;
+
+    return Date(
+      start: json["start"],
+      end: endDate,
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        "start": start,
+        "end": end,
+      };
+}
+
 
 class CampaignSettings {
   String transition;
