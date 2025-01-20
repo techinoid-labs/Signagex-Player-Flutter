@@ -10,6 +10,7 @@ import 'package:flutter/services.dart';
 import 'package:battery_plus/battery_plus.dart';
 import 'package:dio/dio.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
+import 'package:flutter_phoenix/flutter_phoenix.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
@@ -199,8 +200,8 @@ class MqttViewModel extends ChangeNotifier {
     // Compress the image further by lowering quality and size
     final compressedBytes = await FlutterImageCompress.compressWithList(
       imageBytes,
-      minWidth: 400, 
-      minHeight: 300, 
+      minWidth: 400,
+      minHeight: 300,
       quality: 5,
       format: CompressFormat.jpeg,
     );
@@ -208,7 +209,7 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   // Monitor connectivity changes and reinitialize MQTT on connection recovery
-  void _monitorConnectivity() async {
+  Future<void> _monitorConnectivity() async {
     await _loadStoredJsonObj();
     await getStoredState();
     await retrieveStoredResponse();
@@ -1070,19 +1071,21 @@ EOF
           throw Exception('Download failed after $retries attempts: $e');
         } else {
           print('Retrying download...');
-          await Future.delayed(Duration(seconds: 2));
+          await Future.delayed(const Duration(seconds: 2));
         }
       }
     }
   }
 
-  final Map<int, List<String>> _mediaPaths = {};
+  final Map<String, List<String>> _mediaPaths =
+      {}; // Change the key to a String
 
   void _startDownloadingForCampaign() async {
     if (_state == MqttState.downloading) {
       print("Downloads are already in progress.");
       return;
     }
+
     Map<String, dynamic> sendLog = {
       "action": "player_logs",
       "log": "Download Campaign",
@@ -1092,12 +1095,11 @@ EOF
     };
 
     _mqttClientService.publish(topic, jsonEncode(sendLog));
+
     // Calculate the total number of files to download from all zones
     _downloadCount = _campaignModel!.data.playerCampaigns
-        .expand((campaign) =>
-            campaign.zones) // Flatten all zones from all campaigns
-        .expand(
-            (zone) => zone.mediaItems) // Flatten mediaItems within each zone
+        .expand((campaign) => campaign.zones)
+        .expand((zone) => zone.mediaItems)
         .length;
 
     print("Total files to download: $_downloadCount");
@@ -1114,10 +1116,11 @@ EOF
     int completedDownloads = 0;
     _overallProgress = 0.0;
 
-    // Iterate through all campaigns, and then all zones within each campaign
     for (var campaign in _campaignModel!.data.playerCampaigns) {
       for (var zone in campaign.zones) {
-        _mediaPaths[zone.id] = [];
+        String uniqueKey =
+            '${campaign.campaignId}_${zone.id}'; // Unique key based on campaign_id and zone.id
+        _mediaPaths[uniqueKey] = [];
 
         for (var media in zone.mediaItems) {
           String mediaUrl = media.mediaUrl;
@@ -1138,16 +1141,17 @@ EOF
           bool fileExists = await File(filePath).exists();
           if (fileExists) {
             print('File already exists: $filePath');
-            _mediaPaths[zone.id]!.add(filePath);
+            _mediaPaths[uniqueKey]!.add(filePath);
             _updateMediaModelForCampaign();
             completedDownloads++;
             _overallProgress = completedDownloads / _downloadCount;
             print(
                 'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+
             notifyListeners();
           } else {
-            await downloadFileForCampaign(mediaUrl, zone.id).then((_) {
-              _mediaPaths[zone.id]!.add(filePath);
+            await downloadFileForCampaign(mediaUrl, uniqueKey).then((_) {
+              _mediaPaths[uniqueKey]!.add(filePath);
               completedDownloads++;
               _overallProgress = completedDownloads / _downloadCount;
               print(
@@ -1172,6 +1176,7 @@ EOF
 
           if (completedDownloads == _downloadCount) {
             print("All files processed.");
+
             _state = MqttState.campaignScreen;
             notifyListeners();
           }
@@ -1184,8 +1189,9 @@ EOF
     if (_campaignModel != null) {
       for (var campaign in _campaignModel!.data.playerCampaigns) {
         for (var zone in campaign.zones) {
-          if (_mediaPaths.containsKey(zone.id)) {
-            List<String> zoneMediaPaths = _mediaPaths[zone.id]!;
+          String uniqueKey = '${campaign.campaignId}_${zone.id}'; // Unique key
+          if (_mediaPaths.containsKey(uniqueKey)) {
+            List<String> zoneMediaPaths = _mediaPaths[uniqueKey]!;
             for (int i = 0;
                 i < zone.mediaItems.length && i < zoneMediaPaths.length;
                 i++) {
@@ -1193,11 +1199,12 @@ EOF
             }
           }
         }
+        notifyListeners();
       }
     }
   }
 
-  Future<void> downloadFileForCampaign(String url, int zoneId,
+  Future<void> downloadFileForCampaign(String url, String uniqueKey,
       {int retries = 3}) async {
     int attempt = 0;
     while (attempt < retries) {
@@ -1228,20 +1235,14 @@ EOF
           },
         );
 
-        _mediaPaths[zoneId]?.add(filePath);
+        _mediaPaths[uniqueKey]?.add(filePath);
         _updateMediaModelForCampaign();
 
         print('File downloaded to: $filePath');
         return; // Exit on successful download
       } catch (e) {
-        print('Download attempt $attempt failed: $e');
-        if (attempt >= retries) {
-          print('Maximum retry attempts reached. Download failed.');
-          throw Exception('Download failed after $retries attempts: $e');
-        } else {
-          print('Retrying download...');
-          await Future.delayed(Duration(seconds: 2)); // Wait before retrying
-        }
+        print("Error: $e");
+        // Handle error logic
       }
     }
   }
@@ -1407,15 +1408,29 @@ EOF
     _mqttClientService.publish(topic, message);
   }
 
-  int? _x;
-  int? _y;
+  Future<void> restartApp() async {
+    try {
+      await _channel.invokeMethod('com.example/restartApp');
+    } on PlatformException catch (e) {
+      print("Failed to restart app: ${e.message}");
+    }
+  }
 
-  int? get x => _x;
-  int? get y => _y;
+  String? _msg;
+  String? get msg => _msg;
+  String? _key;
+  String? get key => _key;
+  void getkey(String keydata) {
+    _key = keydata;
+    notifyListeners();
+  }
+
   void _handleIncomingMessage(String message) async {
     print('Received message in ViewModel: $message');
-    print('Received message in store state: $storeState');
 
+    print('Received message in store state: $storeState');
+    print('i am in recive msgss:');
+// await restartApp();
     final jsonObj = jsonDecode(message);
 
     print('Saving JSON Object: $jsonObj');
@@ -1564,12 +1579,6 @@ EOF
       publishMessage(globleTopic, jsonEncode(data));
     } else if (jsonObj["action"] == "action click") {
       print(" i am in action  click");
-      _x = jsonObj["data"][0]["x"];
-      _y = jsonObj["data"][0]["y"];
-      // Pass the x and y coordinates to the widget to simulate click
-      // Assuming you have a reference to the widget or pass them via provider
-      print("this is coordinates data $x");
-      print("this is coordinates data $y");
     } else if (jsonObj["action"] == "publish_playlist") {
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
@@ -1581,8 +1590,23 @@ EOF
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
 // Deserialize the JSON into the model
+      // await _checkPairingStatus();
       _playListModel = playListModelFromJson(jsonEncode(jsonObj));
+      if (_playListModel!.data.playlist.isEmpty) {
+        debugPrint("remove playlist and update screen");
+        Map<String, dynamic> sendLog = {
+          "action": "player_logs",
+          "log": "Remove Campaign",
+          "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+          "type": "info",
+          "date_time": DateTime.now().toIso8601String(),
+        };
 
+        _mqttClientService.publish(topic, jsonEncode(sendLog));
+        SharedPreferences prefs = await SharedPreferences.getInstance();
+        prefs.clear();
+        await _checkPairingStatus();
+      }
       print("model data ${_playListModel!.data.playlist}");
 
       for (var playlist in _playListModel!.data.playlist) {
@@ -1606,7 +1630,29 @@ EOF
       };
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
+      _msg = jsonObj["action"];
       _campaignModel = campaignModelFromJson(jsonEncode(jsonObj));
+      print(
+          "checking media on model ${_campaignModel!.data.playerCampaigns[0].zones[0].mediaItems[0].mediaUrl}");
+      if (_campaignModel!.data.playerCampaigns.isEmpty) {
+        debugPrint("remove playlist and update screen");
+        Map<String, dynamic> sendLog = {
+          "action": "player_logs",
+          "log": "Remove Campaign",
+          "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+          "type": "info",
+          "date_time": DateTime.now().toIso8601String(),
+        };
+
+        _mqttClientService.publish(topic, jsonEncode(sendLog));
+        SharedPreferences prefs = await SharedPreferences.getInstance();
+        prefs.clear();
+        await _checkPairingStatus();
+      }
+
+      print("i am in ccccccc");
+
+      // await _checkPairingStatus();
       for (var campaign in _campaignModel!.data.playerCampaigns) {
         for (var zone in campaign.zones) {
           for (var media in zone.mediaItems) {
@@ -1631,6 +1677,7 @@ EOF
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       SharedPreferences prefs = await SharedPreferences.getInstance();
       prefs.clear();
+
       await _checkPairingStatus();
     } else if (jsonObj["action"] == "action_delete") {
       Map<String, dynamic> sendLog = {
@@ -1679,15 +1726,16 @@ EOF
 
     // Check if the item is in the schedule or should always play
     if (campaignSchedule.alwaysPlay ||
-        _isPlaylistDateInRangeForCampagin(campaignSchedule.period.date.start,
-                campaignSchedule.period.date.end) &&
+        _isPlaylistDateInRangeForCampagin(
+                DateTime.parse(campaignSchedule.period!.date.start),
+                DateTime.parse(campaignSchedule.period!.date.end!)) &&
             _isCurrentDayAllowedForCampain(
-              campaignSchedule.period.days,
+              campaignSchedule.period!.days,
               DateTime.now(),
             ) &&
             _isTimeInRangeForCampaign(
-              campaignSchedule.period.time.from,
-              campaignSchedule.period.time.to,
+              campaignSchedule.period!.time.from,
+              campaignSchedule.period!.time.to,
             )) {
       durationcampagin = int.parse(currentCampaign.campaignSettings.duration);
     }
@@ -1741,7 +1789,9 @@ EOF
     Map<String, dynamic> sendLog = {
       "action": "player_logs",
       "log": "Current Campaign",
-      "name": "${_campaignModel?.data.playerCampaigns[_currentIndex].campaignName ?? ""}",
+      "name":
+          _campaignModel?.data.playerCampaigns[_currentIndex].campaignName ??
+              "",
       "type": "info",
       "date_time": DateTime.now().toIso8601String(),
     };
@@ -1802,6 +1852,10 @@ EOF
     notifyListeners();
   }
 
+  void reloadApp(BuildContext context) {
+    Phoenix.rebirth(context); // App restart
+  }
+
   int _currentIndex = 0;
   Timer? _timer;
 
@@ -1811,7 +1865,7 @@ EOF
     final currentPlaylist = playListModel!.data.playlist[_currentIndex];
     final playlistSchedule = currentPlaylist.playlistSchedule;
 
-    int duration = 0;
+    int duration = 2;
 
     // Check if the item is in the schedule or should always play
     if (playlistSchedule!.alwaysPlay ||
@@ -1839,9 +1893,9 @@ EOF
 
   void startPlaylistTimer() {
     _timer?.cancel();
-
+    print("this is duration$currentDuration");
     // If the duration is 0, directly update the index and skip the timer setup
-    if (currentDuration == 0) {
+    if (currentDuration == 2) {
       _updateIndex();
       print("Playlist item not in schedule, skipping timer setup.");
     } else {
