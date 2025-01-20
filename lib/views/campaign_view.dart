@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
@@ -10,14 +11,32 @@ import 'package:video_player/video_player.dart';
 import 'package:digital_signage/models/compaign_model.dart';
 import 'package:digital_signage/view_models/mqtt_view_model.dart';
 
-class CampaignView extends StatelessWidget {
+class CampaignView extends StatefulWidget {
   const CampaignView({super.key});
 
   @override
-  Widget build(BuildContext context) {
-    final mqttViewModel = Provider.of<MqttViewModel>(context);
+  State<CampaignView> createState() => _CampaignViewState();
+}
 
+class _CampaignViewState extends State<CampaignView> {
+
+  @override
+  Widget build(BuildContext context) {
+    
+    final mqttViewModel = Provider.of<MqttViewModel>(context);
+ 
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      // if (mqttViewModel.msg != null && mqttViewModel.msg == "publish_campaign") {
+          //   print("this is incoming data ${mqttViewModel.msg}");
+          //   if (mounted) {
+          //     // Ensure the context is still valid before calling Phoenix.rebirth
+          //     Phoenix.rebirth(context);
+              
+          //   }
+          // } else {
+          //   // You can also add some debug information here to catch null states
+          //   print("msg is null or not 'publish_campaign'");
+          // }
       mqttViewModel.startPlaylistTimerForCampaign();
     });
     final campaignModel = mqttViewModel.campaignModel;
@@ -48,18 +67,18 @@ class CampaignView extends StatelessWidget {
     DateTime now = DateTime.now();
 
     bool isCampaignDateInRange = _isCampaignDateInRange(
-      campaignSchedule.period.date.start,
-      campaignSchedule.period.date.end,
+      DateTime.parse(campaignSchedule.period!.date.start),
+      DateTime.parse(campaignSchedule.period!.date.end!),
     );
 
     bool isCampaignDayAllowed = _isCurrentDayAllowed(
-      campaignSchedule.period.days,
+      campaignSchedule.period!.days,
       now,
     );
 
     bool isCampaignTimeInRange = _isTimeInRange(
-      campaignSchedule.period.time.from,
-      campaignSchedule.period.time.to,
+      campaignSchedule.period!.time.from,
+      campaignSchedule.period!.time.to,
     );
 
     if (isCampaignDateInRange &&
@@ -168,6 +187,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   @override
   void initState() {
     super.initState();
+    _timer = Timer(Duration.zero, () {});
     _initializeNextMedia();
   }
 
@@ -198,69 +218,167 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     }
 
     MediaItem currentMedia = widget.mediaItems[_currentMediaIndex];
-    print("Zone ${widget.zoneId}: Initializing media item ${currentMedia.id}");
-
-    if (currentMedia.schedule.alwaysPlay || _isMediaAllowed(currentMedia)) {
+    print(
+        "Zone ${widget.zoneId}: Initializing media item ${currentMedia.id}...... ${currentMedia.mediaUrl}");
+    if (currentMedia.schedule.alwaysPlay) {
+      print("Always play is true for media: ${currentMedia.mediaUrl}");
       String duration = currentMedia.settings.duration.toString();
+      print("Loading duration at index $_currentMediaIndex: $duration");
+      _startMediaLoop(duration);
+      _loadMedia(currentMedia);
+      return;
+    }
+    DateTime now = DateTime.now();
+    print("Current date: $now");
 
+    DateTime startDate =
+        DateTime.parse(currentMedia.schedule.period!.date.start);
+    DateTime endDate = DateTime.parse(currentMedia.schedule.period!.date.end!);
+    print("Media start date: $startDate");
+    print("Media end date: $endDate");
+
+    bool isDateInRange = now.isAfter(startDate) &&
+        now.isBefore(endDate.add(const Duration(days: 1)));
+    print("Is current date in range: $isDateInRange");
+
+    bool isDayAllowed =
+        _isCurrentDayAllowed(currentMedia.schedule.period!.days, now);
+    print("Is current day allowed: $isDayAllowed");
+
+    String? timeFrom = currentMedia.schedule.period!.time.from;
+    String? timeTo = currentMedia.schedule.period!.time.to;
+
+    DateTime currentTime = DateTime.now();
+    DateTime fromTime = DateTime.now().copyWith(
+      hour: int.parse(timeFrom.split(':')[0]),
+      minute: int.parse(timeFrom.split(':')[1]),
+      second: int.parse(timeFrom.split(':')[2]),
+    );
+
+    DateTime toTime = DateTime.now().copyWith(
+      hour: int.parse(timeTo.split(':')[0]),
+      minute: int.parse(timeTo.split(':')[1]),
+      second: int.parse(timeTo.split(':')[2]),
+    );
+
+    bool isTimeInRange =
+        currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
+    print("Is current time in range: $isTimeInRange");
+
+    if (isDateInRange && isDayAllowed && isTimeInRange) {
+      String duration = currentMedia.settings.duration.toString();
+      print("Loading duration at index $_currentMediaIndex: $duration");
       _startMediaLoop(duration);
       _loadMedia(currentMedia);
     } else {
-      String duration = currentMedia.settings.duration.toString();
-      _startMediaLoop(duration);
+      print("Skipping media not allowed by schedule.");
+      print("Current date, day, or time is not allowed for this media.");
       _onMediaEnd();
     }
   }
 
   void _startMediaLoop(String duration) {
-    print("this is duration......$duration");
+    print("Starting media loop for duration: $duration");
     int durationSeconds = int.tryParse(duration) ?? 10;
-    print("this is duration......$durationSeconds");
+
+    if (_timer!.isActive) _timer!.cancel();
     _timer = Timer(Duration(seconds: durationSeconds), _onMediaEnd);
   }
 
   bool _isMediaAllowed(MediaItem media) {
     DateTime now = DateTime.now();
-    DateTime startDate = media.schedule.period.date.start;
-    DateTime endDate = media.schedule.period.date.end;
+    DateTime startDate = DateTime.parse(media.schedule.period!.date.start);
+    DateTime endDate = DateTime.parse(media.schedule.period!.date.end!);
 
     bool isDateInRange = now.isAfter(startDate) &&
         now.isBefore(endDate.add(const Duration(days: 1)));
-    bool isDayAllowed = _isCurrentDayAllowed(media.schedule.period.days, now);
+    bool isDayAllowed = _isCurrentDayAllowed(media.schedule.period!.days, now);
     bool isTimeInRange = _isTimeInRange(
-      media.schedule.period.time.from,
-      media.schedule.period.time.to,
+      media.schedule.period!.time.from,
+      media.schedule.period!.time.to,
     );
 
     return isDateInRange && isDayAllowed && isTimeInRange;
   }
 
-  void _loadMedia(MediaItem media) {
-    if (isVideoFile(media.mediaUrl)) {
-      _initializeVideo(media);
+  void _loadMedia(MediaItem nextMedia) {
+    print("[LOG] Loading media: ${nextMedia.mediaUrl}");
+    if (isVideoFile(nextMedia.mediaUrl)) {
+      _initializeNextVideo(nextMedia);
+    } else if (isWebFile(nextMedia.mediaUrl)) {
+      // Ensure you are not reinitializing the WebView if the file is the same
+      if (_currentMediaIndex > 0 &&
+          widget.mediaItems[_currentMediaIndex - 1].mediaUrl ==
+              nextMedia.mediaUrl) {
+        print("[LOG] Skipping recreation of the same WebView");
+        return;
+      }
     } else {
-      _showImage(media);
+      print("[LOG] Current media is an image: ${nextMedia.mediaUrl}");
+      int durationSeconds =
+          int.tryParse(nextMedia.settings.duration.toString()) ?? 5;
+
+      // Set a timer for images with a duration
+      _timer = Timer(Duration(seconds: durationSeconds), () {
+        _onMediaEnd();
+      });
+      // if (widget.mediaItems.length == 1) {
+      //   print("i am hererererer");
+      //   Future.delayed(Duration(seconds: durationSeconds), _onMediaEnd);
+      // }
+
+      setState(() {});
+      //       if (widget.mediaItems.length == 1) {
+      //   _timer?.cancel();
+      //   _timer = Timer(Duration(seconds: 1), () {
+      //     print("[LOG] Only one media item, resetting to initial state");
+      //     _initializeNextVideo(nextMedia); // Restart the video or handle accordingly
+      //     setState(() {}); // Ensure UI updates
+      //   });
+      // }
     }
   }
 
-  void _initializeVideo(MediaItem media) {
-    _videoController?.dispose();
-    _videoController = VideoPlayerController.file(File(media.mediaUrl))
+  void _initializeNextVideo(MediaItem nextMedia) {
+    print("[LOG] Initializing video: ${nextMedia.mediaUrl}");
+    _videoController = VideoPlayerController.file(File(nextMedia.mediaUrl))
       ..initialize().then((_) {
-        setState(() {});
-        _videoController?.play();
-        _videoController?.addListener(() {
-          if (_videoController!.value.isInitialized &&
-              !_videoController!.value.isPlaying &&
-              _videoController!.value.position >=
-                  _videoController!.value.duration) {
+        if (_videoController!.value.isInitialized) {
+          int videoDuration = int.tryParse(nextMedia.settings.duration) ??
+              _videoController!.value.duration.inSeconds;
+
+          print("Video duration set to $videoDuration seconds");
+
+          setState(() {
+            _videoController!.play();
+            _videoController!.setLooping(true);
+          });
+
+          // _timer = Timer(Duration(seconds: videoDuration), _onMediaEnd);
+          _timer = Timer(Duration(seconds: videoDuration), () {
+            _videoController!.pause();
             _onMediaEnd();
-          }
-        });
-      }).catchError((e) {
-        print("Zone ${widget.zoneId}: Video initialization error: $e");
-        _onMediaEnd();
+          });
+          _videoController!.addListener(() {
+            _checkVideoDuration(nextMedia);
+          });
+        }
+      }).catchError((error) {
+        print("[LOG] Error initializing video: $error");
+        print("[LOG] Video URL: ${nextMedia.mediaUrl}");
+        setState(() {});
       });
+  }
+
+  void _checkVideoDuration(MediaItem media) {
+    if (_videoController != null &&
+        _videoController!.value.isInitialized &&
+        !_videoController!.value.isPlaying &&
+        _videoController!.value.position >= _videoController!.value.duration) {
+      print("Video has ended, transitioning...");
+      _videoController!.pause();
+      _onMediaEnd();
+    }
   }
 
   void _showImage(MediaItem media) {
@@ -269,24 +387,28 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     _timer = Timer(Duration(seconds: durationSeconds), _onMediaEnd);
   }
 
-  void _onMediaEnd() {
-    if (!mounted) return;
-    setState(() {
-      _opacity = 0.0;
-    });
+  bool _isDisposed = false;
 
-    Future.delayed(const Duration(milliseconds: 500), () {
-      if (!mounted) return;
+  void _onMediaEnd() {
+    if (_timer!.isActive) _timer!.cancel();
+    if (!_isDisposed) {
       setState(() {
-        if (_currentMediaIndex < widget.mediaItems.length - 1) {
-          _currentMediaIndex++;
-        } else {
-          _currentMediaIndex = 0;
-        }
-        _opacity = 1.0;
-        _initializeNextMedia();
+        _opacity = 0.0;
       });
-    });
+
+      Future.delayed(const Duration(milliseconds: 500), () {
+        if (!mounted) return;
+        setState(() {
+          if (_currentMediaIndex < widget.mediaItems.length - 1) {
+            _currentMediaIndex++;
+          } else {
+            _currentMediaIndex = 0;
+          }
+          _opacity = 1.0;
+          _initializeNextMedia();
+        });
+      });
+    }
   }
 
   bool _isCurrentDayAllowed(dynamic days, DateTime now) {
@@ -332,6 +454,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   @override
   void dispose() {
     _timer?.cancel();
+    _isDisposed = true;
     _videoController?.dispose();
     super.dispose();
   }
@@ -347,6 +470,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       opacity: _opacity,
       duration: const Duration(milliseconds: 500),
       child: AnimatedSwitcher(
+        key: ValueKey(currentMedia.id),
         duration: const Duration(milliseconds: 500),
         transitionBuilder: (child, animation) {
           print("this is transition${currentMedia.settings.transition}");
@@ -675,6 +799,11 @@ class WBViewWidget extends StatefulWidget {
 class _WBViewWidgetState extends State<WBViewWidget> {
   InAppWebViewController? _webViewController;
   double progress = 0;
+  @override
+  void dispose() {
+    _webViewController?.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
