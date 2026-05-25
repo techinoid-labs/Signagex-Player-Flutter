@@ -20,8 +20,10 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:system_info2/system_info2.dart';
 import 'package:url_launcher/url_launcher.dart';
 
+import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
-import 'package:digital_signage/models/intractivity_model.dart';
+import 'package:digital_signage/models/intractivity_model.dart'
+    hide MediaItem, Settings;
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
@@ -60,6 +62,7 @@ class MqttViewModel extends ChangeNotifier {
   MqttState get state => _state;
   String _topic = "";
   String get topic => _topic;
+  String get playerCode => _topic;
 
   PlayListModel? _playListModel;
 
@@ -115,9 +118,11 @@ class MqttViewModel extends ChangeNotifier {
     if (jsonString != null) {
       final jsonResponse = jsonDecode(jsonString) as Map<String, dynamic>;
       print('Retrieved stored response: $jsonResponse');
-      _topic = jsonResponse["player_code"];
+      _topic = jsonResponse["player_code"] ?? "";
       debugPrint("This is the response from the$topic API: $jsonResponse");
-      globleTopic = _topic;
+      if (_topic.isNotEmpty) {
+        globleTopic = _topic;
+      }
       return jsonResponse;
     } else {
       print('No stored response found.');
@@ -130,7 +135,6 @@ class MqttViewModel extends ChangeNotifier {
     String? jsonString = prefs.getString('deviceInfoMap');
     prefs.clear();
     if (jsonString != null) {
-      // Decode the JSON string back to a Map
       deviceInfoMap = Map<String, dynamic>.from(jsonDecode(jsonString));
       print('Loaded device info from SharedPreferences: $deviceInfoMap');
     } else {
@@ -149,7 +153,6 @@ class MqttViewModel extends ChangeNotifier {
 
   Future<void> captureAndSendScreenshot(String topic) async {
     try {
-      // Find the render boundary for the widget
       RenderRepaintBoundary boundary = boundaryKey.currentContext!
           .findRenderObject() as RenderRepaintBoundary;
 
@@ -158,13 +161,11 @@ class MqttViewModel extends ChangeNotifier {
         await Future.delayed(const Duration(milliseconds: 100));
       }
 
-      // Capture the screenshot as an image with lower pixel ratio
       final image =
           await boundary.toImage(pixelRatio: 0.5); // Reduce pixel ratio
 
-      // Convert the image to byte data
-      final ByteData? byteData = await image.toByteData(
-          format: ImageByteFormat.png); // Use PNG for better quality
+      final ByteData? byteData =
+          await image.toByteData(format: ImageByteFormat.png);
 
       if (byteData != null) {
         final Uint8List imageBytes = byteData.buffer.asUint8List();
@@ -223,8 +224,12 @@ class MqttViewModel extends ChangeNotifier {
         if (storedJsonObj["action"] == "publish_playlist") {
           await _mqttClientService.connect();
 
-          subsibeMessage(_topic);
-          publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+          if (_topic.isNotEmpty) {
+            subsibeMessage(_topic);
+          }
+          if (globleTopic.isNotEmpty) {
+            publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+          }
           _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
 
           for (var playlist in _playListModel!.data.playlist) {
@@ -241,15 +246,18 @@ class MqttViewModel extends ChangeNotifier {
         } else if (storedJsonObj["action"] == "publish_campaign") {
           await _mqttClientService.connect();
 
-          subsibeMessage(_topic);
-
-          publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+          if (_topic.isNotEmpty) {
+            subsibeMessage(_topic);
+          }
+          if (globleTopic.isNotEmpty) {
+            publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+          }
           _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
 
           print(_mediaList);
-          for (var campaign in _campaignModel!.data.playerCampaigns) {
-            for (var zone in campaign.zones) {
-              for (var media in zone.mediaItems) {
+          for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
+            for (var zone in campaign.zones ?? []) {
+              for (var media in zone.mediaItems ?? []) {
                 print("Media URL: ${media.mediaUrl}");
                 _startDownloadingForCampaign();
               }
@@ -277,9 +285,9 @@ class MqttViewModel extends ChangeNotifier {
         } else if (storedJsonObj["action"] == "publish_campaign") {
           _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
 
-          for (var campaign in _campaignModel!.data.playerCampaigns) {
-            for (var zone in campaign.zones) {
-              for (var media in zone.mediaItems) {
+          for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
+            for (var zone in campaign.zones ?? []) {
+              for (var media in zone.mediaItems ?? []) {
                 print("Media URL: ${media.mediaUrl}");
                 _startDownloadingForCampaign();
               }
@@ -910,6 +918,12 @@ EOF
 
   int _downloadCount = 0;
   double _overallProgress = 0.0;
+  int _completedDownloadCount = 0;
+  double _currentFileProgress = 0.0;
+  DateTime? _lastProgressNotify;
+
+  int get downloadCount => _downloadCount;
+  int get completedDownloadCount => _completedDownloadCount;
   double get overallProgress => _overallProgress;
 
   final Map<String, List<String>> _mediaPath = {};
@@ -947,12 +961,24 @@ EOF
 
     int completedDownloads = 0;
     _overallProgress = 0.0;
+    _completedDownloadCount = 0;
+    _currentFileProgress = 0.0;
 
     for (var playlist in _playListModel!.data.playlist) {
       _mediaPath[playlist.id] = [];
 
       for (var media in playlist.media!) {
         String mediaUrl = media.mediaUrl;
+
+        // For web-based media types, do NOT download; keep remote URL so they load in WebView.
+        final mediaType = (media.mediaType).toLowerCase();
+        if (mediaType == 'web_app_instance' || mediaType == 'text/html') {
+          print(
+              'Skipping download for web media type: $mediaType, url: $mediaUrl');
+          completedDownloads++;
+          _updateOverallProgress(completedDownloads);
+          continue;
+        }
         String filename = _extractFilename(mediaUrl);
         Directory? directory = await _getDirectory();
         if (directory == null) {
@@ -1001,9 +1027,27 @@ EOF
   }
 
   void _updateOverallProgress(int completedDownloads) {
-    _overallProgress = completedDownloads / _downloadCount;
-    print('Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+    _completedDownloadCount = completedDownloads;
+    _currentFileProgress = 0.0;
+    _overallProgress =
+        _downloadCount > 0 ? completedDownloads / _downloadCount : 0.0;
+    print(
+        'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}% ($completedDownloads/$_downloadCount)');
     notifyListeners();
+  }
+
+  void _updateCurrentFileProgress(int received, int total) {
+    if (total <= 0) return;
+    _currentFileProgress = received / total;
+    _overallProgress = _downloadCount > 0
+        ? (_completedDownloadCount + _currentFileProgress) / _downloadCount
+        : 0.0;
+    final now = DateTime.now();
+    if (_lastProgressNotify == null ||
+        now.difference(_lastProgressNotify!).inMilliseconds >= 100) {
+      _lastProgressNotify = now;
+      notifyListeners();
+    }
   }
 
   void _updateMediaModelForPlaylist() {
@@ -1048,15 +1092,16 @@ EOF
         String filePath = '${directory.path}/$filename';
         print('Downloading from URL: $url to $filePath');
 
+        _currentFileProgress = 0.0;
+        notifyListeners();
+
         Dio dio = Dio();
         await dio.download(
           url,
           filePath,
           onReceiveProgress: (received, total) {
-            if (total != -1) {
-              double progress = received / total;
-              print(
-                  'Download progress: ${(progress * 100).toStringAsFixed(2)}%');
+            if (total != -1 && total > 0) {
+              _updateCurrentFileProgress(received, total);
             }
           },
         );
@@ -1077,9 +1122,6 @@ EOF
     }
   }
 
-  final Map<String, List<String>> _mediaPaths =
-      {}; // Change the key to a String
-
   void _startDownloadingForCampaign() async {
     if (_state == MqttState.downloading) {
       print("Downloads are already in progress.");
@@ -1096,11 +1138,11 @@ EOF
 
     _mqttClientService.publish(topic, jsonEncode(sendLog));
 
-    // Calculate the total number of files to download from all zones
-    _downloadCount = _campaignModel!.data.playerCampaigns
-        .expand((campaign) => campaign.zones)
-        .expand((zone) => zone.mediaItems)
-        .length;
+    // Collect ALL downloadable media items (including nested sub-zones inside campaign media).
+    final downloadTargets = _collectCampaignMediaItemsForDownload(
+      _campaignModel?.data?.playerCampaigns ?? const [],
+    );
+    _downloadCount = downloadTargets.length;
 
     print("Total files to download: $_downloadCount");
 
@@ -1115,135 +1157,188 @@ EOF
 
     int completedDownloads = 0;
     _overallProgress = 0.0;
+    _completedDownloadCount = 0;
+    _currentFileProgress = 0.0;
 
-    for (var campaign in _campaignModel!.data.playerCampaigns) {
-      for (var zone in campaign.zones) {
-        String uniqueKey =
-            '${campaign.campaignId}_${zone.id}'; // Unique key based on campaign_id and zone.id
-        _mediaPaths[uniqueKey] = [];
-
-        for (var media in zone.mediaItems) {
-          String mediaUrl = media.mediaUrl;
-          print("Starting download check for Media URL: $mediaUrl");
-
-          String filename = _extractFilename(mediaUrl);
-          print('Extracted filename: $filename');
-
-          Directory? directory = await _getDirectory();
-          if (directory == null) {
-            print('Unable to determine directory');
-            throw Exception('Unable to determine directory');
-          }
-          print('Download directory: ${directory.path}');
-
-          String filePath = '${directory.path}/$filename';
-
-          bool fileExists = await File(filePath).exists();
-          if (fileExists) {
-            print('File already exists: $filePath');
-            _mediaPaths[uniqueKey]!.add(filePath);
-            _updateMediaModelForCampaign();
-            completedDownloads++;
-            _overallProgress = completedDownloads / _downloadCount;
-            print(
-                'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
-
-            notifyListeners();
-          } else {
-            await downloadFileForCampaign(mediaUrl, uniqueKey).then((_) {
-              _mediaPaths[uniqueKey]!.add(filePath);
-              completedDownloads++;
-              _overallProgress = completedDownloads / _downloadCount;
-              print(
-                  'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
-              notifyListeners();
-            }).catchError((error) {
-              print("Error downloading file: $error");
-              Map<String, dynamic> sendLog = {
-                "action": "player_logs",
-                "log": "Download Campaign",
-                "name":
-                    "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-                "type": "inerrorfo",
-                "date_time": DateTime.now().toIso8601String(),
-              };
-
-              _mqttClientService.publish(topic, jsonEncode(sendLog));
-              _state = MqttState.failure;
-              notifyListeners();
-            });
-          }
-
-          if (completedDownloads == _downloadCount) {
-            print("All files processed.");
-
-            _state = MqttState.campaignScreen;
-            notifyListeners();
-          }
-        }
+    for (final media in downloadTargets) {
+      String? originalUrl;
+      if (media.mediaType?.toLowerCase() == 'sticker') {
+        originalUrl = media.settings?.remoteSrc ?? media.mediaUrl;
+      } else {
+        originalUrl = media.mediaUrl;
       }
-    }
-  }
 
-  void _updateMediaModelForCampaign() {
-    if (_campaignModel != null) {
-      for (var campaign in _campaignModel!.data.playerCampaigns) {
-        for (var zone in campaign.zones) {
-          String uniqueKey = '${campaign.campaignId}_${zone.id}'; // Unique key
-          if (_mediaPaths.containsKey(uniqueKey)) {
-            List<String> zoneMediaPaths = _mediaPaths[uniqueKey]!;
-            for (int i = 0;
-                i < zone.mediaItems.length && i < zoneMediaPaths.length;
-                i++) {
-              zone.mediaItems[i].mediaUrl = zoneMediaPaths[i];
-            }
+      if (originalUrl == null || originalUrl.isEmpty) {
+        completedDownloads++;
+        _overallProgress = completedDownloads / _downloadCount;
+        notifyListeners();
+        continue;
+      }
+
+      _completedDownloadCount = completedDownloads;
+      _currentFileProgress = 0.0;
+      notifyListeners();
+
+      try {
+        final localPath = await _ensureLocalMediaUrl(
+          originalUrl,
+          onProgress: _updateCurrentFileProgress,
+        );
+        // Update the appropriate URL field
+        if (media.mediaType?.toLowerCase() == 'sticker') {
+          // Stickers: always store local path in settings.remoteSrc so the UI uses it at render time
+          media.settings ??= Settings();
+          media.settings!.remoteSrc = localPath;
+          media.mediaUrl = localPath; // keep mediaUrl in sync for fallback
+        } else if (media.isAd || idLooksLikeAdSlot(media.id)) {
+          media.settings ??= Settings();
+          if (originalUrl.startsWith('http')) {
+            media.settings!.creativeUrl = originalUrl;
           }
+          media.mediaUrl = localPath;
+        } else {
+          media.mediaUrl = localPath;
         }
+        completedDownloads++;
+        _overallProgress = completedDownloads / _downloadCount;
+        print(
+            'Overall progress: ${(_overallProgress * 100).toStringAsFixed(2)}%');
+        notifyListeners();
+      } catch (error) {
+        print("Error downloading file: $error");
+        Map<String, dynamic> sendLog = {
+          "action": "player_logs",
+          "log": "Download Campaign",
+          "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+          "type": "error",
+          "date_time": DateTime.now().toIso8601String(),
+        };
+
+        _mqttClientService.publish(topic, jsonEncode(sendLog));
+        // Keep original URL so campaign view can still try to load from network.
+        // Don't set failure – continue and show campaign with partial downloads.
+        completedDownloads++;
+        _overallProgress = completedDownloads / _downloadCount;
         notifyListeners();
       }
     }
+
+    print("All files processed.");
+    _state = MqttState.campaignScreen;
+    notifyListeners();
   }
 
-  Future<void> downloadFileForCampaign(String url, String uniqueKey,
-      {int retries = 3}) async {
-    int attempt = 0;
-    while (attempt < retries) {
-      try {
-        attempt++;
-        String filename = _extractFilename(url);
-        Directory? directory = await _getDirectory();
-        if (directory == null) {
-          print('Unable to determine directory');
-          throw Exception('Unable to determine directory');
+  bool _isNestedCampaignMediaItem(MediaItem media) {
+    final type = (media.mediaType ?? '').toLowerCase();
+    return type == 'campaign' ||
+        (media.zones != null && media.zones!.isNotEmpty);
+  }
+
+  List<MediaItem> _collectCampaignMediaItemsForDownload(
+      List<Campaign> campaigns) {
+    final result = <MediaItem>[];
+
+    void visitZones(List<CampaignZone> zones) {
+      for (final zone in zones) {
+        final items = zone.mediaItems ?? const <MediaItem>[];
+        for (final media in items) {
+          // Skip purely web-based media: they should stay as remote URLs for WebView
+          final mediaType = (media.mediaType ?? '').toLowerCase();
+          if (mediaType == 'web_app_instance' || mediaType == 'text/html') {
+            continue;
+          }
+          if (_isNestedCampaignMediaItem(media)) {
+            visitZones(media.zones ?? const <CampaignZone>[]);
+            continue;
+          }
+          // For stickers, prefer remoteSrc; for ads, prefer creative URL
+          String? url;
+          if (media.isAd || idLooksLikeAdSlot(media.id)) {
+            url = media.adCreativeUrl;
+          } else if (media.mediaType?.toLowerCase() == 'sticker') {
+            url = media.settings?.remoteSrc ?? media.mediaUrl;
+          } else {
+            url = media.mediaUrl;
+          }
+          if (url != null && url.isNotEmpty) {
+            result.add(media);
+          }
         }
-
-        String filePath = '${directory.path}/$filename';
-
-        Dio dio = Dio();
-        print(
-            'Attempt $attempt: Starting download from URL: $url to $filePath');
-
-        await dio.download(
-          url,
-          filePath,
-          onReceiveProgress: (received, total) {
-            if (total != -1) {
-              double progress = received / total;
-              print(
-                  'Download progress: ${(progress * 100).toStringAsFixed(2)}%');
-            }
-          },
-        );
-
-        _mediaPaths[uniqueKey]?.add(filePath);
-        _updateMediaModelForCampaign();
-
-        print('File downloaded to: $filePath');
-        return; // Exit on successful download
-      } catch (e) {
-        print("Error: $e");
-        // Handle error logic
       }
+    }
+
+    for (final c in campaigns) {
+      visitZones(c.zones ?? const <CampaignZone>[]);
+    }
+    return result;
+  }
+
+  Future<String> _ensureLocalMediaUrl(String url,
+      {void Function(int received, int total)? onProgress}) async {
+    final trimmed = url.trim();
+
+    if (trimmed.startsWith('<svg') ||
+        (trimmed.contains('<svg') && trimmed.contains('</svg>'))) {
+      return trimmed;
+    }
+
+    String fullUrl = trimmed;
+    if (trimmed.startsWith('/') &&
+        !trimmed.startsWith('http://') &&
+        !trimmed.startsWith('https://')) {
+      fullUrl = 'https://signagexai.com$trimmed';
+      print('Converting relative path to full URL: $trimmed -> $fullUrl');
+    }
+
+    if (!fullUrl.startsWith('http://') && !fullUrl.startsWith('https://')) {
+      if (fullUrl.startsWith('/Users') ||
+          fullUrl.startsWith('/tmp') ||
+          fullUrl.startsWith('/var')) {
+        return fullUrl;
+      }
+      // Otherwise, it might be a relative path we couldn't resolve
+      return fullUrl;
+    }
+
+    final filename = _extractFilename(fullUrl);
+    final directory = await _getDirectory();
+    if (directory == null) {
+      throw Exception('Unable to determine directory');
+    }
+
+    final filePath = '${directory.path}/$filename';
+    final file = File(filePath);
+    final exists = await file.exists();
+    if (exists) {
+      print('File already exists: $filePath');
+      return filePath;
+    }
+
+    // Ensure URL is valid for parsing (fix illegal percent encoding).
+    String downloadUrl = fullUrl;
+    try {
+      Uri.parse(fullUrl);
+    } catch (_) {
+      downloadUrl = fullUrl.replaceAllMapped(
+          RegExp(r'%(?![0-9A-Fa-f]{2})'), (_) => '%25');
+    }
+
+    final dio = Dio();
+    print('Downloading from URL: $downloadUrl to $filePath');
+    try {
+      await dio.download(
+        downloadUrl,
+        filePath,
+        onReceiveProgress: (received, total) {
+          if (total > 0) onProgress?.call(received, total);
+        },
+      );
+      print('Download complete: $filePath');
+      return filePath;
+    } catch (e) {
+      print('Error downloading $downloadUrl: $e');
+      // If download fails, return the original URL so widget can try to handle it
+      return fullUrl;
     }
   }
 
@@ -1273,8 +1368,19 @@ EOF
   }
 
   String _extractFilename(String url, {String? mediaType}) {
-    String decodedUrl = Uri.decodeFull(url);
+    String decodedUrl;
+    try {
+      decodedUrl = Uri.decodeFull(url);
+    } catch (_) {
+      // URL has invalid percent encoding (e.g. illegal % sequence); use raw path.
+      decodedUrl = url;
+    }
     String filename = decodedUrl.split('/').last.split('?').first;
+    // Sanitize: remove characters that are invalid in URIs or filenames.
+    if (filename.isEmpty) {
+      filename = 'file_${url.hashCode.abs()}';
+    }
+    filename = filename.replaceAll(RegExp(r'[<>:"|?*\x00-\x1f]'), '_');
     if (mediaType != null) {
       switch (mediaType) {
         case 'audio/mpeg':
@@ -1303,19 +1409,42 @@ EOF
     return filename;
   }
 
+  Future<void> reportAdProofOfPlay(AdProofOfPlayRequest request) async {
+    final url = '$baseurl$adCampaignProofOfPlayPath';
+    if (playerCode.isEmpty) {
+      print('[AdPoP] Skipped: player_code is empty (POST $url)');
+      return;
+    }
+    try {
+      final body = request.toJson();
+      print('[AdPoP] POST $url');
+      print('[AdPoP] Payload: $body');
+      final response = await ApiRepository().postData(
+        adCampaignProofOfPlayPath,
+        body,
+        null,
+      );
+      print('[AdPoP] Response: $response');
+      print('[AdPoP] Report sent successfully');
+    } catch (e, st) {
+      print('[AdPoP] HTTP/network error: $e');
+      print('[AdPoP] Stack: $st');
+    }
+  }
+
   Future<Directory?> _getDirectory() async {
     if (Platform.isAndroid || Platform.isIOS) {
       // Use the application documents directory for Android and iOS
       return await getApplicationDocumentsDirectory();
-    } else if (Platform.isWindows || Platform.isLinux || Platform.isMacOS) {
-      // For desktop platforms, we can use getDownloadsDirectory() or application documents
+    } else if (Platform.isMacOS) {
+      // On macOS release (sandbox), use Documents so the video player can read files.
+      // Downloads in the container can trigger "permission to view" errors with AVPlayer.
+      return await getApplicationDocumentsDirectory();
+    } else if (Platform.isWindows || Platform.isLinux) {
       try {
-        // Check if a method for getting downloads directory exists for the platform
-        // For Windows/Linux/macOS, this may not exist, so fallback to applicationDocumentsDirectory
         return await getDownloadsDirectory() ??
             await getApplicationDocumentsDirectory();
       } catch (e) {
-        // Fallback if getDownloadsDirectory doesn't work
         print(
             'Error getting downloads directory, falling back to applicationDocumentsDirectory: $e');
         return await getApplicationDocumentsDirectory();
@@ -1358,7 +1487,7 @@ EOF
 
     try {
       final response = await ApiRepository().postData(
-        "3002/player/connection/",
+        "player/connection/",
         requestBody,
         null,
       );
@@ -1368,14 +1497,24 @@ EOF
       bool isSaved = await prefs.setString('apiResponse', jsonResponse);
       print("check status ::::$isSaved");
 
-      _topic = response["player_code"];
+      _topic = response["player_code"] ?? "";
+
+      if (_topic.isEmpty) {
+        debugPrint("Warning: player_code is empty or null in API response");
+        _state = MqttState.failure;
+        notifyListeners();
+        return;
+      }
 
       globleTopic = _topic;
-      subsibeMessage(topic);
+      subsibeMessage(_topic);
       await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
 
       // await captureAndSendScreenshot(globleTopic);
+      // Reset retry counter on successful connection
+      _pairingRetryCount = 0;
+
       if (response["paired"] == false) {
         print("this is state screeen ${response["paired"]}");
         await prefs.setBool('storeState', response["paired"]);
@@ -1393,18 +1532,67 @@ EOF
       }
       notifyListeners();
     } catch (error) {
-      _state = MqttState.failure;
+      debugPrint("Error during pairing check: $error");
+
+      // Don't restart or retry if already paired - just log the error
+      if (_state == MqttState.pairedScreen) {
+        debugPrint("Device is already paired. Skipping retry and restart.");
+        return;
+      }
+
+      _pairingRetryCount++;
+
+      // Check if error is a 500 server error
+      final errorString = error.toString();
+      final isServerError = errorString.contains('500') ||
+          errorString.contains('Error During Communication');
+
+      if (isServerError && _pairingRetryCount >= _maxPairingRetries) {
+        debugPrint(
+            "Max retries ($_maxPairingRetries) reached for pairing check. Restarting app...");
+        _pairingRetryCount = 0; // Reset counter
+        // Restart the app to reset the flow
+        await Future.delayed(const Duration(seconds: 2));
+        await restartApp();
+        return;
+      }
+
+      // Retry with exponential backoff
+      if (_pairingRetryCount < _maxPairingRetries) {
+        final delaySeconds = _pairingRetryCount * 2; // 2, 4, 6 seconds
+        debugPrint(
+            "Retrying pairing check in $delaySeconds seconds (attempt $_pairingRetryCount/$_maxPairingRetries)");
+        await Future.delayed(Duration(seconds: delaySeconds));
+        // Retry the pairing check
+        _state = MqttState.connectionScreen;
+        notifyListeners();
+        await _checkPairingStatus();
+        return;
+      }
+
+      // If not a server error or max retries not reached, just show connection screen
+      _state = MqttState.connectionScreen;
       debugPrint("Error: $error");
     }
 
+    // Reset retry counter on success
+    _pairingRetryCount = 0;
     notifyListeners();
   }
 
   void subsibeMessage(String topic) {
+    if (topic.isEmpty || topic.trim().isEmpty) {
+      print('MQTT_LOGS:: Cannot subscribe - topic is empty');
+      return;
+    }
     _mqttClientService.subscribe(topic);
   }
 
   void publishMessage(String topic, String message) {
+    if (topic.isEmpty || topic.trim().isEmpty) {
+      print('MQTT_LOGS:: Cannot publish - topic is empty');
+      return;
+    }
     _mqttClientService.publish(topic, message);
   }
 
@@ -1420,9 +1608,37 @@ EOF
   String? get msg => _msg;
   String? _key;
   String? get key => _key;
-  void getkey(String keydata) {
+  double? tapX;
+  double? tapY;
+
+  // Retry counter for pairing status check
+  int _pairingRetryCount = 0;
+  static const int _maxPairingRetries = 3;
+
+  void setTapPosition(double x, double y) {
+    tapX = x;
+    tapY = y;
+    // if(tapX==_interactivityModel!.data.interactivity[].regionX ||  tapY==_interactivityModel!.data.interactivity[].regionY){
+    // print("i am in intractivity by region");
+
+    // }
+    notifyListeners();
+  }
+
+  void getKey(String keydata) {
     _key = keydata;
     notifyListeners();
+    // Check if any key in the interactivity list matches _key (case-insensitive)
+    bool keyFound = _interactivityModel?.data.interactivity.any(
+            (interactivity) => interactivity.keyPress
+                .any((key) => key.toUpperCase() == _key!.toUpperCase())) ??
+        false;
+    print("this is key data $keydata");
+    if (keyFound) {
+      print("I am in interactivity by key");
+    } else {
+      print("Key not found in interactivity");
+    }
   }
 
   void _handleIncomingMessage(String message) async {
@@ -1434,6 +1650,14 @@ EOF
     final jsonObj = jsonDecode(message);
 
     print('Saving JSON Object: $jsonObj');
+
+    // Check if message has an action field
+    if (jsonObj["action"] == null) {
+      // Message doesn't have an action field - likely device info or other data
+      // Just log it and return, don't process it as a command
+      print('MQTT_LOGS:: Received message without action field - ignoring');
+      return;
+    }
 
     if (jsonObj["action"] == "publish_playlist" ||
         jsonObj["action"] == "publish_campaign") {
@@ -1484,8 +1708,9 @@ EOF
           await _checkPairingStatus();
         }
       }
-      // print("action mute${jsonObj["settings"]["mute_audio"]}");
-      if (jsonObj["settings"]["mute_audio"] == true) {
+      // print("action mute${jsonObj["settings"]?["mute_audio"]}");
+      if (jsonObj["settings"] != null &&
+          jsonObj["settings"]["mute_audio"] == true) {
         Map<String, dynamic> sendLog = {
           "action": "player_logs",
           "log": "Mute Audio",
@@ -1505,7 +1730,8 @@ EOF
         } else if (Platform.isLinux) {
           deviceSettings.muteVolumeForLinux();
         }
-      } else if (jsonObj["settings"]["mute_audio"] == false) {
+      } else if (jsonObj["settings"] != null &&
+          jsonObj["settings"]["mute_audio"] == false) {
         Map<String, dynamic> sendLog = {
           "action": "player_logs",
           "log": "Unmute Audio",
@@ -1525,7 +1751,9 @@ EOF
         } else if (Platform.isLinux) {
           deviceSettings.unmuteVolumeForLinux();
         }
-      } else if (jsonObj["settings"]["brightness"]['value'] != null) {
+      } else if (jsonObj["settings"] != null &&
+          jsonObj["settings"]["brightness"] != null &&
+          jsonObj["settings"]["brightness"]['value'] != null) {
         Map<String, dynamic> sendLog = {
           "action": "player_logs",
           "log": "brightness",
@@ -1549,7 +1777,8 @@ EOF
           var res = jsonObj["settings"]["brightness"]['value'];
           deviceSettings.changeBrightnessForLinux(res);
         }
-      } else if (jsonObj["settings"]["volume"] != null) {
+      } else if (jsonObj["settings"] != null &&
+          jsonObj["settings"]["volume"] != null) {
         Map<String, dynamic> sendLog = {
           "action": "player_logs",
           "log": "Volume",
@@ -1592,21 +1821,23 @@ EOF
 // Deserialize the JSON into the model
       // await _checkPairingStatus();
       _playListModel = playListModelFromJson(jsonEncode(jsonObj));
-      if (_playListModel!.data.playlist.isEmpty) {
-        debugPrint("remove playlist and update screen");
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "Remove Campaign",
-          "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-          "type": "info",
-          "date_time": DateTime.now().toIso8601String(),
-        };
+      // Ensure any listening UI updates immediately
+      notifyListeners();
+      // if (_playListModel!.data.playlist.isEmpty) {
+      //   debugPrint("remove playlist and update screen");
+      //   Map<String, dynamic> sendLog = {
+      //     "action": "player_logs",
+      //     "log": "Remove Campaign",
+      //     "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+      //     "type": "info",
+      //     "date_time": DateTime.now().toIso8601String(),
+      //   };
 
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
-        SharedPreferences prefs = await SharedPreferences.getInstance();
-        prefs.clear();
-        await _checkPairingStatus();
-      }
+      //   _mqttClientService.publish(topic, jsonEncode(sendLog));
+      //   SharedPreferences prefs = await SharedPreferences.getInstance();
+      //   prefs.clear();
+      //   await _checkPairingStatus();
+      // }
       print("model data ${_playListModel!.data.playlist}");
 
       for (var playlist in _playListModel!.data.playlist) {
@@ -1632,30 +1863,75 @@ EOF
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       _msg = jsonObj["action"];
       _campaignModel = campaignModelFromJson(jsonEncode(jsonObj));
-      print(
-          "checking media on model ${_campaignModel!.data.playerCampaigns[0].zones[0].mediaItems[0].mediaUrl}");
-      if (_campaignModel!.data.playerCampaigns.isEmpty) {
-        debugPrint("remove playlist and update screen");
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "Remove Campaign",
-          "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-          "type": "info",
-          "date_time": DateTime.now().toIso8601String(),
-        };
-
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
-        SharedPreferences prefs = await SharedPreferences.getInstance();
-        prefs.clear();
-        await _checkPairingStatus();
+      // Keep campaign index in bounds when campaign list changes (e.g. single campaign)
+      final campaigns = _campaignModel?.data?.playerCampaigns;
+      final count = campaigns?.length ?? 0;
+      if (count > 0 && _currentIndexOfCapmaign >= count) {
+        _currentIndexOfCapmaign = 0;
       }
+      // Ensure any listening UI updates immediately
+      notifyListeners();
+
+      // Optional: soft-restart the Flutter widget tree so the whole UI reloads
+      // (useful if some screens are not wired to rebuild correctly).
+      //
+      // Guarded to avoid restart loops if broker re-sends retained messages.
+      try {
+        final prefs = await SharedPreferences.getInstance();
+        final payload = jsonEncode(jsonObj);
+        final prev = prefs.getString('last_publish_campaign_payload');
+        if (prev != payload) {
+          await prefs.setString('last_publish_campaign_payload', payload);
+          final ctx = boundaryKey.currentContext;
+          if (ctx != null) {
+            Phoenix.rebirth(ctx);
+          } else {
+            debugPrint('MQTT_LOGS:: Phoenix context not available for restart');
+          }
+        }
+      } catch (e) {
+        debugPrint('MQTT_LOGS:: Failed to restart app on publish_campaign: $e');
+      }
+      // Safely check media URL with proper null/empty checks
+      String? mediaUrl = 'N/A';
+      try {
+        final campaigns = _campaignModel?.data?.playerCampaigns;
+        if (campaigns != null && campaigns.isNotEmpty) {
+          final zones = campaigns[0].zones;
+          if (zones != null && zones.isNotEmpty) {
+            final mediaItems = zones[0].mediaItems;
+            if (mediaItems != null && mediaItems.isNotEmpty) {
+              mediaUrl = mediaItems[0].mediaUrl ?? 'N/A';
+            }
+          }
+        }
+      } catch (e) {
+        debugPrint('MQTT_LOGS:: Error checking media URL: $e');
+        mediaUrl = 'N/A';
+      }
+      print("checking media on model $mediaUrl");
+      // if (_campaignModel!.data.playerCampaigns.isEmpty) {
+      //   debugPrint("remove playlist and update screen");
+      //   Map<String, dynamic> sendLog = {
+      //     "action": "player_logs",
+      //     "log": "Remove Campaign",
+      //     "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+      //     "type": "info",
+      //     "date_time": DateTime.now().toIso8601String(),
+      //   };
+
+      //   _mqttClientService.publish(topic, jsonEncode(sendLog));
+      //   SharedPreferences prefs = await SharedPreferences.getInstance();
+      //   prefs.clear();
+      //   await _checkPairingStatus();
+      // }
 
       print("i am in ccccccc");
 
       // await _checkPairingStatus();
-      for (var campaign in _campaignModel!.data.playerCampaigns) {
-        for (var zone in campaign.zones) {
-          for (var media in zone.mediaItems) {
+      for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
+        for (var zone in campaign.zones ?? []) {
+          for (var media in zone.mediaItems ?? []) {
             print("Media URL: ${media.mediaUrl}");
             _startDownloadingForCampaign();
           }
@@ -1719,25 +1995,38 @@ EOF
 
   int get currentDurationOfCampaign {
     final currentCampaign =
-        campaignModel!.data.playerCampaigns[_currentIndexOfCapmaign];
+        campaignModel?.data?.playerCampaigns?[_currentIndexOfCapmaign];
+    if (currentCampaign == null) return 0;
+
     final campaignSchedule = currentCampaign.campaignSchedule;
+    if (campaignSchedule == null) return 0;
 
     int durationcampagin = 0;
 
     // Check if the item is in the schedule or should always play
-    if (campaignSchedule.alwaysPlay ||
-        _isPlaylistDateInRangeForCampagin(
-                DateTime.parse(campaignSchedule.period!.date.start),
-                DateTime.parse(campaignSchedule.period!.date.end!)) &&
+    if ((campaignSchedule.alwaysPlay ?? false) ||
+        (campaignSchedule.period != null &&
+            campaignSchedule.period!.date != null &&
+            campaignSchedule.period!.date!.start != null &&
+            campaignSchedule.period!.date!.end != null &&
+            _isPlaylistDateInRangeForCampagin(
+                DateTime.parse(campaignSchedule.period!.date!.start!),
+                DateTime.parse(campaignSchedule.period!.date!.end!)) &&
             _isCurrentDayAllowedForCampain(
               campaignSchedule.period!.days,
               DateTime.now(),
             ) &&
+            campaignSchedule.period!.time != null &&
+            campaignSchedule.period!.time!.from != null &&
+            campaignSchedule.period!.time!.to != null &&
             _isTimeInRangeForCampaign(
-              campaignSchedule.period!.time.from,
-              campaignSchedule.period!.time.to,
-            )) {
-      durationcampagin = int.parse(currentCampaign.campaignSettings.duration);
+              campaignSchedule.period!.time!.from!,
+              campaignSchedule.period!.time!.to!,
+            ))) {
+      final durationValue = currentCampaign.campaignSettings?.duration;
+      if (durationValue != null) {
+        durationcampagin = int.tryParse(durationValue) ?? 0;
+      }
     }
 
     // Log the state
@@ -1784,14 +2073,28 @@ EOF
   }
 
   void _updateIndexForCampain() {
-    _currentIndexOfCapmaign = (_currentIndexOfCapmaign + 1) %
-        campaignModel!.data.playerCampaigns.length;
+    final campaigns = _campaignModel?.data?.playerCampaigns;
+    final count = campaigns?.length ?? 0;
+
+    // If all campaigns are unpublished/removed, stop the timer and move to noContent.
+    if (count == 0) {
+      debugPrint(
+          'MQTT_LOGS:: _updateIndexForCampain skipped (no campaigns). Cancelling campaign timer.');
+      _timerOfCampaign?.cancel();
+      _timerOfCampaign = null;
+      _currentIndexOfCapmaign = 0;
+      _state = MqttState.noContent;
+      notifyListeners();
+      return;
+    }
+
+    _currentIndexOfCapmaign = (_currentIndexOfCapmaign + 1) % count;
     Map<String, dynamic> sendLog = {
       "action": "player_logs",
       "log": "Current Campaign",
-      "name":
-          _campaignModel?.data.playerCampaigns[_currentIndex].campaignName ??
-              "",
+      "name": (_currentIndexOfCapmaign < count)
+          ? (campaigns![_currentIndexOfCapmaign].campaignName ?? "")
+          : "",
       "type": "info",
       "date_time": DateTime.now().toIso8601String(),
     };
@@ -1977,6 +2280,300 @@ EOF
         second: int.parse(timeFrom.split(':')[2]));
 
     return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
+  }
+
+  /// Check if restrictions allow the campaign/media to play
+  bool checkRestrictions(List<Restriction>? restrictions) {
+    const String reset = '\x1B[0m';
+    const String red = '\x1B[31m';
+    const String green = '\x1B[32m';
+    const String yellow = '\x1B[33m';
+    const String blue = '\x1B[34m';
+
+    if (restrictions == null || restrictions.isEmpty) {
+      print('$yellow⚠️  RESTRICTION: No restrictions provided → Allowed$reset');
+      return true; // No restrictions means allowed
+    }
+
+    DateTime now = DateTime.now();
+    bool allRestrictionsPass = true;
+
+    print(
+        '$blue🔍 RESTRICTION: Checking ${restrictions.length} restriction(s)...$reset');
+
+    for (var restriction in restrictions) {
+      if (restriction.type == null ||
+          restriction.operator == null ||
+          restriction.values == null) {
+        print(
+            '$yellow⚠️  RESTRICTION: Skipping invalid restriction (missing type/operator/values)$reset');
+        continue; // Skip invalid restrictions
+      }
+
+      bool restrictionPass = false;
+
+      // Only apply restrictions for "date" or "time" types
+      if (restriction.type == "date") {
+        restrictionPass = _checkDateRestriction(restriction, now);
+      } else if (restriction.type == "time") {
+        restrictionPass = _checkTimeRestriction(restriction, now);
+      } else {
+        // If type is not "date" or "time", treat as always play
+        restrictionPass = true;
+        print(
+            "$yellow⚠️  RESTRICTION: Type '${restriction.type}' is not date/time → Treating as always play$reset");
+      }
+
+      // All restrictions must pass (AND logic)
+      if (!restrictionPass) {
+        allRestrictionsPass = false;
+        print(
+            '$red❌ RESTRICTION: Failed - type: ${restriction.type}, operator: ${restriction.operator}, values: ${restriction.values}$reset');
+        break;
+      } else {
+        print(
+            '$green✅ RESTRICTION: Passed - type: ${restriction.type}, operator: ${restriction.operator}, values: ${restriction.values}$reset');
+      }
+    }
+
+    if (allRestrictionsPass) {
+      print('$green✅ RESTRICTION: All restrictions PASSED$reset');
+    } else {
+      print('$red❌ RESTRICTION: At least one restriction FAILED$reset');
+    }
+
+    return allRestrictionsPass;
+  }
+
+  /// Check date restriction based on operator
+  bool _checkDateRestriction(Restriction restriction, DateTime now) {
+    if (restriction.values == null || restriction.values!.isEmpty) {
+      return false;
+    }
+
+    final operator = _normalizeRestrictionOperator(restriction.operator);
+    final values = restriction.values!;
+
+    try {
+      switch (operator) {
+        case "is-between":
+          if (values.length >= 2) {
+            final startDate = DateTime.parse(values[0]);
+            final endDate = DateTime.parse(values[1]);
+            final startDateOnly =
+                DateTime(startDate.year, startDate.month, startDate.day);
+            final endDateOnly =
+                DateTime(endDate.year, endDate.month, endDate.day);
+            final nowDateOnly = DateTime(now.year, now.month, now.day);
+
+            final shouldPlay = (nowDateOnly.isAfter(startDateOnly) ||
+                    nowDateOnly.isAtSameMomentAs(startDateOnly)) &&
+                (nowDateOnly.isBefore(endDateOnly) ||
+                    nowDateOnly.isAtSameMomentAs(endDateOnly));
+
+            print(
+                "DATE_CHECK:: is-between - start: ${startDateOnly.toString().split(' ')[0]}, end: ${endDateOnly.toString().split(' ')[0]}, current: ${nowDateOnly.toString().split(' ')[0]}, shouldPlay: $shouldPlay");
+            return shouldPlay;
+          }
+          return false;
+
+        case "on":
+          if (values.isNotEmpty) {
+            final targetDate = DateTime.parse(values[0]);
+            final targetDateOnly =
+                DateTime(targetDate.year, targetDate.month, targetDate.day);
+            final nowDateOnly = DateTime(now.year, now.month, now.day);
+
+            final shouldPlay = nowDateOnly.isAtSameMomentAs(targetDateOnly) ||
+                nowDateOnly.isAfter(targetDateOnly);
+
+            print(
+                "DATE_CHECK:: on - target: ${targetDateOnly.toString().split(' ')[0]}, current: ${nowDateOnly.toString().split(' ')[0]}, shouldPlay: $shouldPlay");
+            return shouldPlay;
+          }
+          return false;
+
+        case "is-before":
+          if (values.isNotEmpty) {
+            final targetDate = DateTime.parse(values[0]);
+            return now.isBefore(targetDate);
+          }
+          return false;
+
+        case "is-after":
+          if (values.isNotEmpty) {
+            final targetDate = DateTime.parse(values[0]);
+            final targetDateOnly =
+                DateTime(targetDate.year, targetDate.month, targetDate.day);
+            final nowDateOnly = DateTime(now.year, now.month, now.day);
+
+            final shouldPlay = nowDateOnly.isAfter(targetDateOnly) ||
+                nowDateOnly.isAtSameMomentAs(targetDateOnly);
+
+            print(
+                "DATE_CHECK:: is-after - target: ${targetDateOnly.toString().split(' ')[0]}, current: ${nowDateOnly.toString().split(' ')[0]}, shouldPlay: $shouldPlay");
+            return shouldPlay;
+          }
+          return false;
+
+        case "not-on":
+          if (values.isNotEmpty) {
+            final targetDate = DateTime.parse(values[0]);
+            final targetDateOnly =
+                DateTime(targetDate.year, targetDate.month, targetDate.day);
+            final nowDateOnly = DateTime(now.year, now.month, now.day);
+            return !(nowDateOnly.isAtSameMomentAs(targetDateOnly));
+          }
+          return false;
+
+        default:
+          print("Unknown date restriction operator: $operator");
+          return false;
+      }
+    } catch (e) {
+      print("Error parsing date restriction: $e");
+      return false;
+    }
+  }
+
+  /// Check time restriction based on operator
+  bool _checkTimeRestriction(Restriction restriction, DateTime now) {
+    const String reset = '\x1B[0m';
+    const String red = '\x1B[31m';
+    const String cyan = '\x1B[36m';
+
+    if (restriction.values == null || restriction.values!.isEmpty) {
+      print("${red}TIME_CHECK:: No values provided for time restriction$reset");
+      return false;
+    }
+
+    final operator = _normalizeRestrictionOperator(restriction.operator);
+    final values = restriction.values!;
+
+    print(
+        "${cyan}TIME_CHECK:: Checking time restriction - operator: $operator, values: $values, current time: ${now.hour}:${now.minute.toString().padLeft(2, '0')}$reset");
+
+    try {
+      switch (operator) {
+        case "is-between":
+          if (values.length >= 2) {
+            final startTime = _parseTimeString(values[0]);
+            final endTime = _parseTimeString(values[1]);
+            final currentTime =
+                DateTime(now.year, now.month, now.day, now.hour, now.minute);
+            final result = (currentTime.isAfter(startTime) ||
+                    currentTime.isAtSameMomentAs(startTime)) &&
+                (currentTime.isBefore(endTime) ||
+                    currentTime.isAtSameMomentAs(endTime));
+            print(
+                "${cyan}TIME_CHECK:: is-between - start: ${startTime.hour}:${startTime.minute.toString().padLeft(2, '0')}, end: ${endTime.hour}:${endTime.minute.toString().padLeft(2, '0')}, current: ${currentTime.hour}:${currentTime.minute.toString().padLeft(2, '0')}, result: $result$reset");
+            return result;
+          }
+          return false;
+
+        case "on":
+          if (values.isNotEmpty) {
+            final targetTime = _parseTimeString(values[0]);
+            final targetHour = targetTime.hour;
+            final targetMinute = targetTime.minute;
+            final currentHour = now.hour;
+            final currentMinute = now.minute;
+
+            final shouldPlay =
+                currentHour == targetHour && currentMinute == targetMinute;
+
+            print(
+                "${cyan}TIME_CHECK:: on - target: ${targetHour.toString().padLeft(2, '0')}:${targetMinute.toString().padLeft(2, '0')}, current: ${currentHour.toString().padLeft(2, '0')}:${currentMinute.toString().padLeft(2, '0')}, result: $shouldPlay$reset");
+            return shouldPlay;
+          }
+          return false;
+
+        case "is-before":
+          if (values.isNotEmpty) {
+            final targetTime = _parseTimeString(values[0]);
+            final currentTime =
+                DateTime(now.year, now.month, now.day, now.hour, now.minute);
+            final result = currentTime.isBefore(targetTime);
+            print(
+                "TIME_CHECK:: is-before - target: ${targetTime.hour}:${targetTime.minute.toString().padLeft(2, '0')}, current: ${currentTime.hour}:${currentTime.minute.toString().padLeft(2, '0')}, result: $result");
+            return result;
+          }
+          return false;
+
+        case "is-after":
+          if (values.isNotEmpty) {
+            final targetTime = _parseTimeString(values[0]);
+            final currentTime =
+                DateTime(now.year, now.month, now.day, now.hour, now.minute);
+            final result = currentTime.isAfter(targetTime) ||
+                currentTime.isAtSameMomentAs(targetTime);
+            print(
+                "${cyan}TIME_CHECK:: is-after - target: ${targetTime.hour}:${targetTime.minute.toString().padLeft(2, '0')}, current: ${currentTime.hour}:${currentTime.minute.toString().padLeft(2, '0')}, result: $result$reset");
+            return result;
+          }
+          return false;
+
+        case "not-on":
+          if (values.isNotEmpty) {
+            final targetTime = _parseTimeString(values[0]);
+            final currentTime =
+                DateTime(now.year, now.month, now.day, now.hour, now.minute);
+            final result = !(currentTime.isAtSameMomentAs(targetTime));
+            print(
+                "TIME_CHECK:: not-on - target: ${targetTime.hour}:${targetTime.minute.toString().padLeft(2, '0')}, current: ${currentTime.hour}:${currentTime.minute.toString().padLeft(2, '0')}, result: $result");
+            return result;
+          }
+          return false;
+
+        default:
+          print("TIME_CHECK:: Unknown time restriction operator: $operator");
+          return false;
+      }
+    } catch (e) {
+      print("TIME_CHECK:: Error parsing time restriction: $e");
+      return false;
+    }
+  }
+
+  /// Parse time string (HH:mm or HH:mm:ss) to DateTime
+  DateTime _parseTimeString(String timeStr) {
+    // Trim whitespace from the time string to handle cases like "07: 04"
+    final trimmed = timeStr.trim();
+    final parts = trimmed.split(':');
+    if (parts.length < 2) {
+      throw FormatException("Invalid time format: $timeStr");
+    }
+    // Trim whitespace from each part to handle cases like "07: 04"
+    final hour = int.parse(parts[0].trim());
+    final minute = int.parse(parts[1].trim());
+    final second = parts.length > 2 ? int.parse(parts[2].trim()) : 0;
+    return DateTime(DateTime.now().year, DateTime.now().month,
+        DateTime.now().day, hour, minute, second);
+  }
+
+  /// Normalize operator strings coming from backend.
+  /// Accepts variants like: isbetween / is-between / is_between, noton / not-on, etc.
+  String _normalizeRestrictionOperator(String? op) {
+    if (op == null) return '';
+    final raw = op.trim().toLowerCase();
+    final compact = raw
+        .replaceAll(RegExp(r'\s+'), '')
+        .replaceAll('_', '')
+        .replaceAll('-', '');
+
+    switch (compact) {
+      case 'isbetween':
+        return 'is-between';
+      case 'isbefore':
+        return 'is-before';
+      case 'isafter':
+        return 'is-after';
+      case 'noton':
+        return 'not-on';
+      default:
+        // Best-effort: normalize underscores to hyphens.
+        return raw.replaceAll('_', '-');
+    }
   }
 
   Future<void> launchUrl(String url) async {

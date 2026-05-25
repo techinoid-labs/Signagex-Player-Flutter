@@ -13,37 +13,26 @@ class ConnectingView extends StatefulWidget {
 class _ConnectingViewState extends State<ConnectingView> {
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        children: [
-         
-          Image.asset(
-            "assets/images/background.png",
-            fit: BoxFit.cover,
-            height: MediaQuery.of(context).size.height,
-            width: MediaQuery.of(context).size.width,
-          ),
-        
-          const Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                CustomImageWidget(
-                  imagePath: 'assets/images/Wifi.png',
-                ),
-                SimpleText(
-                  text: "Connecting...",
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-                SimpleText(
-                  text:
-                      "Wifi is still trying to connect, but it’s taking longer than normal.\nCheck that your Wifi is on and connected.",
-                )
-              ],
+    return const Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CustomImageWidget(
+              imagePath: 'assets/images/Wifi.png',
             ),
-          ),
-        ],
+            SimpleText(
+              text: "Connecting...",
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+            ),
+            SimpleText(
+              text:
+                  "Wifi is still trying to connect, but it’s taking longer than normal.\nCheck that your Wifi is on and connected.",
+            )
+          ],
+        ),
       ),
     );
   }

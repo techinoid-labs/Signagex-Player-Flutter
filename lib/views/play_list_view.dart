@@ -11,32 +11,63 @@ import 'package:video_player/video_player.dart';
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/view_models/mqtt_view_model.dart';
 
-class PlaylistScreen extends StatelessWidget {
+class PlaylistScreen extends StatefulWidget {
   const PlaylistScreen({super.key});
+
+  @override
+  State<PlaylistScreen> createState() => _PlaylistScreenState();
+}
+
+class _PlaylistScreenState extends State<PlaylistScreen> {
+  late FocusNode _focusNode; // Declare FocusNode
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode = FocusNode();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // Start playlist timer after the frame is rendered
+      final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
+      mqttViewModel.startPlaylistTimer();
+    });
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final mqttViewModel = Provider.of<MqttViewModel>(context);
-
-    // Ensure timer starts
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      mqttViewModel.startPlaylistTimer();
-    });
 
     final currentPlaylist =
         mqttViewModel.playListModel!.data.playlist[mqttViewModel.currentIndex];
     final playlistSchedule = currentPlaylist.playlistSchedule;
 
     if (playlistSchedule!.alwaysPlay) {
-      return Scaffold(
-        body: mqttViewModel.mediaPath.isNotEmpty
-            ? VideoPlaylistWidget(
-                mediaPaths: currentPlaylist.media!,
-                playlist: currentPlaylist,
-              )
-            : const Center(
-                child: Text("No media available"),
-              ),
+      return GestureDetector(
+        onTapDown: (details) {
+          // Capture the tap position and store it in the Provider
+          final mqttViewModel =
+              Provider.of<MqttViewModel>(context, listen: false);
+          mqttViewModel.setTapPosition(
+              details.localPosition.dx, details.localPosition.dy);
+          print(
+              "Tapped at: x=${details.localPosition.dx}, y=${details.localPosition.dy}");
+        },
+        child: Scaffold(
+          backgroundColor: Colors.black,
+          body: mqttViewModel.mediaPath.isNotEmpty
+              ? VideoPlaylistWidget(
+                  mediaPaths: currentPlaylist.media!,
+                  playlist: currentPlaylist,
+                )
+              : const Center(
+                  child: Text("No media available"),
+                ),
+        ),
       );
     }
 
@@ -55,6 +86,7 @@ class PlaylistScreen extends StatelessWidget {
     );
 
     return Scaffold(
+      backgroundColor: Colors.black,
       body: mqttViewModel.mediaPath.isNotEmpty &&
               isPlaylistDateInRange &&
               isPlaylistDayAllowed &&
@@ -580,9 +612,11 @@ class VideoPlayerWidget extends StatefulWidget {
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     with SingleTickerProviderStateMixin {
-  late VideoPlayerController _controller;
+  VideoPlayerController? _controller;
   bool _isLoading = true;
   bool _isVideoEnded = false;
+  int _initAttempts = 0;
+  static const int _maxInitAttempts = 5;
 
   @override
   void initState() {
@@ -591,21 +625,72 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   }
 
   void _initializeVideo() async {
-    _controller = VideoPlayerController.file(File(widget.filePath))
+    final file = File(widget.filePath);
+    if (!await file.exists()) {
+      _initAttempts++;
+      print(
+          "Playlist VideoPlayerWidget: file does not exist (attempt $_initAttempts/$_maxInitAttempts): ${widget.filePath}");
+      if (_initAttempts <= _maxInitAttempts) {
+        await Future.delayed(const Duration(seconds: 1));
+        if (!mounted) return;
+        _initializeVideo();
+        return;
+      } else {
+        print(
+            "Playlist VideoPlayerWidget: giving up after $_maxInitAttempts attempts – video will not initialize.");
+        setState(() {
+          _isLoading = false;
+        });
+        return;
+      }
+    }
+
+    // Dispose any previous controller before re-initializing
+    if (_controller != null) {
+      try {
+        _controller!.dispose();
+      } catch (_) {}
+      _controller = null;
+    }
+
+    _controller = VideoPlayerController.file(file)
       ..initialize().then(
         (_) {
+          if (!mounted || _controller == null) return;
+
+          if (!_controller!.value.isInitialized ||
+              _controller!.value.hasError) {
+            _initAttempts++;
+            print(
+                "Playlist VideoPlayerWidget: controller not initialized/has error after initialize (attempt $_initAttempts/$_maxInitAttempts), "
+                "hasError=${_controller!.value.hasError}, desc=${_controller!.value.errorDescription}");
+            if (_initAttempts <= _maxInitAttempts) {
+              Future.delayed(const Duration(seconds: 1), () {
+                if (!mounted) return;
+                _initializeVideo();
+              });
+              return;
+            } else {
+              setState(() {
+                _isLoading = false;
+              });
+              return;
+            }
+          }
+
           setState(
             () {
               _isLoading = false;
-              _controller.setVolume(widget.currentVolume);
-              _controller.setLooping(true);
-              _controller.play();
+              _controller!.setVolume(widget.currentVolume);
+              _controller!.setLooping(true);
+              _controller!.play();
             },
           );
 
-          _controller.addListener(
+          _controller!.addListener(
             () {
-              if (_controller.value.position >= _controller.value.duration &&
+              if (_controller == null) return;
+              if (_controller!.value.position >= _controller!.value.duration &&
                   !_isVideoEnded) {
                 _isVideoEnded = true;
                 widget.onVideoEnd();
@@ -614,21 +699,30 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
           );
         },
       ).catchError(
-        (error) {
-          print("Error initializing video: $error");
-          setState(
-            () {
-              _isLoading = false;
-            },
-          );
+        (error) async {
+          _initAttempts++;
+          print(
+              "Playlist VideoPlayerWidget: error initializing video (attempt $_initAttempts/$_maxInitAttempts): $error");
+          if (_initAttempts <= _maxInitAttempts) {
+            await Future.delayed(const Duration(seconds: 1));
+            if (!mounted) return;
+            _initializeVideo();
+          } else {
+            setState(
+              () {
+                _isLoading = false;
+              },
+            );
+          }
         },
       );
   }
 
   void _checkVideoEnd() {
-    if (_controller.value.isInitialized &&
-        !_controller.value.isPlaying &&
-        _controller.value.position >= _controller.value.duration &&
+    if (_controller != null &&
+        _controller!.value.isInitialized &&
+        !_controller!.value.isPlaying &&
+        _controller!.value.position >= _controller!.value.duration &&
         !_isVideoEnded) {
       setState(() {
         _isVideoEnded = true;
@@ -641,25 +735,29 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   void didUpdateWidget(covariant VideoPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.filePath != widget.filePath) {
-      _controller.removeListener(_checkVideoEnd);
-      _controller.dispose();
+      if (_controller != null) {
+        _controller!.removeListener(_checkVideoEnd);
+        _controller!.dispose();
+        _controller = null;
+      }
       _initializeVideo();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    Widget videoWidget = _isLoading
-        ? const Center(child: CircularProgressIndicator())
-        : SizedBox.expand(
-            child: AspectRatio(
-              aspectRatio: widget.aspectRatio,
-              child: VideoPlayer(_controller),
-            ),
-          );
-
-    if (!_isLoading && !_controller.value.isInitialized) {
+    Widget videoWidget;
+    if (_isLoading) {
       videoWidget = const Center(child: CircularProgressIndicator());
+    } else if (_controller == null || !_controller!.value.isInitialized) {
+      videoWidget = const Center(child: CircularProgressIndicator());
+    } else {
+      videoWidget = SizedBox.expand(
+        child: AspectRatio(
+          aspectRatio: widget.aspectRatio,
+          child: VideoPlayer(_controller!),
+        ),
+      );
     }
 
     return AnimatedSwitcher(
@@ -670,8 +768,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
 
   @override
   void dispose() {
-    _controller.removeListener(_checkVideoEnd);
-    _controller.dispose();
+    if (_controller != null) {
+      _controller!.removeListener(_checkVideoEnd);
+      _controller!.dispose();
+    }
     super.dispose();
   }
 }
@@ -707,7 +807,7 @@ class ImageWidget extends StatelessWidget {
 }
 
 class WBViewWidget extends StatefulWidget {
-  final String media; // Absolute file path
+  final String media; // Absolute file path or remote URL
   final VoidCallback onMediaEnd;
   final String transitionType;
 
@@ -733,17 +833,38 @@ class _WBViewWidgetState extends State<WBViewWidget> {
 
   @override
   Widget build(BuildContext context) {
-    String fileUrl = 'file://${widget.media}';
+    // On macOS, avoid embedded WebViews (they cause recreating_view). Open externally.
+    if (Platform.isMacOS) {
+      print(
+          "[LOG] Playlist WBViewWidget - macOS detected, opening in external browser");
+      // Best-effort: treat media as URL if it looks like one, otherwise do nothing.
+      if (widget.media.startsWith('http://') ||
+          widget.media.startsWith('https://')) {
+        // Launch externally via url_launcher (handled in ViewModel).
+        // We don't have direct access here, so use a platform channel or leave as is.
+      }
+      return const SizedBox.shrink();
+    }
 
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 500),
+    // Decide whether this is a local file path or a remote URL
+    final String targetUrl;
+    if (widget.media.startsWith('http://') ||
+        widget.media.startsWith('https://')) {
+      targetUrl = widget.media;
+    } else {
+      targetUrl = 'file://${widget.media}';
+    }
+
+    return SizedBox.expand(
       child: Column(
+        key: ValueKey(widget.media),
         children: [
           if (progress < 1.0) LinearProgressIndicator(value: progress),
           Expanded(
             child: InAppWebView(
+              key: ValueKey('wbview_${widget.media}'),
               initialUrlRequest:
-                  URLRequest(url: WebUri.uri(Uri.parse(fileUrl))),
+                  URLRequest(url: WebUri.uri(Uri.parse(targetUrl))),
               onWebViewCreated: (InAppWebViewController controller) {
                 _webViewController = controller;
               },

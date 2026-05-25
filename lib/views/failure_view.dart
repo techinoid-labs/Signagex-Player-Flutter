@@ -13,37 +13,25 @@ class ConnectingView extends StatefulWidget {
 class _ConnectingViewState extends State<ConnectingView> {
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Stack(
-        children: [
-         
-          Image.asset(
-            "assets/images/background.png",
-            fit: BoxFit.cover,
-            height: MediaQuery.of(context).size.height,
-            width: MediaQuery.of(context).size.width,
-          ),
-        
-          const Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                CustomImageWidget(
-                  imagePath: 'assets/images/Wifi.png',
-                ),
-                SimpleText(
-                  text: "Try Again Later",
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                ),
-                SimpleText(
-                  text:
-                      "Api response failure",
-                )
-              ],
+    return const Scaffold(
+      backgroundColor: Colors.black,
+      body: Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            CustomImageWidget(
+              imagePath: 'assets/images/Wifi.png',
             ),
-          ),
-        ],
+            SimpleText(
+              text: "Try Again Later",
+              fontSize: 24,
+              fontWeight: FontWeight.bold,
+            ),
+            SimpleText(
+              text: "Api response failure",
+            )
+          ],
+        ),
       ),
     );
   }

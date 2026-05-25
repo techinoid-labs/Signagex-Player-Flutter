@@ -2,9 +2,8 @@ import 'package:digital_signage/data/network/base_api_service.dart';
 import 'package:digital_signage/data/network/network_api_service.dart';
 import 'package:digital_signage/utils/constants.dart';
 
-
 class ApiRepository {
-   BaseApiService _apiService = NetworkApiService();
+  final BaseApiService _apiService = NetworkApiService();
 
   Future<dynamic> fetchData(String url) async {
     try {
@@ -16,8 +15,8 @@ class ApiRepository {
 
   Future<dynamic> postData(String url, dynamic data, String? authToken) async {
     try {
-      print(baseurl+url);
-      return await _apiService.postApiResponse(baseurl+url, data, authToken);
+      print(baseurl + url);
+      return await _apiService.postApiResponse(baseurl + url, data, authToken);
     } catch (e) {
       rethrow;
     }

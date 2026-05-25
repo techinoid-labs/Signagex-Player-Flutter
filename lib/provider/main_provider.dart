@@ -1,5 +1,5 @@
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'package:provider/provider.dart';
 
@@ -24,46 +24,26 @@ class MqttProvider extends StatefulWidget {
 }
 
 class _MqttProviderState extends State<MqttProvider> {
-  Offset? _lastOffset;
+  late FocusNode _focusNode;
 
   @override
   void initState() {
     super.initState();
-
+    _focusNode = FocusNode();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _focusNode.requestFocus();
+    });
   }
 
   @override
   void dispose() {
-    // Remove listener when widget is disposed
-    final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
-    mqttViewModel.removeListener(_onCoordinateUpdate);
+    _focusNode.dispose();
     super.dispose();
   }
 
-  void _onCoordinateUpdate() {
-    final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
-    if (mqttViewModel.x != null && mqttViewModel.y != null) {
-      final screenSize = MediaQuery.of(context).size;
-      final dx = mqttViewModel.x!.toDouble() * screenSize.width / 100;
-      final dy = mqttViewModel.y!.toDouble() * screenSize.height / 100;
-
-      final newOffset = Offset(dx, dy);
-
-      if (_lastOffset != newOffset) {
-        _simulateGlobalInteraction(newOffset);
-        _lastOffset = newOffset;
-      }
-    }
-  }
-
-  void _simulateGlobalInteraction(Offset offset) {
-    final gesture = GestureBinding.instance;
-
-    print("Simulating interaction at position: $offset");
-
-    // Simulate a drag if there's a previous offset
-    gesture.handlePointerEvent(PointerDownEvent(position: offset));
-    gesture.handlePointerEvent(PointerUpEvent(position: offset));
+  void _onTap(TapUpDetails details) {
+    final position = details.localPosition;
+    print("Touched at position: $position");
   }
 
   @override
@@ -79,39 +59,46 @@ class _MqttProviderState extends State<MqttProvider> {
       ],
       child: Consumer<MqttViewModel>(
         builder: (context, viewModel, child) {
-          return _buildScreen(viewModel.state);
+          return RawKeyboardListener(
+            focusNode: _focusNode,
+            onKey: _onKey,
+            child: GestureDetector(
+              onTapUp: _onTap,
+              child: _getScreenForState(viewModel.state),
+            ),
+          );
         },
       ),
     );
   }
 
-  /// Build screens based on the MQTT state
-  Widget _buildScreen(MqttState state) {
+  void _onKey(RawKeyEvent event) {
+    if (event is RawKeyDownEvent) {
+      print("Key pressed: ${event.logicalKey.debugName}");
+    }
+  }
+
+  Widget _getScreenForState(MqttState state) {
+    print("State: $state");
     switch (state) {
       case MqttState.initial:
         return const ConnectingView();
-
       case MqttState.noContent:
         return const NoContentView();
-
       case MqttState.connectionScreen:
         return const ConnectingView();
-
       case MqttState.downloading:
         return const DownloadingView();
-
       case MqttState.noInternet:
         return const NoInternetView();
-
       case MqttState.campaignScreen:
         return const CampaignView();
-
       case MqttState.pairedScreen:
         return const DigivisionView();
-
       case MqttState.playlistScreen:
         return const PlaylistScreen();
-
+      case MqttState.failure:
+        return const ConnectingView();
       default:
         return const Scaffold(
           body: Center(child: Text('Unknown State')),

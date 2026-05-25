@@ -15,18 +15,19 @@ class MyHttpOverrides extends HttpOverrides {
           (X509Certificate cert, String host, int port) => true;
   }
 }
+
 void main() {
-   HttpOverrides.global = MyHttpOverrides();
-  runApp(
-    Phoenix(
-      child: MaterialApp(
+  HttpOverrides.global = MyHttpOverrides();
+  runApp(Phoenix(
+    child: MaterialApp(
+        debugShowCheckedModeBanner: false,
         home: RepaintBoundary(
-        key: boundaryKey,child:  MqttProvider(
-          child: MyHomePage(), 
-        ),
-      )),
-    )
-  );
+          key: boundaryKey,
+          child: MqttProvider(
+            child: MyHomePage(),
+          ),
+        )),
+  ));
 }
 
 class MyHomePage extends StatelessWidget {

@@ -12,7 +12,7 @@ class NetworkApiService extends BaseApiService {
   Future<dynamic> getApiResponse(String url) async {
     try {
       final response =
-          await http.get(Uri.parse(url)).timeout(Duration(seconds: 30));
+          await http.get(Uri.parse(url)).timeout(const Duration(seconds: 30));
       return _processResponse(response);
     } on SocketException {
       throw FetalException("No Internet Connection");
@@ -28,7 +28,7 @@ class NetworkApiService extends BaseApiService {
       final response = await http
           .post(
             Uri.parse(url),
-            headers:  authToken != null
+            headers: authToken != null
                 ? {
                     HttpHeaders.contentTypeHeader: 'application/json',
                     HttpHeaders.authorizationHeader: "Bearer $authToken"
@@ -36,7 +36,7 @@ class NetworkApiService extends BaseApiService {
                 : {HttpHeaders.contentTypeHeader: 'application/json'},
             body: jsonEncode(data),
           )
-          .timeout(Duration(seconds: 30));
+          .timeout(const Duration(seconds: 30));
       return _processResponse(response);
     } on SocketException {
       throw FetalException("No Internet Connection");
@@ -58,9 +58,9 @@ class NetworkApiService extends BaseApiService {
                     HttpHeaders.authorizationHeader: "Bearer $authToken"
                   }
                 : {HttpHeaders.contentTypeHeader: 'application/json'},
-           body: jsonEncode(data),
+            body: jsonEncode(data),
           )
-          .timeout(Duration(seconds: 30));
+          .timeout(const Duration(seconds: 30));
       return _processResponse(response);
     } on SocketException {
       throw FetalException("No Internet Connection");
@@ -82,7 +82,7 @@ class NetworkApiService extends BaseApiService {
                   }
                 : {HttpHeaders.contentTypeHeader: 'application/json'},
           )
-          .timeout(Duration(seconds: 30));
+          .timeout(const Duration(seconds: 30));
       return _processResponse(response);
     } on SocketException {
       throw FetalException("No Internet Connection");
@@ -99,7 +99,7 @@ class NetworkApiService extends BaseApiService {
       case 400:
         throw BadRequestException("Invalid Request");
       case 401:
-       throw BadRequestException("Invalid Url");
+        throw BadRequestException("Invalid Url");
       case 403:
         throw UnAuthException("Unauthorized");
       default:

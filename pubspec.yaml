@@ -2,7 +2,7 @@ name: digital_signage
 description: "A new Flutter project."
 # The following line prevents the package from being accidentally published to
 # pub.dev using `flutter pub publish`. This is preferred for private packages.
-publish_to: 'none' # Remove this line if you wish to publish to pub.dev
+publish_to: "none" # Remove this line if you wish to publish to pub.dev
 
 # The following defines the version and build number for your application.
 # A version number is three numbers separated by dots, like 1.2.43
@@ -31,11 +31,11 @@ dependencies:
   flutter:
     sdk: flutter
 
-
   # The following adds the Cupertino Icons font to your application.
   # Use with the CupertinoIcons class for iOS style icons.
   cupertino_icons: ^1.0.8
-  mqtt_client: ^9.6.3
+  # mqtt_client: ^10.5.1  # Replaced with mqtt5_client for better WebSocket path support
+  mqtt5_client: ^4.5.3 # Compatible with SDK 3.6.2, supports WebSocket paths
   provider: ^6.1.2
   dio: ^5.7.0
   url_launcher: ^6.1.0
@@ -46,6 +46,7 @@ dependencies:
   connectivity_plus: ^6.0.5
   internet_connection_checker: ^1.0.0
   video_player: ^2.3.0
+  video_player_win: ^3.2.2
   geolocator: ^9.0.1
   battery_plus: ^6.0.3
   network_info_plus: ^6.0.1
@@ -78,7 +79,8 @@ dependencies:
   # flutter_local_notifications: ^9.0.0
   system_info2: ^4.0.0
   image: ^4.5.2
-
+  qr_flutter: ^4.1.0
+  flutter_svg: ^2.0.10+1
 
 dev_dependencies:
   flutter_test:
@@ -99,7 +101,6 @@ dev_dependencies:
 
 # The following section is specific to Flutter packages.
 flutter:
-
   # The following line ensures that the Material Icons font is
   # included with your application, so that you can use the icons in
   # the material Icons class.

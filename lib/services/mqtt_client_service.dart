@@ -1,90 +1,168 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import 'package:mqtt_client/mqtt_client.dart';
-import 'package:mqtt_client/mqtt_server_client.dart';
+import 'package:mqtt5_client/mqtt5_client.dart';
+import 'package:mqtt5_client/mqtt5_server_client.dart';
 import 'package:typed_data/typed_data.dart';
 
 import 'package:digital_signage/utils/globle_variable.dart';
 
-const String mqttBroker = 'broker.emqx.io';
-const int mqttPort = 1883;
+const String mqttBroker = 'signagexai.com';
+const int mqttPort = 443;
+const String mqttWebSocketPath = '/mqtt';
 
 class MqttClientService {
   late MqttServerClient _client;
   final ValueNotifier<String> receivedMessageNotifier =
       ValueNotifier<String>('');
-  // final PlaylistViewModel playlistViewModel = PlaylistViewModel();
+
   Function(String)? onMessageReceived;
+
   MqttClientService() {
     _initializeClient();
   }
 
   void _initializeClient() {
-    _client = MqttServerClient.withPort(mqttBroker,
-        'uniqueClientID_${DateTime.now().millisecondsSinceEpoch}', mqttPort);
+    final fullUri = 'wss://$mqttBroker:$mqttPort$mqttWebSocketPath';
+    _client = MqttServerClient.withPort(
+      fullUri,
+      'flutter_client_${DateTime.now().millisecondsSinceEpoch}',
+      mqttPort,
+    );
 
+    _client.useWebSocket = true;
+    _client.useAlternateWebSocketImplementation = true;
+    _client.secure = false;
+
+    _client.websocketProtocols = ['mqtt'];
+
+    _client.keepAlivePeriod = 60;
     _client.logging(on: true);
+
     _client.autoReconnect = true;
     _client.resubscribeOnAutoReconnect = true;
-    _client.onConnected = onConnected;
-    _client.onDisconnected = onDisconnected;
-    _client.onUnsubscribed = onUnsubscribed;
-    _client.onSubscribed = onSubscribed;
-    _client.onSubscribeFail = onSubscribeFail;
-    _client.pongCallback = pong;
-    _client.keepAlivePeriod = 60;
-    _client.setProtocolV311();
+
+    _client.onConnected = _onConnected;
+    _client.onDisconnected = _onDisconnected;
+    _client.onSubscribed = _onSubscribed;
+    _client.onAutoReconnect = _onAutoReconnect;
+    _client.onAutoReconnected = _onAutoReconnected;
   }
 
-  void onConnected() {
-    print('MQTT_LOGS:: Connected');
+  // ────────────────────────────────
+  // Callbacks
+  // ────────────────────────────────
+  void _onConnected() {
+    print('MQTT_LOGS:: Connected callback fired');
+    print('MQTT_LOGS:: Connection state: ${_client.connectionStatus?.state}');
   }
 
-  void onDisconnected() {
-    print('MQTT_LOGS:: Disconnected');
+  void _onDisconnected() {
+    print('MQTT_LOGS:: Disconnected callback fired');
+    print('MQTT_LOGS:: Connection state: ${_client.connectionStatus?.state}');
+    print(
+        'MQTT_LOGS:: Disconnection origin: ${_client.connectionStatus?.disconnectionOrigin}');
+    print('MQTT_LOGS:: Auto-reconnect enabled: ${_client.autoReconnect}');
   }
 
-  void onSubscribed(String topic) {
-    print('MQTT_LOGS:: Subscribed topic: $topic');
+  void _onSubscribed(MqttSubscription subscription) {
+    print('MQTT_LOGS:: Subscribed to topic: ${subscription.topic.rawTopic}');
   }
 
-  void onSubscribeFail(String topic) {
-    print('MQTT_LOGS:: Failed to subscribe $topic');
+  void _onAutoReconnect() {
+    print('MQTT_LOGS:: Auto-reconnecting...');
   }
 
-  void onUnsubscribed(String? topic) {
-    print('MQTT_LOGS:: Unsubscribed topic: $topic');
+  void _onAutoReconnected() {
+    print('MQTT_LOGS:: Auto-reconnected successfully');
   }
 
-  void pong() {
-    print('MQTT_LOGS:: Ping response client callback invoked');
-  }
-
+  // ────────────────────────────────
+  // Connect - using wss://signagexai.com/mqtt
+  // ────────────────────────────────
   Future<void> connect() async {
-    final connMessage = MqttConnectMessage()
-        .withWillTopic('willtopic')
-        .withWillMessage('Will message')
-        .startClean()
-        .withWillQos(MqttQos.atLeastOnce);
-
-    print('MQTT_LOGS:: client connecting....');
-    _client.connectionMessage = connMessage;
-
     try {
-      await _client.connect();
-      if (_client.connectionStatus!.state == MqttConnectionState.connected) {
-        print('MQTT_LOGS:: client connected');
-      } else {
-        print(
-            'MQTT_LOGS::ERROR  client connection failed - disconnecting, status is ${_client.connectionStatus}');
-        _client.disconnect();
+      print(
+          'MQTT_LOGS:: Connecting to wss://$mqttBroker:$mqttPort$mqttWebSocketPath');
+      print('MQTT_LOGS:: Using mqtt5_client package with WSS');
+
+      try {
+        if (_client.connectionStatus?.state == MqttConnectionState.connected ||
+            _client.connectionStatus?.state == MqttConnectionState.connecting) {
+          _client.disconnect();
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+      } catch (e) {}
+
+      final connMessage = MqttConnectMessage()
+          .withClientIdentifier(
+              'flutter_client_${DateTime.now().millisecondsSinceEpoch}')
+          .startClean();
+
+      _client.connectionMessage = connMessage;
+
+      print(
+          'MQTT_LOGS:: Connecting via WSS to wss://$mqttBroker:$mqttPort$mqttWebSocketPath');
+      print('MQTT_LOGS:: Client ID: ${connMessage.payload.clientIdentifier}');
+      print('MQTT_LOGS:: WebSocket enabled: ${_client.useWebSocket}');
+      print('MQTT_LOGS:: Secure: ${_client.secure}');
+
+      // Connect with timeout
+      await _client.connect().timeout(
+        const Duration(seconds: 60),
+        onTimeout: () {
+          print('MQTT_LOGS:: Connection timeout after 60 seconds');
+          _client.disconnect();
+          throw TimeoutException('Connection timeout - broker did not respond');
+        },
+      );
+
+      int attempts = 0;
+      const maxAttempts = 100;
+
+      while (attempts < maxAttempts) {
+        final connectionState = _client.connectionStatus?.state;
+
+        if (connectionState == MqttConnectionState.connected) {
+          print('MQTT_LOGS:: Successfully connected!');
+          print('MQTT_LOGS:: Connection status: ${_client.connectionStatus}');
+
+          _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
+            _handleReceivedMessage(c);
+          });
+
+          return;
+        } else if (connectionState == MqttConnectionState.faulted ||
+            connectionState == MqttConnectionState.disconnected) {
+          print('MQTT_LOGS:: Connection failed!');
+          print('MQTT_LOGS:: State: $connectionState');
+          print('MQTT_LOGS:: Connection status: ${_client.connectionStatus}');
+          _client.disconnect();
+          throw Exception('Failed to connect: State=$connectionState');
+        }
+
+        await Future.delayed(const Duration(milliseconds: 100));
+        attempts++;
       }
-    } catch (e) {
-      print('Exception: $e');
+
+      final finalState = _client.connectionStatus?.state;
+      print('MQTT_LOGS:: Connection timeout, state: $finalState');
       _client.disconnect();
+      throw Exception('Connection timeout: State=$finalState');
+    } catch (e, st) {
+      print('MQTT_LOGS:: Connection exception: $e');
+      print('MQTT_LOGS:: Exception type: ${e.runtimeType}');
+      if (_client.connectionStatus != null) {
+        print('MQTT_LOGS:: Connection status: ${_client.connectionStatus}');
+      }
+      print('MQTT_LOGS:: Stack trace: $st');
+      try {
+        _client.disconnect();
+      } catch (_) {}
+      rethrow;
     }
   }
 
@@ -96,10 +174,14 @@ class MqttClientService {
   }
 
   void subscribe(String topic) {
+    if (topic.isEmpty || topic.trim().isEmpty) {
+      print('MQTT_LOGS:: Cannot subscribe - topic is empty');
+      return;
+    }
     print('MQTT_LOGS:: Subscribing to the topic: $topic');
     _client.subscribe(topic, MqttQos.atMostOnce);
 
-    _client.updates?.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
+    _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
       _handleReceivedMessage(c);
     });
   }
@@ -109,12 +191,13 @@ class MqttClientService {
     if (messages == null || messages.isEmpty) return;
 
     final recMess = messages[0].payload as MqttPublishMessage;
-    final payload =
-        MqttPublishPayload.bytesToStringAsString(recMess.payload.message);
 
-    // Call the callback if it is set
+    final payloadBytes = recMess.payload.message;
+    if (payloadBytes == null) return;
+    final payload = utf8.decode(payloadBytes.toList());
+
     if (onMessageReceived != null) {
-      onMessageReceived!(payload); 
+      onMessageReceived!(payload);
     }
 
     receivedMessageNotifier.value = payload;
@@ -125,25 +208,19 @@ class MqttClientService {
     try {
       jsonDecode(payload);
     } catch (e) {
-    print('Failed to decode JSON: `$e');
+      print('Failed to decode JSON: `$e');
     }
   }
 
-  /// Publish binary data to a specific topic
   void publishMessage(String topic, Uint8List payload) {
     if (_client.connectionStatus!.state == MqttConnectionState.connected) {
-      final MqttClientPayloadBuilder builder = MqttClientPayloadBuilder();
-      
-      // Convert Uint8List to Uint8Buffer
       final Uint8Buffer buffer = Uint8Buffer();
       buffer.addAll(payload);
-
-      builder.addBuffer(buffer);  // Add binary data
 
       _client.publishMessage(
         topic,
         MqttQos.atLeastOnce,
-        builder.payload!,
+        buffer,
         retain: false,
       );
 
@@ -152,18 +229,29 @@ class MqttClientService {
       print('Cannot publish: MQTT client not connected.');
     }
   }
-  
-  
-  void publish(String topic, String message) {
-    var pubTopic = topic;
-    final builder = MqttClientPayloadBuilder();
-    builder.addString(message);
-  
 
+  void publish(String topic, String message) {
+    if (topic.isEmpty || topic.trim().isEmpty) {
+      print('MQTT_LOGS:: Cannot publish - topic is empty');
+      return;
+    }
     if (_client.connectionStatus?.state == MqttConnectionState.connected) {
-      _client.publishMessage(pubTopic, MqttQos.atMostOnce, builder.payload!,
-          retain: true);
-      print('MQTT_LOGS:: Published message: $message');
+      // Convert string to Uint8Buffer
+      final Uint8Buffer buffer = Uint8Buffer();
+      buffer.addAll(utf8.encode(message));
+
+      _client.publishMessage(
+        topic,
+        MqttQos.atMostOnce,
+        buffer,
+        retain: true,
+      );
+      print('MQTT_LOGS:: Published message to topic $topic: $message');
+    } else {
+      print('MQTT_LOGS:: Cannot publish - client not connected');
     }
   }
+
+  bool get isConnected =>
+      _client.connectionStatus?.state == MqttConnectionState.connected;
 }

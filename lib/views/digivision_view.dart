@@ -1,10 +1,9 @@
 import 'package:flutter/material.dart';
 
 import 'package:provider/provider.dart';
+import 'package:qr_flutter/qr_flutter.dart';
 
 import 'package:digital_signage/view_models/mqtt_view_model.dart';
-import 'package:digital_signage/widgets/center_image_widget.dart';
-import 'package:digital_signage/widgets/text_widget.dart';
 
 class DigivisionView extends StatefulWidget {
   const DigivisionView({super.key});
@@ -14,6 +13,8 @@ class DigivisionView extends StatefulWidget {
 }
 
 class _DigivisionViewState extends State<DigivisionView> {
+  static const Color _borderGray = Color(0xFF2D2D2D);
+
   @override
   void initState() {
     super.initState();
@@ -21,74 +22,95 @@ class _DigivisionViewState extends State<DigivisionView> {
 
   @override
   Widget build(BuildContext context) {
-    final screenWidth = MediaQuery.of(context).size.width;
-    final urlLauncherViewModel =
-        Provider.of<MqttViewModel>(context, listen: false);
+    final viewModel = Provider.of<MqttViewModel>(context, listen: false);
+    final topic = viewModel.topic;
 
     return Scaffold(
-      body: GestureDetector(
-        onPanUpdate: (details) {
-          print("Touch Position: ${details.localPosition}");
-        },
-        child: Stack(
-          children: [
-            Image.asset(
-              "assets/images/background.png",
-              fit: BoxFit.cover,
-              height: MediaQuery.of(context).size.height,
-              width: MediaQuery.of(context).size.width,
-            ),
-            Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Padding(
-                  padding: EdgeInsets.symmetric(
-                    horizontal: screenWidth * 0.05,
-                    vertical: 20,
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
+      backgroundColor: Colors.black,
+      body: SingleChildScrollView(
+        child: Container(
+          decoration: BoxDecoration(
+            color: Colors.black,
+            border: Border.all(color: _borderGray, width: 2),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Container(
+                color: Colors.black,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 32, vertical: 40),
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Image.asset(
+                          "assets/images/Logo.png",
+                          height: 200,
+                          width: 200,
+                          color: Colors.white,
+                          fit: BoxFit.contain,
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 48),
+                    if (topic.isNotEmpty)
+                      Container(
+                        color: Colors.black,
+                        padding: const EdgeInsets.all(16),
+                        child: QrImageView(
+                          data: topic,
+                          version: QrVersions.auto,
+                          backgroundColor: Colors.black,
+                          eyeStyle: const QrEyeStyle(
+                            eyeShape: QrEyeShape.square,
+                            color: Colors.white,
+                          ),
+                          dataModuleStyle: const QrDataModuleStyle(
+                            color: Colors.white,
+                            dataModuleShape: QrDataModuleShape.square,
+                          ),
+                          size: 200,
+                        ),
+                      )
+                    else
                       Image.asset(
-                        "assets/images/Logo.png",
-                        height: 220,
-                        width: 220,
+                        'assets/images/barcode.png',
+                        height: 200,
+                        width: 200,
+                        color: Colors.white,
+                        fit: BoxFit.contain,
                       ),
-                      const CustomImageWidget(
-                        imagePath: 'assets/images/barcode.png',
+                    const SizedBox(height: 40),
+                    Text(
+                      topic.isNotEmpty ? topic : "------",
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 56,
+                        fontWeight: FontWeight.bold,
+                        letterSpacing: 8,
                       ),
-                    ],
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(30.0, 0, 0, 20),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      const SimpleText(
-                        text: "To get started enter the code below at ",
-                      ),
-                      GestureDetector(
-                        onTap: () => urlLauncherViewModel
-                            .launchUrl('https://norwinsol.com/'),
-                        child: const SimpleText(
-                          text: "https://norwinsol.com/ setup",
-                          fontSize: 18,
-                          fontWeight: FontWeight.bold,
+                    ),
+                    const SizedBox(height: 48),
+                    const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 24),
+                      child: Text(
+                        "To get started enter the code above at signagex.com or scan the QR code with your device.",
+                        textAlign: TextAlign.center,
+                        style: TextStyle(
+                          color: Color(0xFF9E9E9E),
+                          fontSize: 15,
+                          height: 1.5,
                         ),
                       ),
-                      SimpleText(
-                        text: urlLauncherViewModel.topic,
-                        fontSize: 24,
-                        fontWeight: FontWeight.bold,
-                      ),
-                    ],
-                  ),
-                )
-              ],
-            ),
-          ],
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );

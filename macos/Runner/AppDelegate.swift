@@ -10,6 +10,10 @@ class AppDelegate: FlutterAppDelegate {
         return true
     }
 
+    override func applicationSupportsSecureRestorableState(_ app: NSApplication) -> Bool {
+        return true
+    }
+
     override func applicationDidFinishLaunching(_ notification: Notification) {
         let controller = self.mainFlutterWindow?.contentViewController as! FlutterViewController
         
@@ -22,8 +26,7 @@ class AppDelegate: FlutterAppDelegate {
                 result(FlutterMethodNotImplemented)
             }
         }
-        
-        // Reboot Device Channel
+
         let rebootChannel = FlutterMethodChannel(name: "com.example/deviceControl", binaryMessenger: controller.engine.binaryMessenger)
         rebootChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
             if call.method == "rebootDevice" {
@@ -34,7 +37,7 @@ class AppDelegate: FlutterAppDelegate {
             }
         }
 
-     // Brightness Control Channel
+
             let brightnessChannel = FlutterMethodChannel(name: "com.example/brightnessControl", binaryMessenger: controller.engine.binaryMessenger)
         brightnessChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
             if call.method == "setBrightness", let args = call.arguments as? [String: Any],
@@ -56,7 +59,7 @@ class AppDelegate: FlutterAppDelegate {
         }
 
 
-    // Volume Control Channel (new)
+
 
     let volumeChannel = FlutterMethodChannel(name: "com.example/volumeControl", binaryMessenger: controller.engine.binaryMessenger)
     volumeChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
@@ -93,7 +96,7 @@ class AppDelegate: FlutterAppDelegate {
 
     if IOServiceGetMatchingServices(kIOMasterPortDefault, IOServiceMatching("IODisplayConnect"), &iterator) == kIOReturnSuccess {
         var service: io_object_t = 1
-        var count = 0 // To track the number of displays
+        var count = 0 
 
         while service != 0 {
             service = IOIteratorNext(iterator)
@@ -122,7 +125,7 @@ func unmuteVolume() {
 }
 
 func reloadApp() {
-        // Programmatically restart the app
+       
         let appleScript = """
         do shell script "killall -9 \(ProcessInfo.processInfo.processName)"
         """
@@ -152,7 +155,7 @@ func reloadApp() {
         }
     }
 
-    // Reboot macOS function
+
    func rebootDevice() {
     let appleScript = """
     do shell script "shutdown -r now" with administrator privileges
@@ -168,7 +171,7 @@ func reloadApp() {
     }
 }
 
-  // Restart Network function
+
     func restartNetwork() {
         let appleScript = """
         do shell script "networksetup -setnetworkserviceenabled Wi-Fi off; networksetup -setnetworkserviceenabled Wi-Fi on" with administrator privileges
@@ -184,7 +187,7 @@ func reloadApp() {
         }
     }
 
-    // Fetch system information
+
     private func getSystemInformation() -> [String: Any] {
         var systemInfo = [String: Any]()
         
@@ -203,13 +206,13 @@ func reloadApp() {
         return systemInfo
     }
 
-    // Fetch the OS version
+
     private func getOSVersion() -> String {
         let os = ProcessInfo.processInfo.operatingSystemVersion
         return "\(os.majorVersion).\(os.minorVersion).\(os.patchVersion)"
     }
 
-    // Fetch device model
+
     private func getDeviceModel() -> String {
         var size = 0
         sysctlbyname("hw.model", nil, &size, nil, 0)
@@ -218,17 +221,16 @@ func reloadApp() {
         return String(cString: model)
     }
 
-    // Network SSID (not available on macOS, placeholder value)
     private func getNetworkSSID() -> String {
         return "Not Available"
     }
 
-    // Fetch timezone
+
     private func getTimeZone() -> String {
         return TimeZone.current.identifier
     }
 
-    // Fetch CPU information (architecture, processor, core count)
+
     private func getCpuInformation() -> [String: Any] {
         return [
             "cpu_architecture": getCPUArchitecture(),
@@ -276,7 +278,7 @@ func reloadApp() {
         return coreCount
     }
 
-    // Fetch memory information (total, available, used)
+
     private func getMemoryInfo() -> [String: Any] {
         var vmStat = vm_statistics_data_t()
         var count = UInt32(MemoryLayout<vm_statistics_data_t>.size / MemoryLayout<integer_t>.size)
