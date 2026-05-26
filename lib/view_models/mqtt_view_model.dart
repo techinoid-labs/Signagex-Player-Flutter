@@ -22,6 +22,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
+import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/models/intractivity_model.dart'
     hide MediaItem, Settings;
 import 'package:digital_signage/models/play_list_model.dart';
@@ -252,7 +253,11 @@ class MqttViewModel extends ChangeNotifier {
           if (globleTopic.isNotEmpty) {
             publishMessage(globleTopic, jsonEncode(deviceInfoMap));
           }
-          _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
+          _campaignModel = normalizeCampaignResponse(
+            campaignModelFromJson(jsonEncode(storedJsonObj)),
+            storedJsonObj,
+          );
+          _selectCompositionCampaignIndexIfPresent();
 
           print(_mediaList);
           for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
@@ -283,7 +288,11 @@ class MqttViewModel extends ChangeNotifier {
             }
           }
         } else if (storedJsonObj["action"] == "publish_campaign") {
-          _campaignModel = campaignModelFromJson(jsonEncode(storedJsonObj));
+          _campaignModel = normalizeCampaignResponse(
+            campaignModelFromJson(jsonEncode(storedJsonObj)),
+            storedJsonObj,
+          );
+          _selectCompositionCampaignIndexIfPresent();
 
           for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
             for (var zone in campaign.zones ?? []) {
@@ -1231,6 +1240,7 @@ EOF
   bool _isNestedCampaignMediaItem(MediaItem media) {
     final type = (media.mediaType ?? '').toLowerCase();
     return type == 'campaign' ||
+        type == 'composition' ||
         (media.zones != null && media.zones!.isNotEmpty);
   }
 
@@ -1242,9 +1252,19 @@ EOF
       for (final zone in zones) {
         final items = zone.mediaItems ?? const <MediaItem>[];
         for (final media in items) {
-          // Skip purely web-based media: they should stay as remote URLs for WebView
+          // Skip purely web-based / inline media: keep remote URLs or render in-app.
           final mediaType = (media.mediaType ?? '').toLowerCase();
-          if (mediaType == 'web_app_instance' || mediaType == 'text/html') {
+          if (mediaType == 'web_app_instance' ||
+              mediaType == 'text/html' ||
+              mediaType == 'text' ||
+              mediaType == 'shape') {
+            continue;
+          }
+          if (mediaType == 'content' && mediaItemIsWebAppIframe(media)) {
+            continue;
+          }
+          final rawUrl = media.mediaUrl ?? '';
+          if (rawUrl.contains('<svg')) {
             continue;
           }
           if (_isNestedCampaignMediaItem(media)) {
@@ -1862,12 +1882,68 @@ EOF
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       _msg = jsonObj["action"];
-      _campaignModel = campaignModelFromJson(jsonEncode(jsonObj));
+      _campaignModel = normalizeCampaignResponse(
+        campaignModelFromJson(jsonEncode(jsonObj)),
+        jsonObj,
+      );
       // Keep campaign index in bounds when campaign list changes (e.g. single campaign)
       final campaigns = _campaignModel?.data?.playerCampaigns;
       final count = campaigns?.length ?? 0;
-      if (count > 0 && _currentIndexOfCapmaign >= count) {
-        _currentIndexOfCapmaign = 0;
+      if (count > 0) {
+        _selectCompositionCampaignIndexIfPresent();
+        if (_currentIndexOfCapmaign >= count) {
+          _currentIndexOfCapmaign = 0;
+        }
+        // #region agent log
+        final parsedCampaigns = campaigns!;
+        final compCampaigns = parsedCampaigns.where((c) => c.isCompositionLayout).toList();
+        int? zone2CompositionLayers;
+        for (final c in parsedCampaigns) {
+          for (final z in c.zones ?? const <CampaignZone>[]) {
+            if (z.id != 2) continue;
+            for (final m in z.mediaItems ?? const <MediaItem>[]) {
+              if ((m.mediaType ?? '').toLowerCase() == 'composition') {
+                zone2CompositionLayers = m.zones?.length ?? 0;
+              }
+            }
+          }
+        }
+        final regularCamps = parsedCampaigns
+            .where((c) => !c.isCompositionLayout)
+            .toList();
+        final selectedCamp = _currentIndexOfCapmaign < count
+            ? parsedCampaigns[_currentIndexOfCapmaign]
+            : null;
+        agentDebugLog(
+          location: 'mqtt_view_model.dart:publish_campaign',
+          message: 'campaigns_parsed',
+          hypothesisId: 'H2',
+          runId: 'post-fix',
+          data: {
+            'count': count,
+            'regularCount': regularCamps.length,
+            'selectedIndex': _currentIndexOfCapmaign,
+            'selectedCampaign': selectedCamp != null
+                ? {
+                    'id': selectedCamp.campaignId,
+                    'name': selectedCamp.campaignName,
+                    'isComposition': selectedCamp.isCompositionLayout,
+                    'zones': selectedCamp.zones?.length ?? 0,
+                  }
+                : null,
+            'zone2CompositionLayers': zone2CompositionLayers,
+            'globalCompositionCount': globalCompositionCampaigns.length,
+            'allCampaigns': parsedCampaigns
+                .map((c) => {
+                      'id': c.campaignId,
+                      'name': c.campaignName,
+                      'zones': c.zones?.length ?? 0,
+                      'isComposition': c.isCompositionLayout,
+                    })
+                .toList(),
+          },
+        );
+        // #endregion
       }
       // Ensure any listening UI updates immediately
       notifyListeners();
@@ -1989,6 +2065,39 @@ EOF
   }
 
   int _currentIndexOfCapmaign = 0;
+
+  void _selectCompositionCampaignIndexIfPresent() {
+    final campaigns = _campaignModel?.data?.playerCampaigns;
+    if (campaigns == null || campaigns.isEmpty) return;
+
+    // Check if there are regular (non-composition) campaigns
+    final regularCampaigns =
+        campaigns.where((c) => !c.isCompositionLayout).toList();
+
+    // If we have regular campaigns, prefer them (compositions are embedded)
+    if (regularCampaigns.isNotEmpty) {
+      final regularIdx = campaigns.indexOf(regularCampaigns.first);
+      if (regularIdx >= 0 && regularIdx != _currentIndexOfCapmaign) {
+        _currentIndexOfCapmaign = regularIdx;
+        print(
+            '[Campaign] Selected regular campaign index $regularIdx '
+            '(${campaigns[regularIdx].campaignName}, '
+            '${campaigns[regularIdx].zones?.length ?? 0} zones)');
+      }
+      return;
+    }
+
+    // Only auto-select composition if it's the ONLY campaign (standalone publish)
+    final compositionIdx =
+        campaigns.indexWhere((c) => c.isCompositionLayout);
+    if (compositionIdx >= 0) {
+      _currentIndexOfCapmaign = compositionIdx;
+      print(
+          '[Composition] Selected standalone composition index $compositionIdx '
+          '(${campaigns[compositionIdx].campaignName}, '
+          '${campaigns[compositionIdx].zones?.length ?? 0} zones)');
+    }
+  }
   Timer? _timerOfCampaign;
 
   int get currentIndexOfCapmaign => _currentIndexOfCapmaign;
@@ -2088,7 +2197,25 @@ EOF
       return;
     }
 
-    _currentIndexOfCapmaign = (_currentIndexOfCapmaign + 1) % count;
+    // Get regular (non-composition) campaigns for rotation
+    final regularCampaigns =
+        campaigns!.where((c) => !c.isCompositionLayout).toList();
+
+    // If only compositions exist, stay on current (standalone composition mode)
+    if (regularCampaigns.isEmpty) {
+      notifyListeners();
+      startPlaylistTimerForCampaign();
+      return;
+    }
+
+    // Rotate only among regular campaigns (skip embedded compositions)
+    final currentRegularIdx = regularCampaigns.indexOf(
+      campaigns[_currentIndexOfCapmaign],
+    );
+    final nextRegularIdx =
+        (currentRegularIdx + 1) % regularCampaigns.length;
+    final nextCampaign = regularCampaigns[nextRegularIdx];
+    _currentIndexOfCapmaign = campaigns.indexOf(nextCampaign);
     Map<String, dynamic> sendLog = {
       "action": "player_logs",
       "log": "Current Campaign",

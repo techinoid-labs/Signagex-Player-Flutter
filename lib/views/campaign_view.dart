@@ -12,6 +12,7 @@ import 'package:video_player/video_player.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
+import 'package:digital_signage/utils/agent_debug_log.dart';
 
 import '../view_models/mqtt_view_model.dart';
 import '../views/no_content_view.dart';
@@ -120,6 +121,22 @@ class _CampaignViewState extends State<CampaignView> {
         mqttViewModel.currentIndexOfCapmaign.clamp(0, campaigns.length - 1);
     final campaign = campaigns[campaignIndex];
 
+    // #region agent log
+    agentDebugLog(
+      location: 'campaign_view.dart:build',
+      message: 'active_campaign',
+      hypothesisId: 'H1',
+      data: {
+        'index': campaignIndex,
+        'campaignId': campaign.campaignId,
+        'campaignName': campaign.campaignName,
+        'isCompositionLayout': campaign.isCompositionLayout,
+        'zoneCount': campaign.zones?.length ?? 0,
+        'totalCampaigns': campaigns.length,
+      },
+    );
+    // #endregion
+
     final campaignSchedule = campaign.campaignSchedule;
 
     const String reset = '\x1B[0m';
@@ -164,7 +181,7 @@ class _CampaignViewState extends State<CampaignView> {
         '$cyan═══════════════════════════════════════════════════════════$reset');
 
     if (campaignCanPlay) {
-      return _buildZones(campaign, campaignCanPlay);
+      return _buildZones(campaign, campaigns, campaignCanPlay);
     } else {
       return Scaffold(
         backgroundColor: Colors.white,
@@ -200,7 +217,11 @@ class _CampaignViewState extends State<CampaignView> {
     }
   }
 
-  Widget _buildZones(PlayerCampaign campaign, bool campaignCanPlay) {
+  Widget _buildZones(
+    PlayerCampaign campaign,
+    List<Campaign> playerCampaigns,
+    bool campaignCanPlay,
+  ) {
     final screenSize = MediaQuery.of(context).size;
     final deviceWidth = screenSize.width;
     final deviceHeight = screenSize.height;
@@ -215,6 +236,20 @@ class _CampaignViewState extends State<CampaignView> {
     print("Campaign resolution: ${campaignWidth}x${campaignHeight}");
     print("Device resolution: ${deviceWidth}x${deviceHeight}");
     print("Scale factors: X=$scaleX, Y=$scaleY");
+
+    // #region agent log
+    agentDebugLog(
+      location: 'campaign_view.dart:_buildZones',
+      message: 'zones_layout',
+      hypothesisId: 'H1',
+      data: {
+        'campaignId': campaign.campaignId,
+        'zoneCount': campaign.zones?.length ?? 0,
+        'playerCampaignsCount': playerCampaigns.length,
+        'resolution': '${campaignWidth}x$campaignHeight',
+      },
+    );
+    // #endregion
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -234,6 +269,27 @@ class _CampaignViewState extends State<CampaignView> {
             final scaledWidth = (zone.width ?? 0) * scaleX;
             final scaledHeight = (zone.height ?? 0) * scaleY;
 
+            // #region agent log
+            final zoneMediaTypes = (zone.mediaItems ?? [])
+                .map((m) => m.mediaType ?? 'unknown')
+                .toList();
+            final hasComposition = zoneMediaTypes.any(
+              (t) => t.toLowerCase() == 'composition');
+            agentDebugLog(
+              location: 'campaign_view.dart:_buildZones:zone',
+              message: 'zone_render',
+              hypothesisId: 'H5',
+              data: {
+                'campaignId': campaign.campaignId,
+                'zoneId': zone.id,
+                'position': '${scaledX.toStringAsFixed(0)},${scaledY.toStringAsFixed(0)}',
+                'size': '${scaledWidth.toStringAsFixed(0)}x${scaledHeight.toStringAsFixed(0)}',
+                'mediaTypes': zoneMediaTypes,
+                'hasComposition': hasComposition,
+              },
+            );
+            // #endregion
+
             return Positioned(
               left: scaledX,
               top: scaledY,
@@ -243,6 +299,7 @@ class _CampaignViewState extends State<CampaignView> {
                 zoneId: (zone.id ?? 0).toString(),
                 mediaItems: zone.mediaItems ?? [],
                 campaignId: campaign.campaignId,
+                playerCampaigns: playerCampaigns,
                 campaignCanPlay: campaignCanPlay,
                 campaignSchedule: campaign.campaignSchedule,
                 coordinateBaseWidth: campaignWidth,
@@ -260,6 +317,7 @@ class VideoPlaylistWidget extends StatefulWidget {
   final String zoneId;
   final List<MediaItem> mediaItems;
   final String? campaignId;
+  final List<Campaign> playerCampaigns;
   final bool campaignCanPlay;
   final CampaignSchedule? campaignSchedule;
 
@@ -271,6 +329,7 @@ class VideoPlaylistWidget extends StatefulWidget {
     required this.zoneId,
     required this.mediaItems,
     this.campaignId,
+    this.playerCampaigns = const [],
     required this.campaignCanPlay,
     required this.campaignSchedule,
     required this.coordinateBaseWidth,
@@ -400,18 +459,42 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
   bool _isNestedCampaign(MediaItem media) {
     final type = (media.mediaType ?? '').toLowerCase();
-    return (media.zones != null && media.zones!.isNotEmpty) ||
-        type == 'campaign';
+    final hasZones = media.zones != null && media.zones!.isNotEmpty;
+    return hasZones || type == 'campaign' || type == 'composition';
+  }
+
+  MediaItem _resolvedMediaAt(int index) {
+    if (index < 0 || index >= widget.mediaItems.length) {
+      return widget.mediaItems.isNotEmpty
+          ? widget.mediaItems.first
+          : MediaItem();
+    }
+    return resolveCompositionMediaItem(
+      widget.mediaItems[index],
+      widget.playerCampaigns,
+    );
   }
 
   Widget _buildNestedZones(MediaItem media) {
     final zones = media.zones ?? const <CampaignZone>[];
     if (zones.isEmpty) {
-      return Center(child: Text("Zone ${widget.zoneId}: No subzones."));
+      final linked = findLinkedCompositionCampaign(media, widget.playerCampaigns);
+      print(
+          '[Composition] Zone ${widget.zoneId}: no layers on media "${media.id}"; '
+          'linked campaign=${linked?.campaignId ?? "none"}, '
+          'playerCampaigns=${widget.playerCampaigns.length}');
+      return Center(
+        child: Text(
+          'Composition "${media.id ?? ''}"\nNo layers (publish composition campaign in playerCampaigns)',
+          textAlign: TextAlign.center,
+        ),
+      );
     }
 
     return LayoutBuilder(
       builder: (context, constraints) {
+        final linked =
+            findLinkedCompositionCampaign(media, widget.playerCampaigns);
         double maxX = 0;
         double maxY = 0;
         for (final zone in zones) {
@@ -421,10 +504,14 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           if (zoneBottom > maxY) maxY = zoneBottom.toDouble();
         }
 
-        final nestedCoordinateBaseWidth =
-            maxX > 0 ? maxX : constraints.maxWidth;
-        final nestedCoordinateBaseHeight =
-            maxY > 0 ? maxY : constraints.maxHeight;
+        final resW = linked?.resolution?.width?.toDouble();
+        final resH = linked?.resolution?.height?.toDouble();
+        final nestedCoordinateBaseWidth = (resW != null && resW > 0)
+            ? resW
+            : (maxX > 0 ? maxX : constraints.maxWidth);
+        final nestedCoordinateBaseHeight = (resH != null && resH > 0)
+            ? resH
+            : (maxY > 0 ? maxY : constraints.maxHeight);
 
         final scaleX = constraints.maxWidth / nestedCoordinateBaseWidth;
         final scaleY = constraints.maxHeight / nestedCoordinateBaseHeight;
@@ -437,6 +524,24 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
             "  Nested coordinate base: ${nestedCoordinateBaseWidth}x$nestedCoordinateBaseHeight");
         print("  Scale factors: X=$scaleX, Y=$scaleY");
         print("  Number of nested zones: ${zones.length}");
+
+        // #region agent log
+        agentDebugLog(
+          location: 'campaign_view.dart:_buildNestedZones',
+          message: 'nested_composition_layout',
+          hypothesisId: 'H4',
+          data: {
+            'zoneId': widget.zoneId,
+            'mediaId': media.id,
+            'parentConstraints': '${constraints.maxWidth}x${constraints.maxHeight}',
+            'nestedBase': '${nestedCoordinateBaseWidth}x$nestedCoordinateBaseHeight',
+            'scaleX': scaleX,
+            'scaleY': scaleY,
+            'zoneCount': zones.length,
+            'linkedCampaignId': linked?.campaignId,
+          },
+        );
+        // #endregion
 
         return ClipRect(
           child: Stack(
@@ -459,6 +564,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   zoneId: '${widget.zoneId}.${z.id ?? 0}',
                   mediaItems: z.mediaItems ?? const <MediaItem>[],
                   campaignId: widget.campaignId,
+                  playerCampaigns: widget.playerCampaigns,
                   campaignCanPlay: widget.campaignCanPlay,
                   campaignSchedule: widget.campaignSchedule,
                   coordinateBaseWidth: nestedCoordinateBaseWidth,
@@ -494,7 +600,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     const String magenta = '\x1B[35m';
     const String cyan = '\x1B[36m';
 
-    MediaItem currentMedia = widget.mediaItems[_currentMediaIndex];
+    MediaItem currentMedia = _resolvedMediaAt(_currentMediaIndex);
     final adSessionKey = currentMedia.isAd
         ? '${currentMedia.id}|${currentMedia.adCreativeUrl}'
         : '';
@@ -694,12 +800,15 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType == 'composition') {
       if (_isNestedCampaign(nextMedia)) {
+        print(
+            '[LOG] Composition with ${nextMedia.zones?.length ?? 0} layer(s) – '
+            'rendering nested layout');
         setState(() {});
         return;
       }
       print(
-          '[LOG] Composition placeholder – waiting for scheduled duration '
-          '(no immediate skip)');
+          '[LOG] Composition has no nested zones/layers in campaign data '
+          '(${nextMedia.id})');
       setState(() {});
       return;
     }
@@ -770,6 +879,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     if (mediaType == 'content') {
       final kind = nextMedia.settings?.kind ?? '';
       print("[LOG] Current media is content, kind: $kind");
+
+      if (mediaItemIsWebAppIframe(nextMedia)) {
+        final iframeUrl = mediaItemWebAppIframeUrl(nextMedia);
+        print('[LOG] Content is web-app iframe → $iframeUrl');
+        setState(() {});
+        return;
+      }
 
       if (kind.toLowerCase().contains('video') || isVideoFile(mediaUrl)) {
         _initializeNextVideo(nextMedia);
@@ -1039,14 +1155,39 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       _currentMediaIndex = 0;
     }
 
-    MediaItem currentMedia = widget.mediaItems[_currentMediaIndex];
+    MediaItem currentMedia = _resolvedMediaAt(_currentMediaIndex);
     final playbackMedia =
         currentMedia.isAd ? currentMedia.playbackMedia : currentMedia;
     final mediaType = (playbackMedia.mediaType ?? '').toLowerCase();
 
+    if (mediaType == 'composition') {
+      final linked = findLinkedCompositionCampaign(currentMedia, widget.playerCampaigns);
+      // #region agent log
+      agentDebugLog(
+        location: 'campaign_view.dart:build:composition',
+        message: 'composition_resolved',
+        hypothesisId: 'H3',
+        data: {
+          'zoneId': widget.zoneId,
+          'mediaId': currentMedia.id,
+          'zoneCount': playbackMedia.zones?.length ?? 0,
+          'linkedCampaignId': linked?.campaignId,
+          'linkedCampaignZones': linked?.zones?.length ?? 0,
+          'settingsCompId': currentMedia.settings?.compositionCampaignId,
+          'playerCampaignsCount': widget.playerCampaigns.length,
+          'compositionCampaigns': widget.playerCampaigns
+              .where((c) => c.isCompositionLayout)
+              .map((c) => {'id': c.campaignId, 'name': c.campaignName, 'zones': c.zones?.length ?? 0})
+              .toList(),
+        },
+      );
+      // #endregion
+    }
+
     final isWebViewWidget = mediaType == 'text' ||
         mediaType == 'text/html' ||
-        mediaType == 'web_app_instance';
+        mediaType == 'web_app_instance' ||
+        (mediaType == 'content' && mediaItemIsWebAppIframe(playbackMedia));
 
     final mediaWidget = _buildMediaWidget(playbackMedia, sourceMedia: currentMedia);
 
@@ -1235,8 +1376,40 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         "[LOG] _buildMediaWidget - Settings HTML: ${htmlPreview.isEmpty ? 'null' : htmlPreview.substring(0, htmlPreviewLength)}");
 
     if (_isNestedCampaign(media)) {
-      print("[LOG] _buildMediaWidget - Building nested zones");
-      return _buildNestedZones(media);
+      final source = sourceMedia ?? media;
+      var nestedMedia = resolveCompositionMediaItem(
+        source,
+        widget.playerCampaigns,
+      );
+      if ((nestedMedia.zones == null || nestedMedia.zones!.isEmpty)) {
+        final linked = findLinkedCompositionCampaign(
+          source,
+          widget.playerCampaigns,
+        );
+        if (linked?.zones != null && linked!.zones!.isNotEmpty) {
+          nestedMedia = MediaItem(
+            id: source.id,
+            settings: source.settings,
+            schedule: source.schedule,
+            mediaType: source.mediaType,
+            mediaUrl: source.mediaUrl,
+            zones: linked.zones,
+          );
+        }
+      }
+      final zoneCount = nestedMedia.zones?.length ?? 0;
+      print(
+          "[LOG] _buildMediaWidget - Building nested layout "
+          '(${nestedMedia.mediaType}, $zoneCount zone(s))');
+      if (zoneCount == 0) {
+        return Center(
+          child: Text(
+            'Composition "${source.id ?? ''}" has no layers',
+            textAlign: TextAlign.center,
+          ),
+        );
+      }
+      return _buildNestedZones(nestedMedia);
     }
 
     if (mediaType == 'text/html') {
@@ -1328,18 +1501,36 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType == 'sticker') {
       final remoteSrc = media.settings?.remoteSrc?.trim() ?? '';
+      final stickerHtml = media.settings?.html?.trim() ?? '';
       final effectiveStickerUrl = remoteSrc.isNotEmpty ? remoteSrc : mediaUrl;
       print(
-          "[LOG] _buildMediaWidget - Sticker url: remoteSrc=$remoteSrc, mediaUrl=$mediaUrl, using=$effectiveStickerUrl");
+          "[LOG] _buildMediaWidget - Sticker remoteSrc=$remoteSrc, mediaUrl=$mediaUrl, "
+          'using=$effectiveStickerUrl, hasHtml=${stickerHtml.isNotEmpty}');
+      // #region agent log
+      agentDebugLog(
+        location: 'campaign_view.dart:_buildMediaWidget:sticker',
+        message: 'sticker_render',
+        hypothesisId: 'H4',
+        data: {
+          'zoneId': widget.zoneId,
+          'mediaId': media.id,
+          'effectiveUrl': effectiveStickerUrl,
+          'hasHtml': stickerHtml.isNotEmpty,
+          'playerCampaignsCount': widget.playerCampaigns.length,
+        },
+      );
+      // #endregion
       final cacheKey =
-          '${widget.zoneId}_sticker_${media.id ?? ''}_$effectiveStickerUrl';
+          '${widget.zoneId}_sticker_${media.id ?? ''}_$effectiveStickerUrl'
+          '_$stickerHtml';
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
-                child: SvgFileWidget(
+                child: StickerHtmlWidget(
                   key: ValueKey(cacheKey),
                   svgUrl: effectiveStickerUrl,
+                  htmlContent: stickerHtml.isNotEmpty ? stickerHtml : null,
                   onSvgEnd: _onMediaEnd,
                   transitionType: media.settings?.transition ?? 'none',
                 ),
@@ -1376,6 +1567,27 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         transitionType: media.settings?.transition ?? 'none',
         volume: (media.settings?.volume ?? 100) / 100.0,
       );
+    }
+
+    if (mediaType == 'content' && mediaItemIsWebAppIframe(media)) {
+      final iframeUrl = mediaItemWebAppIframeUrl(media);
+      print(
+          '[LOG] _buildMediaWidget - Building WBViewWidget for web-app iframe: '
+          '$iframeUrl');
+      final cacheKey = '${widget.zoneId}_iframe_${media.id ?? ''}';
+      if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
+        _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
+              key: ValueKey(cacheKey),
+              child: SizedBox.expand(
+                child: WBViewWidget(
+                  key: ValueKey(cacheKey),
+                  media: iframeUrl,
+                  onMediaEnd: _onMediaEnd,
+                ),
+              ),
+            );
+      }
+      return _webViewWidgetBuilders[cacheKey]!();
     }
 
     if (mediaType == 'content') {
@@ -1885,6 +2097,145 @@ class _TextWidgetState extends State<TextWidget> {
               },
             ),
           );
+        },
+      ),
+    );
+  }
+}
+
+/// Renders sticker SVG via [Html] (settings.html or fetched SVG as data-URI img).
+class StickerHtmlWidget extends StatefulWidget {
+  final String svgUrl;
+  final String? htmlContent;
+  final VoidCallback onSvgEnd;
+  final String transitionType;
+
+  const StickerHtmlWidget({
+    super.key,
+    required this.svgUrl,
+    this.htmlContent,
+    required this.onSvgEnd,
+    required this.transitionType,
+  });
+
+  @override
+  State<StickerHtmlWidget> createState() => _StickerHtmlWidgetState();
+}
+
+class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
+  static final _htmlStyles = {
+    'div': Style(
+      margin: Margins.zero,
+      padding: HtmlPaddings.zero,
+    ),
+    'img': Style(
+      margin: Margins.zero,
+      padding: HtmlPaddings.zero,
+    ),
+  };
+
+  Future<String>? _loadFuture;
+
+  @override
+  void initState() {
+    super.initState();
+    _loadFuture = _createLoadFuture();
+  }
+
+  @override
+  void didUpdateWidget(covariant StickerHtmlWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.svgUrl != widget.svgUrl ||
+        oldWidget.htmlContent != widget.htmlContent) {
+      _loadFuture = _createLoadFuture();
+    }
+  }
+
+  ({String? url, String? path}) _resolveSource() {
+    if (widget.svgUrl.startsWith('http://') ||
+        widget.svgUrl.startsWith('https://')) {
+      return (url: widget.svgUrl, path: null);
+    }
+    if ((widget.svgUrl.startsWith('/_next') ||
+            widget.svgUrl.startsWith('/static')) &&
+        !widget.svgUrl.startsWith('http')) {
+      return (url: 'https://signagexai.com${widget.svgUrl}', path: null);
+    }
+    String path = widget.svgUrl;
+    if (widget.svgUrl.startsWith('file://')) {
+      path = Uri.parse(widget.svgUrl).path;
+    }
+    return (url: null, path: path);
+  }
+
+  Future<String>? _createLoadFuture() {
+    final html = widget.htmlContent?.trim();
+    if (html != null && html.isNotEmpty) return null;
+    final src = _resolveSource();
+    if (src.url != null) {
+      print('[LOG] StickerHtmlWidget: Loading SVG from URL: ${src.url}');
+      return http.read(Uri.parse(src.url!));
+    }
+    if (src.path != null && src.path!.isNotEmpty) {
+      print('[LOG] StickerHtmlWidget: Loading SVG from file: ${src.path}');
+      return File(src.path!).readAsString();
+    }
+    return Future.value('');
+  }
+
+  String _wrapHtml(String inner) {
+    return '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;overflow:hidden;">$inner</div>';
+  }
+
+  String _svgToHtmlImg(String svg) {
+    final encoded = Uri.encodeComponent(svg);
+    return _wrapHtml(
+      '<img src="data:image/svg+xml;charset=utf-8,$encoded" '
+      'style="max-width:100%;max-height:100%;object-fit:contain;" alt="" />',
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final presetHtml = widget.htmlContent?.trim();
+    if (presetHtml != null && presetHtml.isNotEmpty) {
+      return SizedBox.expand(
+        child: Html(
+          data: _wrapHtml(presetHtml),
+          style: _htmlStyles,
+        ),
+      );
+    }
+
+    return SizedBox.expand(
+      child: FutureBuilder<String>(
+        key: ValueKey(widget.svgUrl),
+        future: _loadFuture,
+        builder: (context, snapshot) {
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            return const Center(child: CircularProgressIndicator());
+          }
+          if (snapshot.hasError || !snapshot.hasData) {
+            print(
+                '[ERROR] StickerHtmlWidget: Failed to load ${widget.svgUrl}: '
+                '${snapshot.error}');
+            return const Center(
+              child: Icon(Icons.broken_image_outlined, color: Colors.grey),
+            );
+          }
+          final raw = snapshot.data!.trim();
+          if (raw.isEmpty) {
+            return const Center(
+              child: Icon(Icons.broken_image_outlined, color: Colors.grey),
+            );
+          }
+          if (raw.contains('<html') || raw.contains('<body')) {
+            return Html(data: raw, style: _htmlStyles);
+          }
+          if (raw.contains('<svg')) {
+            return Html(data: _wrapHtml(raw), style: _htmlStyles);
+          }
+          return Html(data: _svgToHtmlImg(raw), style: _htmlStyles);
         },
       ),
     );
