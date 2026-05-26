@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
+import 'package:digital_signage/utils/agent_debug_log.dart';
 
 int? _asInt(dynamic value) {
   if (value == null) return null;
@@ -25,6 +26,8 @@ String? _cleanMediaUrl(dynamic value) {
   var s = value.toString().trim();
   if (s.isEmpty) return s;
 
+  if (MediaItem.isRawBase64ImagePayload(s)) return s;
+
   final isInlineSvg =
       s.contains('<svg') || (s.startsWith('<') && s.contains('</svg>'));
   if (!isInlineSvg) {
@@ -34,6 +37,14 @@ String? _cleanMediaUrl(dynamic value) {
     s = s.replaceAll(RegExp(r'[, ]+$'), '');
   }
   return s;
+}
+
+String _mimeFromKind(String? kind) {
+  final k = (kind ?? '').toLowerCase();
+  if (k.contains('jpeg') || k.contains('jpg')) return 'image/jpeg';
+  if (k.contains('gif')) return 'image/gif';
+  if (k.contains('webp')) return 'image/webp';
+  return 'image/png';
 }
 
 CampaignResponse campaignResponseFromJson(String str) =>
@@ -270,16 +281,20 @@ class CampaignZone {
     this.mediaItems,
   });
 
-  factory CampaignZone.fromJson(Map<String, dynamic> json) => CampaignZone(
+  factory CampaignZone.fromJson(Map<String, dynamic> json) {
+    final mediaRaw = json["mediaItems"] ?? json["media_items"];
+    return CampaignZone(
       id: _asInt(json["id"]),
       x: _asInt(json["x"]),
       y: _asInt(json["y"]),
       width: _asInt(json["width"]),
       height: _asInt(json["height"]),
-      mediaItems: json["mediaItems"] == null
+      mediaItems: mediaRaw == null
           ? null
           : List<MediaItem>.from(
-              json["mediaItems"].map((x) => MediaItem.fromJson(x))));
+              (mediaRaw as List).map((x) => MediaItem.fromJson(x))),
+    );
+  }
 
   Map<String, dynamic> toJson() => {
         "id": id,
@@ -320,12 +335,126 @@ class MediaItem {
   ) {
     final root = json['composition'];
     if (root is Map<String, dynamic>) return root;
+    final properties = json['properties'];
+    if (properties is Map<String, dynamic>) {
+      final fromProps = properties['composition'];
+      if (fromProps is Map<String, dynamic>) return fromProps;
+    }
     final settings = json['settings'];
     if (settings is Map<String, dynamic>) {
       final nested = settings['composition'];
       if (nested is Map<String, dynamic>) return nested;
     }
     return null;
+  }
+
+  /// True for raw base64 image blobs (no `data:` prefix).
+  static bool isRawBase64ImagePayload(String? value) {
+    if (value == null) return false;
+    final s = value.trim();
+    if (s.length < 80) return false;
+    if (s.startsWith('data:image') ||
+        s.startsWith('http://') ||
+        s.startsWith('https://') ||
+        s.startsWith('file://') ||
+        s.contains('<svg') ||
+        s.contains('\n') && s.contains(' ')) {
+      return false;
+    }
+    final sample = s.length > 128 ? s.substring(0, 128) : s;
+    return RegExp(r'^[A-Za-z0-9+/=]+$').hasMatch(sample);
+  }
+
+  /// Wraps raw base64 as a `data:image/...;base64,...` URI for widgets.
+  static String? normalizeImageMediaUrl(String? raw, {String? kind}) {
+    if (raw == null || raw.isEmpty) return raw;
+    final s = raw.trim();
+    if (s.startsWith('data:image')) return s;
+    if (s.startsWith('http://') ||
+        s.startsWith('https://') ||
+        s.startsWith('file://') ||
+        RegExp(r'^[A-Za-z]:[/\\]').hasMatch(s)) {
+      return s;
+    }
+    if (isRawBase64ImagePayload(s)) {
+      return 'data:${_mimeFromKind(kind)};base64,$s';
+    }
+    return s;
+  }
+
+  static Map<String, dynamic> _objectJsonForCompositionDetect(
+    Map<String, dynamic> obj,
+    Map<String, dynamic> propMap,
+  ) {
+    final merged = Map<String, dynamic>.from(obj);
+    if (propMap.isNotEmpty) {
+      merged['properties'] = propMap;
+      if (propMap['composition'] is Map<String, dynamic>) {
+        merged['composition'] = propMap['composition'];
+      }
+      merged['settings'] = propMap;
+    }
+    return merged;
+  }
+
+  static bool objectLooksLikeNestedComposition(
+    Map<String, dynamic> obj,
+    Map<String, dynamic> propMap,
+  ) {
+    final type = (obj['type'] ??
+            obj['mediaType'] ??
+            obj['media_type'] ??
+            '')
+        .toString()
+        .toLowerCase();
+    if (type == 'composition' || type == 'campaign') return true;
+
+    final merged = _objectJsonForCompositionDetect(obj, propMap);
+    if (compositionMapFromJson(merged) != null) return true;
+    if (compositionCampaignIdFromJson(merged, null) != null) return true;
+
+    final kind = (propMap['kind'] ?? obj['name'] ?? '').toString().toLowerCase();
+    if (kind.contains('composition')) return true;
+
+    final contentType = (propMap['content_type'] ??
+            propMap['contentType'] ??
+            '')
+        .toString()
+        .toLowerCase();
+    if (contentType == 'composition' || contentType.contains('composition')) {
+      return true;
+    }
+
+    final nestedCompId = propMap['composition_id'] ??
+        propMap['compositionId'] ??
+        propMap['nested_composition_id'] ??
+        propMap['nestedCompositionId'] ??
+        obj['composition_id'] ??
+        obj['compositionId'];
+    if (nestedCompId != null && nestedCompId.toString().trim().isNotEmpty) {
+      return true;
+    }
+
+    final rawUrl = propMap['mediaUrl'] ??
+        propMap['media_url'] ??
+        obj['mediaUrl'] ??
+        obj['media_url'];
+    if (isRawBase64ImagePayload(rawUrl?.toString()) &&
+        propMap['composition'] is Map<String, dynamic>) {
+      return true;
+    }
+
+    return false;
+  }
+
+  static bool _zonesHaveNestedComposition(List<CampaignZone>? zones) {
+    if (zones == null) return false;
+    for (final z in zones) {
+      for (final m in z.mediaItems ?? const <MediaItem>[]) {
+        if ((m.mediaType ?? '').toLowerCase() == 'composition') return true;
+      }
+    }
+    return false;
   }
 
   static String? compositionIdFromMap(Map<String, dynamic>? map) {
@@ -335,12 +464,124 @@ class MediaItem {
     return id.startsWith('composition_') ? id : 'composition_$id';
   }
 
+  static Map<String, dynamic> _mergeShapeProps(
+    Map<String, dynamic> obj,
+    Map<String, dynamic> propMap,
+  ) {
+    final merged = Map<String, dynamic>.from(propMap);
+    for (final key in [
+      'fill',
+      'stroke',
+      'strokeColor',
+      'strokeWidth',
+      'stroke_width',
+      'svg',
+      'path',
+      'd',
+      'shapeType',
+      'shape',
+      'type',
+      'objectType',
+      'width',
+      'height',
+      'radius',
+      'rx',
+      'ry',
+      'mediaUrl',
+      'media_url',
+      'points',
+    ]) {
+      if (obj[key] != null && !merged.containsKey(key)) {
+        merged[key] = obj[key];
+      }
+    }
+    return merged;
+  }
+
+  /// Builds inline SVG for editor shapes (rect, circle, path, etc.) when no URL is set.
+  static String? svgFromShapeProperties(
+    Map<String, dynamic> props, {
+    int? width,
+    int? height,
+  }) {
+    final existing = props['svg']?.toString() ?? '';
+    if (existing.contains('<svg')) return existing;
+
+    final url = _cleanMediaUrl(props['mediaUrl'] ?? props['media_url']);
+    if (url != null && url.isNotEmpty && url.contains('<svg')) return url;
+
+    final w = width ?? _asInt(props['width']) ?? 100;
+    final h = height ?? _asInt(props['height']) ?? 100;
+    final fill = props['fill']?.toString() ?? '#cccccc';
+    final stroke =
+        props['stroke']?.toString() ?? props['strokeColor']?.toString() ?? '';
+    final strokeWidth = _asInt(props['strokeWidth'] ?? props['stroke_width']) ?? 0;
+    final path = props['path']?.toString() ?? props['d']?.toString() ?? '';
+    final points = props['points']?.toString() ?? '';
+
+    final shapeType = (props['shapeType'] ??
+            props['shape'] ??
+            props['objectType'] ??
+            props['type'] ??
+            'rect')
+        .toString()
+        .toLowerCase();
+
+    final strokeAttr = stroke.isNotEmpty && stroke != 'transparent'
+        ? ' stroke="$stroke" stroke-width="$strokeWidth"'
+        : (strokeWidth > 0 ? ' stroke-width="$strokeWidth"' : '');
+
+    if (path.isNotEmpty) {
+      return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
+          'viewBox="0 0 $w $h"><path d="$path" fill="$fill"$strokeAttr/></svg>';
+    }
+    if (points.isNotEmpty) {
+      return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
+          'viewBox="0 0 $w $h"><polygon points="$points" fill="$fill"$strokeAttr/></svg>';
+    }
+
+    switch (shapeType) {
+      case 'circle':
+        final r = (w < h ? w : h) / 2;
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
+            'viewBox="0 0 $w $h"><circle cx="${w / 2}" cy="${h / 2}" r="$r" '
+            'fill="$fill"$strokeAttr/></svg>';
+      case 'ellipse':
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
+            'viewBox="0 0 $w $h"><ellipse cx="${w / 2}" cy="${h / 2}" '
+            'rx="${w / 2}" ry="${h / 2}" fill="$fill"$strokeAttr/></svg>';
+      case 'line':
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
+            'viewBox="0 0 $w $h"><line x1="0" y1="0" x2="$w" y2="$h" '
+            'stroke="${stroke.isNotEmpty ? stroke : fill}" stroke-width="${strokeWidth > 0 ? strokeWidth : 2}"/></svg>';
+      case 'triangle':
+        final p = '0,$h ${w / 2},0 $w,$h';
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
+            'viewBox="0 0 $w $h"><polygon points="$p" fill="$fill"$strokeAttr/></svg>';
+      case 'rect':
+      case 'rectangle':
+      default:
+        return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
+            'viewBox="0 0 $w $h"><rect width="$w" height="$h" fill="$fill"$strokeAttr/></svg>';
+    }
+  }
+
   static MediaItem? _mediaItemFromCompositionObject(
     Map<String, dynamic> obj,
     int index,
   ) {
-    final type =
-        (obj['type'] ?? obj['mediaType'] ?? 'content').toString().toLowerCase();
+    final type = (obj['type'] ??
+            obj['mediaType'] ??
+            obj['media_type'] ??
+            'content')
+        .toString()
+        .toLowerCase();
+    if (type == 'svg' || type == 'icon' || type == 'svg+xml') {
+      return _mediaItemFromCompositionObject(
+        {...obj, 'type': 'shape'},
+        index,
+      );
+    }
     final props = obj['properties'];
     final propMap =
         props is Map<String, dynamic> ? props : <String, dynamic>{};
@@ -366,34 +607,148 @@ class MediaItem {
         break;
       case 'sticker':
         mediaType = 'sticker';
-        mediaUrl = propMap['mediaUrl']?.toString();
+        final inlineSvg = propMap['svg']?.toString() ?? '';
+        mediaUrl = _cleanMediaUrl(
+          propMap['mediaUrl'] ??
+              propMap['download_url'] ??
+              propMap['downloadUrl'] ??
+              propMap['url'] ??
+              propMap['svgUrl'] ??
+              (inlineSvg.startsWith('<svg') ? inlineSvg : null),
+        );
         settings = Settings(
           remoteSrc: propMap['remoteSrc']?.toString() ??
-              propMap['download_url']?.toString(),
+              propMap['remote_src']?.toString() ??
+              propMap['download_url']?.toString() ??
+              propMap['downloadUrl']?.toString() ??
+              propMap['url']?.toString() ??
+              propMap['svgUrl']?.toString(),
+          html: propMap['html']?.toString() ??
+              (inlineSvg.startsWith('<svg') ? inlineSvg : null),
           rotation: _asInt(propMap['rotation']),
           duration: _asInt(propMap['duration']),
         );
         break;
-      case 'shape':
-        mediaType = 'shape';
-        mediaUrl = propMap['svg']?.toString() ??
-            propMap['mediaUrl']?.toString() ??
-            obj['mediaUrl']?.toString();
+      case 'composition':
+      case 'campaign':
+        mediaType = 'composition';
+        Map<String, dynamic>? compMap;
+        if (propMap['composition'] is Map<String, dynamic>) {
+          compMap = propMap['composition'] as Map<String, dynamic>;
+        } else if (obj['composition'] is Map<String, dynamic>) {
+          compMap = obj['composition'] as Map<String, dynamic>;
+        }
+        final nestedZones = zonesFromCompositionMap(compMap) ??
+            zonesFromCompositionMap(propMap);
+        final compId = compositionCampaignIdFromJson(
+              _objectJsonForCompositionDetect(obj, propMap),
+              null,
+            ) ??
+            MediaItem.compositionIdFromMap(
+              compMap is Map<String, dynamic> ? compMap : null,
+            );
         settings = Settings(
-          fill: propMap['fill']?.toString(),
-          strokeWidth: _asInt(propMap['strokeWidth']),
+          compositionCampaignId: compId,
           duration: _asInt(propMap['duration']),
+        );
+        var thumbUrl = _cleanMediaUrl(
+          propMap['mediaUrl'] ?? propMap['media_url'] ?? obj['mediaUrl'],
+        );
+        if (nestedZones != null && nestedZones.isNotEmpty) {
+          thumbUrl = null;
+        } else if (isRawBase64ImagePayload(thumbUrl)) {
+          thumbUrl = normalizeImageMediaUrl(
+            thumbUrl,
+            kind: propMap['kind']?.toString(),
+          );
+        }
+        return MediaItem(
+          id: obj['id']?.toString() ?? 'composition_obj_$index',
+          mediaType: mediaType,
+          mediaUrl: thumbUrl,
+          settings: settings,
+          schedule: Schedule(alwaysPlay: true),
+          zones: nestedZones,
+        );
+      case 'shape':
+        final mergedShape = _mergeShapeProps(obj, propMap);
+        final zoneW = _asInt(obj['width']) ?? 100;
+        final zoneH = _asInt(obj['height']) ?? 100;
+        final builtSvg = svgFromShapeProperties(
+          mergedShape,
+          width: zoneW,
+          height: zoneH,
+        );
+        mediaType = 'shape';
+        mediaUrl = _cleanMediaUrl(
+          builtSvg ??
+              propMap['mediaUrl'] ??
+              obj['mediaUrl'] ??
+              propMap['svgUrl'] ??
+              propMap['url'],
+        );
+        settings = Settings(
+          fill: mergedShape['fill']?.toString(),
+          strokeWidth: _asInt(mergedShape['strokeWidth']),
+          kind: (mergedShape['shapeType'] ??
+                  mergedShape['shape'] ??
+                  mergedShape['type'])
+              ?.toString(),
+          duration: _asInt(mergedShape['duration']),
         );
         break;
       default:
+        final looksNested = objectLooksLikeNestedComposition(obj, propMap);
+        // #region agent log
+        agentDebugLog(
+          location: 'compaign_model.dart:_mediaItemFromCompositionObject',
+          message: 'composition_object_parse',
+          hypothesisId: 'H7',
+          runId: 'post-fix',
+          data: {
+            'objectId': obj['id']?.toString(),
+            'objectType': type,
+            'looksNested': looksNested,
+            'hasCompMap': propMap['composition'] != null,
+            'contentId': propMap['content_id'] ?? obj['content_id'],
+            'urlLen': (propMap['mediaUrl'] ?? obj['mediaUrl'] ?? '').toString().length,
+            'isBase64': isRawBase64ImagePayload(
+              (propMap['mediaUrl'] ?? obj['mediaUrl'])?.toString(),
+            ),
+          },
+        );
+        // #endregion
+        if (looksNested) {
+          return _mediaItemFromCompositionObject(
+            {...obj, 'type': 'composition'},
+            index,
+          );
+        }
         final kind = (propMap['kind'] ?? obj['name'] ?? '').toString();
+        if (kind.toLowerCase().contains('sticker')) {
+          return _mediaItemFromCompositionObject(
+            {...obj, 'type': 'sticker'},
+            index,
+          );
+        }
         mediaType = 'content';
-        mediaUrl = _cleanMediaUrl(
-          propMap['download_url'] ?? propMap['mediaUrl'] ?? obj['mediaUrl'],
+        mediaUrl = normalizeImageMediaUrl(
+          _cleanMediaUrl(
+            propMap['download_url'] ??
+                propMap['mediaUrl'] ??
+                propMap['media_url'] ??
+                obj['mediaUrl'],
+          ),
+          kind: kind,
         );
         settings = Settings(
           kind: kind,
-          contentId: propMap['content_id']?.toString(),
+          contentId: propMap['content_id']?.toString() ??
+              propMap['contentId']?.toString() ??
+              obj['content_id']?.toString(),
+          compositionCampaignId: propMap['composition_id']?.toString() ??
+              propMap['compositionId']?.toString() ??
+              propMap['nested_composition_id']?.toString(),
           iframeSrc: propMap['iframeSrc']?.toString() ??
               propMap['iframe_src']?.toString(),
           duration: _asInt(propMap['duration']),
@@ -542,8 +897,91 @@ class MediaItem {
     return null;
   }
 
+  static String? _mediaTypeFromJson(Map<String, dynamic> json) {
+    final raw = json['mediaType'] ?? json['media_type'];
+    if (raw == null) return null;
+    final t = raw.toString().toLowerCase();
+    if (t == 'image/svg+xml') return 'sticker';
+    if (t == 'svg+xml' || t == 'svg') return 'shape';
+    return t;
+  }
+
+  /// True when media should render as an SVG sticker (HTML) — not editor shapes.
+  static bool looksLikeSticker(MediaItem media) {
+    final t = (media.mediaType ?? '').toLowerCase();
+    if (t == 'shape') return false;
+    if (t == 'sticker' || t == 'image/svg+xml') return true;
+    final remote = media.settings?.remoteSrc ?? '';
+    if (remote.endsWith('.svg')) return true;
+    final kind = (media.settings?.kind ?? '').toLowerCase();
+    return kind.contains('sticker');
+  }
+
+  static bool _shapeHasSvg(MediaItem media) {
+    final url = media.mediaUrl ?? '';
+    return url.contains('<svg');
+  }
+
+  static bool _zonesHaveRenderableShapes(List<CampaignZone>? zones) {
+    if (zones == null) return false;
+    for (final z in zones) {
+      for (final m in z.mediaItems ?? const <MediaItem>[]) {
+        if ((m.mediaType ?? '').toLowerCase() == 'shape' &&
+            _shapeHasSvg(m)) {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  static int _zoneMediaCount(List<CampaignZone>? zones) {
+    if (zones == null) return 0;
+    var n = 0;
+    for (final z in zones) {
+      n += z.mediaItems?.length ?? 0;
+    }
+    return n;
+  }
+
+  static bool _zonesHaveStickerLayers(List<CampaignZone>? zones) {
+    if (zones == null) return false;
+    for (final z in zones) {
+      for (final m in z.mediaItems ?? const <MediaItem>[]) {
+        if (looksLikeSticker(m)) return true;
+      }
+    }
+    return false;
+  }
+
+  static List<CampaignZone>? _pickCompositionZones(
+    List<CampaignZone>? embedded,
+    List<CampaignZone>? linked,
+  ) {
+    if (linked == null || linked.isEmpty) return embedded;
+    if (embedded == null || embedded.isEmpty) return linked;
+    if (_zonesHaveNestedComposition(embedded) &&
+        !_zonesHaveNestedComposition(linked)) {
+      return embedded;
+    }
+    if (_zonesHaveRenderableShapes(linked) &&
+        !_zonesHaveRenderableShapes(embedded)) {
+      return linked;
+    }
+    if (_zonesHaveStickerLayers(linked) && !_zonesHaveStickerLayers(embedded)) {
+      return linked;
+    }
+    if (linked.length > embedded.length) return linked;
+    if (_zoneMediaCount(linked) > _zoneMediaCount(embedded)) return linked;
+    return embedded;
+  }
+
+  static String? _mediaUrlFromJson(Map<String, dynamic> json) {
+    return _cleanMediaUrl(json['mediaUrl'] ?? json['media_url']);
+  }
+
   factory MediaItem.fromJson(Map<String, dynamic> json) {
-    final mediaType = json["mediaType"];
+    final mediaType = _mediaTypeFromJson(json);
     Settings? settings = json["settings"] == null
         ? null
         : Settings.fromJson(json["settings"]);
@@ -603,15 +1041,32 @@ class MediaItem {
       }
     }
 
+    final schedule = json['schedule'] == null
+        ? Schedule(alwaysPlay: true)
+        : Schedule.fromJson(json['schedule'] as Map<String, dynamic>);
+
+    var mediaUrl = _mediaUrlFromJson(json);
+    final typeLower = (mediaType ?? '').toLowerCase();
+    if (typeLower == 'content' || typeLower.startsWith('image')) {
+      mediaUrl = normalizeImageMediaUrl(
+        mediaUrl,
+        kind: settings?.kind ?? mediaType,
+      );
+    }
+    if (typeLower == 'shape') {
+      final built = svgFromShapeProperties(_mergeShapeProps(json, {}));
+      if (built != null && built.isNotEmpty) {
+        mediaUrl = _cleanMediaUrl(built);
+      }
+    }
+
     return MediaItem(
       settings: settings,
-      schedule: json["schedule"] == null
-          ? null
-          : Schedule.fromJson(json["schedule"]),
+      schedule: schedule,
       mediaType: mediaType,
-      mediaUrl: _cleanMediaUrl(json["mediaUrl"]),
+      mediaUrl: mediaUrl,
       zones: parseNestedZones(json),
-      id: json["id"],
+      id: json['id']?.toString(),
     );
   }
 
@@ -833,7 +1288,10 @@ class Settings {
         kind: json["kind"],
         contentId: json["content_id"],
         rotation: _asInt(json["rotation"]),
-        remoteSrc: json["remoteSrc"],
+        remoteSrc: json["remoteSrc"] ??
+            json["remote_src"] ??
+            json["download_url"] ??
+            json["downloadUrl"],
         iframeSrc: json["iframeSrc"] ?? json["iframe_src"],
         compositionCampaignId: compositionCampaignIdFromJson(json, null),
         adCampaignId: json["ad_campaign_id"],
@@ -1014,6 +1472,29 @@ void _collectCompositionCampaignsFromJson(
       }
     }
 
+    final props = node['properties'];
+    if (props is Map<String, dynamic>) {
+      final nestedComp = props['composition'];
+      if (nestedComp is Map<String, dynamic>) {
+        final compId = compositionCampaignIdFromJson(
+          {
+            'content_id': props['content_id'] ?? node['id'],
+            'properties': props,
+          },
+          null,
+        );
+        final embedded = _campaignFromCompositionMediaMap({
+          'id': node['id'],
+          'campaign_id': compId,
+          'composition': nestedComp,
+          'settings': props,
+        });
+        if (embedded != null) {
+          out.add(embedded);
+        }
+      }
+    }
+
     for (final value in node.values) {
       _collectCompositionCampaignsFromJson(value, out);
     }
@@ -1040,6 +1521,113 @@ List<Campaign> _dedupeCampaignsById(List<Campaign> campaigns) {
   return byId.values.toList();
 }
 
+MediaItem _mergeCompositionInMediaItem(
+  MediaItem media,
+  List<Campaign> compositions,
+) {
+  var result = media;
+  final type = (media.mediaType ?? '').toLowerCase();
+
+  if (type == 'composition') {
+    var linked = findLinkedCompositionCampaign(result, compositions);
+    if (linked == null && compositions.length == 1) {
+      linked = compositions.first;
+    }
+    final chosen =
+        MediaItem._pickCompositionZones(result.zones, linked?.zones);
+    if (chosen != null && chosen.isNotEmpty) {
+      result = MediaItem(
+        id: result.id,
+        settings: result.settings,
+        schedule: result.schedule ?? Schedule(alwaysPlay: true),
+        mediaType: result.mediaType,
+        mediaUrl: result.mediaUrl,
+        zones: chosen,
+      );
+    }
+  } else if (type == 'content') {
+    final hasLinkHint =
+        (result.settings?.compositionCampaignId ?? '').trim().isNotEmpty;
+    if (hasLinkHint) {
+      final linked = findLinkedCompositionCampaign(result, compositions);
+      if (linked != null && (linked.zones?.isNotEmpty ?? false)) {
+        final existing = result.settings;
+        result = MediaItem(
+          id: result.id,
+          settings: Settings(
+            compositionCampaignId:
+                linked.campaignId ?? existing?.compositionCampaignId,
+            contentId: existing?.contentId,
+            kind: existing?.kind,
+            duration: existing?.duration,
+            html: existing?.html,
+            text: existing?.text,
+            fill: existing?.fill,
+          ),
+          schedule: result.schedule ?? Schedule(alwaysPlay: true),
+          mediaType: 'composition',
+          mediaUrl: null,
+          zones: linked.zones,
+        );
+      }
+    }
+  }
+
+  final nested = result.zones;
+  if (nested != null && nested.isNotEmpty) {
+    final mergedNested = _mergeCompositionInZoneList(nested, compositions);
+    if (mergedNested != nested) {
+      result = MediaItem(
+        id: result.id,
+        settings: result.settings,
+        schedule: result.schedule,
+        mediaType: result.mediaType,
+        mediaUrl: result.mediaUrl,
+        zones: mergedNested,
+      );
+    }
+  }
+  return result;
+}
+
+List<CampaignZone> _mergeCompositionInZoneList(
+  List<CampaignZone> zones,
+  List<Campaign> compositions,
+) {
+  var changed = false;
+  final updated = zones.map((zone) {
+    final items = zone.mediaItems;
+    if (items == null) return zone;
+
+    final mergedItems =
+        items.map((m) => _mergeCompositionInMediaItem(m, compositions)).toList();
+
+    var zoneChanged = false;
+    if (mergedItems.length != items.length) {
+      zoneChanged = true;
+    } else {
+      for (var i = 0; i < items.length; i++) {
+        if (!identical(mergedItems[i], items[i])) {
+          zoneChanged = true;
+          break;
+        }
+      }
+    }
+
+    if (!zoneChanged) return zone;
+    changed = true;
+    return CampaignZone(
+      id: zone.id,
+      x: zone.x,
+      y: zone.y,
+      width: zone.width,
+      height: zone.height,
+      mediaItems: mergedItems,
+    );
+  }).toList();
+  return changed ? updated : zones;
+}
+
 List<Campaign> _mergeCompositionPlaceholders(List<Campaign> campaigns) {
   // Use global registry for linking (includes extracted compositions)
   final compositions = globalCompositionCampaigns.isNotEmpty
@@ -1051,57 +1639,19 @@ List<Campaign> _mergeCompositionPlaceholders(List<Campaign> campaigns) {
     final zones = campaign.zones;
     if (zones == null) return campaign;
 
-    var changed = false;
-    final updatedZones = zones.map((zone) {
-      final items = zone.mediaItems;
-      if (items == null) return zone;
+    final updatedZones = _mergeCompositionInZoneList(zones, compositions);
+    if (identical(updatedZones, zones)) return campaign;
 
-      final updatedItems = items.map((media) {
-        if ((media.mediaType ?? '').toLowerCase() != 'composition') {
-          return media;
-        }
-        if (media.zones != null && media.zones!.isNotEmpty) return media;
-
-        var linked = findLinkedCompositionCampaign(media, compositions);
-        if (linked == null && compositions.length == 1) {
-          linked = compositions.first;
-        }
-        if (linked?.zones == null || linked!.zones!.isEmpty) return media;
-
-        changed = true;
-        return MediaItem(
-          id: media.id,
-          settings: media.settings,
-          schedule: media.schedule,
-          mediaType: media.mediaType,
-          mediaUrl: media.mediaUrl,
-          zones: linked.zones,
-        );
-      }).toList();
-
-      if (!changed) return zone;
-      return CampaignZone(
-        id: zone.id,
-        x: zone.x,
-        y: zone.y,
-        width: zone.width,
-        height: zone.height,
-        mediaItems: updatedItems,
-      );
-    }).toList();
-
-    return changed
-        ? Campaign(
-            playbackType: campaign.playbackType,
-            campaignId: campaign.campaignId,
-            campaignName: campaign.campaignName,
-            resolution: campaign.resolution,
-            campaignSchedule: campaign.campaignSchedule,
-            campaignSettings: campaign.campaignSettings,
-            zones: updatedZones,
-            isPaused: campaign.isPaused,
-          )
-        : campaign;
+    return Campaign(
+      playbackType: campaign.playbackType,
+      campaignId: campaign.campaignId,
+      campaignName: campaign.campaignName,
+      resolution: campaign.resolution,
+      campaignSchedule: campaign.campaignSchedule,
+      campaignSettings: campaign.campaignSettings,
+      zones: updatedZones,
+      isPaused: campaign.isPaused,
+    );
   }).toList();
 }
 
@@ -1214,16 +1764,16 @@ MediaItem resolveCompositionMediaItem(
 ) {
   final type = (media.mediaType ?? '').toLowerCase();
   if (type != 'composition') return media;
-  if (media.zones != null && media.zones!.isNotEmpty) return media;
 
   final linked = findLinkedCompositionCampaign(media, campaigns);
-  final zones = linked?.zones;
+  final zones =
+      MediaItem._pickCompositionZones(media.zones, linked?.zones);
   if (zones == null || zones.isEmpty) return media;
 
   return MediaItem(
     id: media.id,
     settings: media.settings,
-    schedule: media.schedule,
+    schedule: media.schedule ?? Schedule(alwaysPlay: true),
     mediaType: media.mediaType,
     mediaUrl: media.mediaUrl,
     zones: zones,
@@ -1363,7 +1913,7 @@ class Schedule {
   });
 
   factory Schedule.fromJson(Map<String, dynamic> json) => Schedule(
-        alwaysPlay: json["always_play"],
+        alwaysPlay: json['always_play'] ?? json['alwaysPlay'],
         period: json["period"] == null ? null : Period.fromJson(json["period"]),
         restrictions: json["restrictions"] == null
             ? null

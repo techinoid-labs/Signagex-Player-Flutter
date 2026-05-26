@@ -1914,6 +1914,32 @@ EOF
         final selectedCamp = _currentIndexOfCapmaign < count
             ? parsedCampaigns[_currentIndexOfCapmaign]
             : null;
+        final compositionLayerTypes = <Map<String, dynamic>>[];
+        for (final c in parsedCampaigns) {
+          for (final z in c.zones ?? const <CampaignZone>[]) {
+            for (final m in z.mediaItems ?? const <MediaItem>[]) {
+              if ((m.mediaType ?? '').toLowerCase() != 'composition') continue;
+              for (final lz in m.zones ?? const <CampaignZone>[]) {
+                for (final lm in lz.mediaItems ?? const <MediaItem>[]) {
+                  compositionLayerTypes.add({
+                    'zoneId': lz.id,
+                    'mediaId': lm.id,
+                    'type': lm.mediaType,
+                    'svgLen': (lm.mediaUrl ?? '').length,
+                    'hasUrl': (lm.mediaUrl ?? '').isNotEmpty,
+                    'hasRemoteSrc':
+                        (lm.settings?.remoteSrc ?? '').isNotEmpty,
+                    'hasHtml': (lm.settings?.html ?? '').isNotEmpty,
+                    'fill': lm.settings?.fill,
+                    'alwaysPlay': lm.schedule?.alwaysPlay,
+                    'nestedCompId': lm.settings?.compositionCampaignId,
+                    'nestedZones': lm.zones?.length ?? 0,
+                  });
+                }
+              }
+            }
+          }
+        }
         agentDebugLog(
           location: 'mqtt_view_model.dart:publish_campaign',
           message: 'campaigns_parsed',
@@ -1932,6 +1958,17 @@ EOF
                   }
                 : null,
             'zone2CompositionLayers': zone2CompositionLayers,
+            'compositionLayerTypes': compositionLayerTypes,
+            'registryLayerTypes': globalCompositionCampaigns
+                .expand((c) => c.zones ?? const <CampaignZone>[])
+                .expand((z) => z.mediaItems ?? const <MediaItem>[])
+                .map((m) => {
+                      'id': m.id,
+                      'type': m.mediaType,
+                      'svgLen': (m.mediaUrl ?? '').length,
+                    })
+                .toList(),
+            'debugLogPath': debugLogFilePath(),
             'globalCompositionCount': globalCompositionCampaigns.length,
             'allCampaigns': parsedCampaigns
                 .map((c) => {

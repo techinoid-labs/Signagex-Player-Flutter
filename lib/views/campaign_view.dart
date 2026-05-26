@@ -1,5 +1,7 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
@@ -13,6 +15,7 @@ import 'package:video_player/video_player.dart';
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
 import 'package:digital_signage/utils/agent_debug_log.dart';
+import 'package:digital_signage/utils/log_format.dart';
 
 import '../view_models/mqtt_view_model.dart';
 import '../views/no_content_view.dart';
@@ -551,9 +554,44 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               final top = (z.y ?? 0) * scaleY;
               final width = (z.width ?? 0) * scaleX;
               final height = (z.height ?? 0) * scaleY;
+              final zoneMedia = (z.mediaItems ?? const <MediaItem>[])
+                  .map(
+                    (m) => resolveCompositionMediaItem(
+                      m,
+                      widget.playerCampaigns,
+                    ),
+                  )
+                  .toList();
 
               print(
                   "  Zone ${z.id}: design=(${z.x}, ${z.y}) size=(${z.width}x${z.height}) -> screen=(${left.toStringAsFixed(1)}, ${top.toStringAsFixed(1)}) size=(${width.toStringAsFixed(1)}x${height.toStringAsFixed(1)})");
+
+              // #region agent log
+              agentDebugLog(
+                location: 'campaign_view.dart:_buildNestedZones:zone',
+                message: 'nested_zone_media',
+                hypothesisId: 'H6',
+                data: {
+                  'parentZoneId': widget.zoneId,
+                  'nestedZoneId': z.id,
+                  'size': '${width.toStringAsFixed(1)}x${height.toStringAsFixed(1)}',
+                  'media': zoneMedia
+                      .map((m) => {
+                            'id': m.id,
+                            'type': m.mediaType,
+                            'zones': m.zones?.length ?? 0,
+                            'urlLen': (m.mediaUrl ?? '').length,
+                            'isShape':
+                                (m.mediaType ?? '').toLowerCase() == 'shape',
+                            'hasRemoteSrc':
+                                (m.settings?.remoteSrc ?? '').isNotEmpty,
+                            'hasHtml': (m.settings?.html ?? '').isNotEmpty,
+                            'compId': m.settings?.compositionCampaignId,
+                          })
+                      .toList(),
+                },
+              );
+              // #endregion
 
               return Positioned(
                 left: left,
@@ -562,7 +600,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                 height: height,
                 child: VideoPlaylistWidget(
                   zoneId: '${widget.zoneId}.${z.id ?? 0}',
-                  mediaItems: z.mediaItems ?? const <MediaItem>[],
+                  mediaItems: zoneMedia,
                   campaignId: widget.campaignId,
                   playerCampaigns: widget.playerCampaigns,
                   campaignCanPlay: widget.campaignCanPlay,
@@ -620,7 +658,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         '$magenta═══════════════════════════════════════════════════════════$reset');
     print('$blue📍 Zone: ${widget.zoneId}$reset');
     print('$blue🎬 Media ID: ${currentMedia.id ?? "N/A"}$reset');
-    print('$blue📁 Media URL: ${currentMedia.mediaUrl ?? "N/A"}$reset');
+    print(
+        '$blue📁 Media URL: ${formatForLog(currentMedia.mediaUrl ?? "N/A")}$reset');
     print(
         '$cyan📊 Campaign can play: ${widget.campaignCanPlay ? "YES ✅" : "NO ❌"}$reset');
 
@@ -642,7 +681,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     bool shouldPlay = false;
     final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
 
-    if (currentMedia.schedule?.alwaysPlay ?? false) {
+    // Missing schedule = play (SignageX layers often omit schedule on stickers/compositions).
+    if (currentMedia.schedule == null ||
+        (currentMedia.schedule?.alwaysPlay ?? false)) {
       shouldPlay = true;
       print('$green✅ MEDIA: alwaysPlay = true → Media can play$reset');
     } else {
@@ -660,6 +701,19 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         print(
             '$yellow⚠️  MEDIA: No restrictions configured and alwaysPlay = false$reset');
         print('$red⏭️  MEDIA: Skipping media (no schedule configured)$reset');
+        // #region agent log
+        agentDebugLog(
+          location: 'campaign_view.dart:_initializeNextMedia',
+          message: 'media_skipped_no_schedule',
+          hypothesisId: 'H7',
+          data: {
+            'zoneId': widget.zoneId,
+            'mediaId': currentMedia.id,
+            'mediaType': currentMedia.mediaType,
+            'alwaysPlay': currentMedia.schedule?.alwaysPlay,
+          },
+        );
+        // #endregion
         print(
             '$magenta═══════════════════════════════════════════════════════════$reset');
         _sendAdProofOfPlay(
@@ -796,7 +850,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final mediaType = (nextMedia.mediaType ?? '').toLowerCase();
     final mediaUrl = nextMedia.mediaUrl ?? '';
 
-    print("[LOG] Loading media - Type: $mediaType, URL: $mediaUrl");
+    print(
+        '[LOG] Loading media - Type: $mediaType, URL: ${formatForLog(mediaUrl)}');
 
     if (mediaType == 'composition') {
       if (_isNestedCampaign(nextMedia)) {
@@ -850,15 +905,15 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType == 'shape') {
       print(
-          "[LOG] Current media is shape (SVG code in mediaUrl): ${nextMedia.mediaUrl?.substring(0, nextMedia.mediaUrl!.length > 100 ? 100 : nextMedia.mediaUrl!.length)}...");
+          '[LOG] Current media is shape, svgLen=${(nextMedia.mediaUrl ?? '').length}');
       setState(() {});
       return;
     }
 
-    if (mediaType == 'sticker') {
-      final remoteSrc = nextMedia.settings?.remoteSrc ?? '';
+    if (mediaType == 'sticker' || MediaItem.looksLikeSticker(nextMedia)) {
       print(
-          "[LOG] Current media is sticker - remoteSrc: $remoteSrc, mediaUrl: $mediaUrl");
+          '[LOG] Current media is sticker - remoteSrc: ${formatForLog(nextMedia.settings?.remoteSrc)}, '
+          'mediaUrl: ${formatForLog(mediaUrl)}');
       setState(() {});
       return;
     }
@@ -1358,22 +1413,64 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     return videoExtensions.any((ext) => path.toLowerCase().endsWith(ext));
   }
 
+  Widget _buildStickerWidget(MediaItem media) {
+    final remoteSrc = media.settings?.remoteSrc?.trim() ?? '';
+    final stickerHtml = media.settings?.html?.trim() ?? '';
+    final mediaUrl = media.mediaUrl ?? '';
+    final effectiveStickerUrl = remoteSrc.isNotEmpty ? remoteSrc : mediaUrl;
+    print(
+        '[LOG] _buildMediaWidget - Sticker zone=${widget.zoneId} '
+        'remoteSrc=${formatForLog(remoteSrc)} '
+        'mediaUrl=${formatForLog(mediaUrl)} '
+        'hasHtml=${stickerHtml.isNotEmpty}');
+    // #region agent log
+    agentDebugLog(
+      location: 'campaign_view.dart:_buildStickerWidget',
+      message: 'sticker_render',
+      hypothesisId: 'H8',
+      data: {
+        'zoneId': widget.zoneId,
+        'mediaId': media.id,
+        'mediaType': media.mediaType,
+        'urlLen': effectiveStickerUrl.length,
+        'hasHtml': stickerHtml.isNotEmpty,
+      },
+    );
+    // #endregion
+    final cacheKey = '${widget.zoneId}_sticker_${media.id ?? ''}';
+    if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
+      _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
+            key: ValueKey(cacheKey),
+            child: SizedBox.expand(
+              child: StickerHtmlWidget(
+                key: ValueKey(cacheKey),
+                svgUrl: effectiveStickerUrl,
+                htmlContent: stickerHtml.isNotEmpty ? stickerHtml : null,
+                onSvgEnd: _onMediaEnd,
+                transitionType: media.settings?.transition ?? 'none',
+              ),
+            ),
+          );
+    }
+    return _webViewWidgetBuilders[cacheKey]!();
+  }
+
   Widget _buildMediaWidget(MediaItem media, {MediaItem? sourceMedia}) {
     final mediaType = (media.mediaType ?? '').toLowerCase();
     final mediaUrl = media.mediaUrl ?? '';
     final adSource = sourceMedia ?? media;
 
     print(
-        "[LOG] _buildMediaWidget - Media ID: ${adSource.id}, Type: '$mediaType', URL: '$mediaUrl'");
+        '[LOG] _buildMediaWidget - Media ID: ${adSource.id}, '
+        "Type: '$mediaType', URL: ${formatForLog(mediaUrl)}");
     if (isAdMediaType(adSource.mediaType)) {
       print(
           '[LOG] _buildMediaWidget - Ad slot '
           '(ad_campaign_id=${adSource.settings?.adCampaignId ?? "missing"})');
     }
-    final htmlPreview = media.settings?.html ?? '';
-    final htmlPreviewLength = htmlPreview.length > 50 ? 50 : htmlPreview.length;
     print(
-        "[LOG] _buildMediaWidget - Settings HTML: ${htmlPreview.isEmpty ? 'null' : htmlPreview.substring(0, htmlPreviewLength)}");
+        '[LOG] _buildMediaWidget - Settings HTML: '
+        '${formatForLog(media.settings?.html, maxLen: 60)}');
 
     if (_isNestedCampaign(media)) {
       final source = sourceMedia ?? media;
@@ -1475,13 +1572,32 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     }
 
     if (mediaType == 'shape') {
-      print("[LOG] _buildMediaWidget - Building SvgWidget for shape");
+      var svgContent = mediaUrl.isNotEmpty ? _decodeSvgContent(mediaUrl) : '';
+      if (!isSvgContent(svgContent)) {
+        final built = MediaItem.svgFromShapeProperties({
+          if (media.settings?.fill != null) 'fill': media.settings!.fill,
+          if (media.settings?.strokeWidth != null)
+            'strokeWidth': media.settings!.strokeWidth,
+          if (media.settings?.kind != null) 'shapeType': media.settings!.kind,
+        });
+        if (built != null) svgContent = built;
+      }
       print(
-          "[LOG] _buildMediaWidget - Raw SVG from mediaUrl: ${mediaUrl.substring(0, mediaUrl.length > 100 ? 100 : mediaUrl.length)}...");
-
-      final svgContent = _decodeSvgContent(mediaUrl);
-      print(
-          "[LOG] _buildMediaWidget - Decoded SVG content length: ${svgContent.length}");
+          '[LOG] _buildMediaWidget - Shape zone=${widget.zoneId} svgLen=${svgContent.length}');
+      // #region agent log
+      agentDebugLog(
+        location: 'campaign_view.dart:_buildMediaWidget:shape',
+        message: 'shape_render',
+        hypothesisId: 'H9',
+        data: {
+          'zoneId': widget.zoneId,
+          'mediaId': media.id,
+          'svgLen': svgContent.length,
+          'fill': media.settings?.fill,
+          'shapeKind': media.settings?.kind,
+        },
+      );
+      // #endregion
       final cacheKey = '${widget.zoneId}_shape_${media.id ?? ''}';
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
@@ -1500,44 +1616,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     }
 
     if (mediaType == 'sticker') {
-      final remoteSrc = media.settings?.remoteSrc?.trim() ?? '';
-      final stickerHtml = media.settings?.html?.trim() ?? '';
-      final effectiveStickerUrl = remoteSrc.isNotEmpty ? remoteSrc : mediaUrl;
-      print(
-          "[LOG] _buildMediaWidget - Sticker remoteSrc=$remoteSrc, mediaUrl=$mediaUrl, "
-          'using=$effectiveStickerUrl, hasHtml=${stickerHtml.isNotEmpty}');
-      // #region agent log
-      agentDebugLog(
-        location: 'campaign_view.dart:_buildMediaWidget:sticker',
-        message: 'sticker_render',
-        hypothesisId: 'H4',
-        data: {
-          'zoneId': widget.zoneId,
-          'mediaId': media.id,
-          'effectiveUrl': effectiveStickerUrl,
-          'hasHtml': stickerHtml.isNotEmpty,
-          'playerCampaignsCount': widget.playerCampaigns.length,
-        },
-      );
-      // #endregion
-      final cacheKey =
-          '${widget.zoneId}_sticker_${media.id ?? ''}_$effectiveStickerUrl'
-          '_$stickerHtml';
-      if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
-        _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
-              key: ValueKey(cacheKey),
-              child: SizedBox.expand(
-                child: StickerHtmlWidget(
-                  key: ValueKey(cacheKey),
-                  svgUrl: effectiveStickerUrl,
-                  htmlContent: stickerHtml.isNotEmpty ? stickerHtml : null,
-                  onSvgEnd: _onMediaEnd,
-                  transitionType: media.settings?.transition ?? 'none',
-                ),
-              ),
-            );
-      }
-      return _webViewWidgetBuilders[cacheKey]!();
+      return _buildStickerWidget(media);
     }
 
     if (mediaType.startsWith('image')) {
@@ -1934,27 +2013,62 @@ class ImageWidget extends StatelessWidget {
   bool get _isNetworkUrl =>
       filePath.startsWith('http://') || filePath.startsWith('https://');
 
+  bool get _isDataUri => filePath.startsWith('data:image');
+
+  Uint8List? _decodeBase64Image(String source) {
+    try {
+      var payload = source.trim();
+      if (payload.startsWith('data:image')) {
+        final comma = payload.indexOf(',');
+        if (comma < 0) return null;
+        payload = payload.substring(comma + 1);
+      }
+      return base64Decode(payload.replaceAll(RegExp(r'\s+'), ''));
+    } catch (_) {
+      return null;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final Widget imageChild = _isNetworkUrl
-        ? Image.network(
-            filePath,
-            fit: BoxFit.cover,
-            height: MediaQuery.sizeOf(context).height,
-            width: MediaQuery.sizeOf(context).width,
-            errorBuilder: (_, __, ___) => const Center(
-              child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
-            ),
-          )
-        : Image.file(
-            File(filePath),
-            fit: BoxFit.cover,
-            height: MediaQuery.sizeOf(context).height,
-            width: MediaQuery.sizeOf(context).width,
-            errorBuilder: (_, __, ___) => const Center(
-              child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
-            ),
-          );
+    final normalized = MediaItem.normalizeImageMediaUrl(
+      filePath,
+      kind: filePath.contains('jpeg') ? 'image/jpeg' : 'image/png',
+    );
+    final bytes = (_isDataUri || MediaItem.isRawBase64ImagePayload(normalized))
+        ? _decodeBase64Image(normalized ?? filePath)
+        : null;
+
+    final Widget imageChild;
+    if (bytes != null) {
+      imageChild = Image.memory(
+        bytes,
+        fit: BoxFit.cover,
+        errorBuilder: (_, __, ___) => const Center(
+          child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
+        ),
+      );
+    } else if (_isNetworkUrl) {
+      imageChild = Image.network(
+        filePath,
+        fit: BoxFit.cover,
+        height: MediaQuery.sizeOf(context).height,
+        width: MediaQuery.sizeOf(context).width,
+        errorBuilder: (_, __, ___) => const Center(
+          child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
+        ),
+      );
+    } else {
+      imageChild = Image.file(
+        File(filePath),
+        fit: BoxFit.cover,
+        height: MediaQuery.sizeOf(context).height,
+        width: MediaQuery.sizeOf(context).width,
+        errorBuilder: (_, __, ___) => const Center(
+          child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
+        ),
+      );
+    }
 
     Widget imageWidget = SizedBox.expand(child: imageChild);
 
