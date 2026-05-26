@@ -22,6 +22,125 @@ import '../views/no_content_view.dart';
 import '../widgets/center_image_widget.dart';
 import '../widgets/text_widget.dart';
 
+String? _normalizeLocalMediaPath(String raw) {
+  var s = raw.trim();
+  if (s.isEmpty) return null;
+  if (s.startsWith('file://')) {
+    s = Uri.parse(s).toFilePath(windows: Platform.isWindows);
+  }
+  if (Platform.isWindows && s.contains('/')) {
+    if (RegExp(r'^[A-Za-z]:[/\\]').hasMatch(s)) {
+      final drive = s.substring(0, 2);
+      s = drive + s.substring(2).replaceAll('/', Platform.pathSeparator);
+    }
+  }
+  return s;
+}
+
+bool _svgNeedsHtmlRaster(String svg) {
+  return svg.contains('<pattern') ||
+      svg.contains('xlink:href') ||
+      svg.contains('href="data:') ||
+      svg.length > 8000;
+}
+
+/// SignageX stickers often wrap a PNG inside SVG (`<image xlink:href="data:image/png;base64,...">`).
+Uint8List? _extractRasterBytesFromSvg(String svg) {
+  final match = RegExp(
+    r'''(?:xlink:href|href)\s*=\s*["']?(data:image/(?:png|jpeg|jpg|webp|gif);base64,([A-Za-z0-9+/=\s]+))''',
+    caseSensitive: false,
+  ).firstMatch(svg);
+  if (match == null) return null;
+  try {
+    final payload = match.group(2)!.replaceAll(RegExp(r'\s+'), '');
+    return base64Decode(payload);
+  } catch (_) {
+    return null;
+  }
+}
+
+Widget _stickerRasterImage(Uint8List bytes, {Key? key}) {
+  return SizedBox.expand(
+    key: key,
+    child: Image.memory(
+      bytes,
+      fit: BoxFit.contain,
+      gaplessPlayback: true,
+      filterQuality: FilterQuality.medium,
+      errorBuilder: (_, __, ___) => const Center(
+        child: Icon(Icons.broken_image_outlined, color: Colors.grey),
+      ),
+    ),
+  );
+}
+
+Widget _buildStickerSvgContent(
+  String svg, {
+  required String transition,
+  required VoidCallback onEnd,
+  Key? key,
+  String? zoneId,
+  String? mediaId,
+}) {
+  final raster = _extractRasterBytesFromSvg(svg);
+  if (raster != null) {
+    // #region agent log
+    agentDebugLog(
+      location: 'campaign_view.dart:_buildStickerSvgContent',
+      message: 'sticker_raster_extract',
+      hypothesisId: 'H8',
+      runId: 'post-fix',
+      data: {
+        'zoneId': zoneId,
+        'mediaId': mediaId,
+        'rasterBytes': raster.length,
+        'svgLen': svg.length,
+      },
+    );
+    // #endregion
+    return _stickerRasterImage(raster, key: key);
+  }
+
+  if (!_svgNeedsHtmlRaster(svg)) {
+    return SizedBox.expand(
+      key: key,
+      child: SvgWidget(
+        svgContent: _normalizeSvgForParser(svg),
+        onSvgEnd: onEnd,
+        transitionType: transition,
+      ),
+    );
+  }
+
+  // Last resort for complex inline SVG without extractable raster.
+  final encoded = Uri.encodeComponent(svg);
+  if (encoded.length > 120000) {
+    agentDebugLog(
+      location: 'campaign_view.dart:_buildStickerSvgContent',
+      message: 'sticker_svg_too_large_for_html',
+      hypothesisId: 'H8',
+      runId: 'post-fix',
+      data: {'zoneId': zoneId, 'mediaId': mediaId, 'encodedLen': encoded.length},
+    );
+    return const Center(
+      child: Icon(Icons.broken_image_outlined, color: Colors.grey),
+    );
+  }
+
+  return SizedBox.expand(
+    key: key,
+    child: Html(
+      data:
+          '<div style="width:100%;height:100%;display:flex;align-items:center;'
+          'justify-content:center;overflow:hidden;">'
+          '<img src="data:image/svg+xml;charset=utf-8,$encoded" '
+          'style="max-width:100%;max-height:100%;object-fit:contain;" alt="" />'
+          '</div>',
+      style: _stickerHtmlStyles,
+    ),
+  );
+}
+
 String _normalizeSvgForParser(String svg) {
   String s = svg.replaceAll('\\"', '"');
 
@@ -1241,6 +1360,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     final isWebViewWidget = mediaType == 'text' ||
         mediaType == 'text/html' ||
+        mediaType == 'sticker' ||
+        mediaType == 'shape' ||
         mediaType == 'web_app_instance' ||
         (mediaType == 'content' && mediaItemIsWebAppIframe(playbackMedia));
 
@@ -1434,25 +1555,140 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         'mediaType': media.mediaType,
         'urlLen': effectiveStickerUrl.length,
         'hasHtml': stickerHtml.isNotEmpty,
+        'durationSec': media.settings?.duration,
+        'effectiveStickerUrlKind': effectiveStickerUrl.isEmpty
+            ? 'empty'
+            : (effectiveStickerUrl.startsWith('data:image')
+                ? 'data:image'
+                : (effectiveStickerUrl.startsWith('http://') ||
+                        effectiveStickerUrl.startsWith('https://'))
+                    ? 'http'
+                    : (effectiveStickerUrl.startsWith('file://')
+                        ? 'file'
+                        : 'path')),
+        'effectiveStickerUrlPreview': effectiveStickerUrl.isEmpty
+            ? ''
+            : (effectiveStickerUrl.length > 60
+                ? effectiveStickerUrl.substring(0, 60)
+                : effectiveStickerUrl),
+        'remoteSrcLen': remoteSrc.length,
+        'remoteSrcPreview': remoteSrc.isEmpty
+            ? ''
+            : (remoteSrc.length > 60 ? remoteSrc.substring(0, 60) : remoteSrc),
+        'mediaUrlLen': mediaUrl.length,
+        'mediaUrlPreview': mediaUrl.isEmpty
+            ? ''
+            : (mediaUrl.length > 60
+                ? mediaUrl.substring(0, 60)
+                : mediaUrl),
       },
     );
     // #endregion
-    final cacheKey = '${widget.zoneId}_sticker_${media.id ?? ''}';
-    if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
-      _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
-            key: ValueKey(cacheKey),
-            child: SizedBox.expand(
-              child: StickerHtmlWidget(
-                key: ValueKey(cacheKey),
-                svgUrl: effectiveStickerUrl,
-                htmlContent: stickerHtml.isNotEmpty ? stickerHtml : null,
-                onSvgEnd: _onMediaEnd,
-                transitionType: media.settings?.transition ?? 'none',
-              ),
-            ),
-          );
+
+    final transition = media.settings?.transition ?? 'none';
+
+    if (stickerHtml.isNotEmpty) {
+      return SizedBox.expand(
+        child: StickerHtmlWidget(
+          key: ValueKey('${widget.zoneId}_sticker_html_${media.id}'),
+          svgUrl: '',
+          htmlContent: stickerHtml,
+          onSvgEnd: _onMediaEnd,
+          transitionType: transition,
+        ),
+      );
     }
-    return _webViewWidgetBuilders[cacheKey]!();
+
+    if (isSvgContent(effectiveStickerUrl)) {
+      return _buildStickerSvgContent(
+        _decodeSvgContent(effectiveStickerUrl),
+        transition: transition,
+        onEnd: _onMediaEnd,
+        key: ValueKey('${widget.zoneId}_sticker_inline_${media.id}'),
+        zoneId: widget.zoneId,
+        mediaId: media.id,
+      );
+    }
+
+    final localPath = _normalizeLocalMediaPath(effectiveStickerUrl);
+    if (localPath != null) {
+      final file = File(localPath);
+      final exists = file.existsSync();
+      // #region agent log
+      agentDebugLog(
+        location: 'campaign_view.dart:_buildStickerWidget:file',
+        message: 'sticker_file_check',
+        hypothesisId: 'H8',
+        runId: 'post-fix',
+        data: {
+          'zoneId': widget.zoneId,
+          'mediaId': media.id,
+          'path': localPath,
+          'exists': exists,
+          'ext': localPath.contains('.') ? localPath.split('.').last : '',
+        },
+      );
+      // #endregion
+      if (exists) {
+        if (localPath.toLowerCase().endsWith('.svg')) {
+          try {
+            final svg = file.readAsStringSync();
+            // #region agent log
+            agentDebugLog(
+              location: 'campaign_view.dart:_buildStickerWidget:file',
+              message: 'sticker_svg_loaded',
+              hypothesisId: 'H8',
+              runId: 'post-fix',
+              data: {
+                'zoneId': widget.zoneId,
+                'mediaId': media.id,
+                'svgLen': svg.length,
+                'useHtmlRaster': _svgNeedsHtmlRaster(svg),
+              },
+            );
+            // #endregion
+            return _buildStickerSvgContent(
+              svg,
+              transition: transition,
+              onEnd: _onMediaEnd,
+              key: ValueKey('${widget.zoneId}_sticker_file_${media.id}'),
+              zoneId: widget.zoneId,
+              mediaId: media.id,
+            );
+          } catch (e) {
+            agentDebugLog(
+              location: 'campaign_view.dart:_buildStickerWidget:file',
+              message: 'sticker_svg_read_error',
+              hypothesisId: 'H8',
+              runId: 'post-fix',
+              data: {
+                'zoneId': widget.zoneId,
+                'mediaId': media.id,
+                'error': e.toString(),
+              },
+            );
+          }
+        }
+        if (isImageFile(localPath)) {
+          return ImageWidget(
+            key: ValueKey('${widget.zoneId}_sticker_img_${media.id}'),
+            filePath: localPath,
+            onImageEnd: _onMediaEnd,
+            transitionType: transition,
+          );
+        }
+      }
+    }
+
+    return SizedBox.expand(
+      child: StickerHtmlWidget(
+        key: ValueKey('${widget.zoneId}_sticker_remote_${media.id}'),
+        svgUrl: effectiveStickerUrl,
+        htmlContent: null,
+        onSvgEnd: _onMediaEnd,
+        transitionType: transition,
+      ),
+    );
   }
 
   Widget _buildMediaWidget(MediaItem media, {MediaItem? sourceMedia}) {
@@ -2217,6 +2453,17 @@ class _TextWidgetState extends State<TextWidget> {
   }
 }
 
+final _stickerHtmlStyles = {
+  'div': Style(
+    margin: Margins.zero,
+    padding: HtmlPaddings.zero,
+  ),
+  'img': Style(
+    margin: Margins.zero,
+    padding: HtmlPaddings.zero,
+  ),
+};
+
 /// Renders sticker SVG via [Html] (settings.html or fetched SVG as data-URI img).
 class StickerHtmlWidget extends StatefulWidget {
   final String svgUrl;
@@ -2237,17 +2484,6 @@ class StickerHtmlWidget extends StatefulWidget {
 }
 
 class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
-  static final _htmlStyles = {
-    'div': Style(
-      margin: Margins.zero,
-      padding: HtmlPaddings.zero,
-    ),
-    'img': Style(
-      margin: Margins.zero,
-      padding: HtmlPaddings.zero,
-    ),
-  };
-
   Future<String>? _loadFuture;
 
   @override
@@ -2286,6 +2522,30 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
     final html = widget.htmlContent?.trim();
     if (html != null && html.isNotEmpty) return null;
     final src = _resolveSource();
+    // #region agent log
+    agentDebugLog(
+      location: 'campaign_view.dart:StickerHtmlWidget:_createLoadFuture',
+      message: 'sticker_load_start',
+      hypothesisId: 'H8_load',
+      data: {
+        'svgUrlKind': widget.svgUrl.isEmpty
+            ? 'empty'
+            : (widget.svgUrl.startsWith('data:image')
+                ? 'data:image'
+                : (widget.svgUrl.startsWith('http://') ||
+                        widget.svgUrl.startsWith('https://'))
+                    ? 'http'
+                    : (widget.svgUrl.startsWith('file://')
+                        ? 'file'
+                        : 'path')),
+        'svgUrlLen': widget.svgUrl.length,
+        'srcUrl': src.url,
+        'srcUrlLen': src.url?.length ?? 0,
+        'srcPath': src.path,
+        'srcPathLen': src.path?.length ?? 0,
+      },
+    );
+    // #endregion
     if (src.url != null) {
       print('[LOG] StickerHtmlWidget: Loading SVG from URL: ${src.url}');
       return http.read(Uri.parse(src.url!));
@@ -2316,7 +2576,7 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
       return SizedBox.expand(
         child: Html(
           data: _wrapHtml(presetHtml),
-          style: _htmlStyles,
+          style: _stickerHtmlStyles,
         ),
       );
     }
@@ -2330,6 +2590,19 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.hasError || !snapshot.hasData) {
+            final errStr = snapshot.error?.toString() ?? '';
+            final errPreview =
+                errStr.length > 160 ? errStr.substring(0, 160) : errStr;
+            agentDebugLog(
+              location: 'campaign_view.dart:StickerHtmlWidget:build',
+              message: 'sticker_load_error',
+              hypothesisId: 'H8_load',
+              data: {
+                'svgUrl': widget.svgUrl,
+                'hasError': snapshot.hasError,
+                'errorPreview': errPreview,
+              },
+            );
             print(
                 '[ERROR] StickerHtmlWidget: Failed to load ${widget.svgUrl}: '
                 '${snapshot.error}');
@@ -2339,17 +2612,30 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
           }
           final raw = snapshot.data!.trim();
           if (raw.isEmpty) {
+            agentDebugLog(
+              location: 'campaign_view.dart:StickerHtmlWidget:build',
+              message: 'sticker_load_empty',
+              hypothesisId: 'H8_load',
+              data: {
+                'svgUrlLen': widget.svgUrl.length,
+              },
+            );
             return const Center(
               child: Icon(Icons.broken_image_outlined, color: Colors.grey),
             );
           }
           if (raw.contains('<html') || raw.contains('<body')) {
-            return Html(data: raw, style: _htmlStyles);
+            return Html(data: raw, style: _stickerHtmlStyles);
           }
           if (raw.contains('<svg')) {
-            return Html(data: _wrapHtml(raw), style: _htmlStyles);
+            return _buildStickerSvgContent(
+              _normalizeSvgForParser(raw),
+              transition: widget.transitionType,
+              onEnd: widget.onSvgEnd,
+              key: ValueKey('sticker_html_${widget.svgUrl}'),
+            );
           }
-          return Html(data: _svgToHtmlImg(raw), style: _htmlStyles);
+          return Html(data: _svgToHtmlImg(raw), style: _stickerHtmlStyles);
         },
       ),
     );
