@@ -14,13 +14,39 @@ import 'package:video_player/video_player.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
-import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/utils/log_format.dart';
 
 import '../view_models/mqtt_view_model.dart';
 import '../views/no_content_view.dart';
 import '../widgets/center_image_widget.dart';
 import '../widgets/text_widget.dart';
+
+bool _isNetworkMediaUrl(String url) =>
+    url.startsWith('http://') || url.startsWith('https://');
+
+// #region agent log
+void _agentDebugLog(
+  String location,
+  String message,
+  Map<String, dynamic> data,
+  String hypothesisId, {
+  String runId = 'post-fix',
+}) {
+  try {
+    final payload = jsonEncode({
+      'sessionId': '25797a',
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'location': location,
+      'message': message,
+      'data': data,
+      'hypothesisId': hypothesisId,
+      'runId': runId,
+    });
+    File(r'D:\digital-signage-flutter\debug-25797a.log')
+        .writeAsStringSync('$payload\n', mode: FileMode.append);
+  } catch (_) {}
+}
+// #endregion
 
 String? _normalizeLocalMediaPath(String raw) {
   var s = raw.trim();
@@ -79,25 +105,9 @@ Widget _buildStickerSvgContent(
   required String transition,
   required VoidCallback onEnd,
   Key? key,
-  String? zoneId,
-  String? mediaId,
 }) {
   final raster = _extractRasterBytesFromSvg(svg);
   if (raster != null) {
-    // #region agent log
-    agentDebugLog(
-      location: 'campaign_view.dart:_buildStickerSvgContent',
-      message: 'sticker_raster_extract',
-      hypothesisId: 'H8',
-      runId: 'post-fix',
-      data: {
-        'zoneId': zoneId,
-        'mediaId': mediaId,
-        'rasterBytes': raster.length,
-        'svgLen': svg.length,
-      },
-    );
-    // #endregion
     return _stickerRasterImage(raster, key: key);
   }
 
@@ -115,13 +125,6 @@ Widget _buildStickerSvgContent(
   // Last resort for complex inline SVG without extractable raster.
   final encoded = Uri.encodeComponent(svg);
   if (encoded.length > 120000) {
-    agentDebugLog(
-      location: 'campaign_view.dart:_buildStickerSvgContent',
-      message: 'sticker_svg_too_large_for_html',
-      hypothesisId: 'H8',
-      runId: 'post-fix',
-      data: {'zoneId': zoneId, 'mediaId': mediaId, 'encodedLen': encoded.length},
-    );
     return const Center(
       child: Icon(Icons.broken_image_outlined, color: Colors.grey),
     );
@@ -243,22 +246,6 @@ class _CampaignViewState extends State<CampaignView> {
         mqttViewModel.currentIndexOfCapmaign.clamp(0, campaigns.length - 1);
     final campaign = campaigns[campaignIndex];
 
-    // #region agent log
-    agentDebugLog(
-      location: 'campaign_view.dart:build',
-      message: 'active_campaign',
-      hypothesisId: 'H1',
-      data: {
-        'index': campaignIndex,
-        'campaignId': campaign.campaignId,
-        'campaignName': campaign.campaignName,
-        'isCompositionLayout': campaign.isCompositionLayout,
-        'zoneCount': campaign.zones?.length ?? 0,
-        'totalCampaigns': campaigns.length,
-      },
-    );
-    // #endregion
-
     final campaignSchedule = campaign.campaignSchedule;
 
     const String reset = '\x1B[0m';
@@ -274,6 +261,9 @@ class _CampaignViewState extends State<CampaignView> {
     print(
         '$cyan═══════════════════════════════════════════════════════════$reset');
     print('$blue📋 Campaign: ${campaign.campaignName ?? "N/A"}$reset');
+    print(
+        '$blue🧩 Composition layout: ${campaign.isCompositionLayout}, '
+        'zones: ${campaign.zones?.length ?? 0}$reset');
 
     bool campaignCanPlay = false;
 
@@ -359,20 +349,6 @@ class _CampaignViewState extends State<CampaignView> {
     print("Device resolution: ${deviceWidth}x${deviceHeight}");
     print("Scale factors: X=$scaleX, Y=$scaleY");
 
-    // #region agent log
-    agentDebugLog(
-      location: 'campaign_view.dart:_buildZones',
-      message: 'zones_layout',
-      hypothesisId: 'H1',
-      data: {
-        'campaignId': campaign.campaignId,
-        'zoneCount': campaign.zones?.length ?? 0,
-        'playerCampaignsCount': playerCampaigns.length,
-        'resolution': '${campaignWidth}x$campaignHeight',
-      },
-    );
-    // #endregion
-
     return Scaffold(
       backgroundColor: Colors.white,
       body: GestureDetector(
@@ -391,33 +367,13 @@ class _CampaignViewState extends State<CampaignView> {
             final scaledWidth = (zone.width ?? 0) * scaleX;
             final scaledHeight = (zone.height ?? 0) * scaleY;
 
-            // #region agent log
-            final zoneMediaTypes = (zone.mediaItems ?? [])
-                .map((m) => m.mediaType ?? 'unknown')
-                .toList();
-            final hasComposition = zoneMediaTypes.any(
-              (t) => t.toLowerCase() == 'composition');
-            agentDebugLog(
-              location: 'campaign_view.dart:_buildZones:zone',
-              message: 'zone_render',
-              hypothesisId: 'H5',
-              data: {
-                'campaignId': campaign.campaignId,
-                'zoneId': zone.id,
-                'position': '${scaledX.toStringAsFixed(0)},${scaledY.toStringAsFixed(0)}',
-                'size': '${scaledWidth.toStringAsFixed(0)}x${scaledHeight.toStringAsFixed(0)}',
-                'mediaTypes': zoneMediaTypes,
-                'hasComposition': hasComposition,
-              },
-            );
-            // #endregion
-
             return Positioned(
               left: scaledX,
               top: scaledY,
               width: scaledWidth,
               height: scaledHeight,
               child: VideoPlaylistWidget(
+                key: ValueKey('${campaign.campaignId}_${zone.id ?? 0}'),
                 zoneId: (zone.id ?? 0).toString(),
                 mediaItems: zone.mediaItems ?? [],
                 campaignId: campaign.campaignId,
@@ -470,6 +426,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   VideoPlayerController? _videoController;
   DateTime? _videoStartTime;
   int? _targetDuration;
+  MqttViewModel? _mqttViewModel;
 
   final Map<String, Widget Function()> _webViewWidgetBuilders = {};
   bool _adProofReported = false;
@@ -483,11 +440,17 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     _initializeNextMedia();
   }
 
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
+  }
+
   void _startRestrictionCheckTimer() {
     _restrictionCheckTimer?.cancel();
     _restrictionCheckTimer =
         Timer.periodic(const Duration(seconds: 8), (timer) {
-      if (!mounted) {
+      if (_isDisposed || !mounted) {
         timer.cancel();
         return;
       }
@@ -496,9 +459,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   }
 
   void _checkCampaignRestrictions() {
+    if (_isDisposed || !mounted) return;
     if (widget.campaignSchedule == null) return;
 
-    final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
+    final mqttViewModel = _mqttViewModel;
+    if (mqttViewModel == null) return;
     const String reset = '\x1B[0m';
     const String red = '\x1B[31m';
     const String yellow = '\x1B[33m';
@@ -541,7 +506,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   @override
   void didUpdateWidget(covariant VideoPlaylistWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.mediaItems != widget.mediaItems ||
+    if (oldWidget.campaignId != widget.campaignId ||
+        oldWidget.mediaItems != widget.mediaItems ||
         oldWidget.zoneId != widget.zoneId ||
         oldWidget.campaignCanPlay != widget.campaignCanPlay) {
       if (!widget.campaignCanPlay && oldWidget.campaignCanPlay) {}
@@ -568,6 +534,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     _timer?.cancel();
     _adPlaybackSessionKey = null;
     _adProofReported = false;
+    _webViewWidgetBuilders.clear();
     _videoController?.removeListener(_checkVideoPlaybackDuration);
     _videoController?.dispose();
     _videoController = null;
@@ -583,6 +550,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final type = (media.mediaType ?? '').toLowerCase();
     final hasZones = media.zones != null && media.zones!.isNotEmpty;
     return hasZones || type == 'campaign' || type == 'composition';
+  }
+
+  String _mediaWidgetCacheKey(String kind, MediaItem media, String mediaUrl) {
+    return '${widget.campaignId ?? ''}_${widget.zoneId}_${kind}_'
+        '${media.id ?? ''}_${_currentMediaIndex}_${mediaUrl.hashCode}';
   }
 
   MediaItem _resolvedMediaAt(int index) {
@@ -647,24 +619,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         print("  Scale factors: X=$scaleX, Y=$scaleY");
         print("  Number of nested zones: ${zones.length}");
 
-        // #region agent log
-        agentDebugLog(
-          location: 'campaign_view.dart:_buildNestedZones',
-          message: 'nested_composition_layout',
-          hypothesisId: 'H4',
-          data: {
-            'zoneId': widget.zoneId,
-            'mediaId': media.id,
-            'parentConstraints': '${constraints.maxWidth}x${constraints.maxHeight}',
-            'nestedBase': '${nestedCoordinateBaseWidth}x$nestedCoordinateBaseHeight',
-            'scaleX': scaleX,
-            'scaleY': scaleY,
-            'zoneCount': zones.length,
-            'linkedCampaignId': linked?.campaignId,
-          },
-        );
-        // #endregion
-
         return ClipRect(
           child: Stack(
             fit: StackFit.expand,
@@ -685,39 +639,14 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               print(
                   "  Zone ${z.id}: design=(${z.x}, ${z.y}) size=(${z.width}x${z.height}) -> screen=(${left.toStringAsFixed(1)}, ${top.toStringAsFixed(1)}) size=(${width.toStringAsFixed(1)}x${height.toStringAsFixed(1)})");
 
-              // #region agent log
-              agentDebugLog(
-                location: 'campaign_view.dart:_buildNestedZones:zone',
-                message: 'nested_zone_media',
-                hypothesisId: 'H6',
-                data: {
-                  'parentZoneId': widget.zoneId,
-                  'nestedZoneId': z.id,
-                  'size': '${width.toStringAsFixed(1)}x${height.toStringAsFixed(1)}',
-                  'media': zoneMedia
-                      .map((m) => {
-                            'id': m.id,
-                            'type': m.mediaType,
-                            'zones': m.zones?.length ?? 0,
-                            'urlLen': (m.mediaUrl ?? '').length,
-                            'isShape':
-                                (m.mediaType ?? '').toLowerCase() == 'shape',
-                            'hasRemoteSrc':
-                                (m.settings?.remoteSrc ?? '').isNotEmpty,
-                            'hasHtml': (m.settings?.html ?? '').isNotEmpty,
-                            'compId': m.settings?.compositionCampaignId,
-                          })
-                      .toList(),
-                },
-              );
-              // #endregion
-
               return Positioned(
                 left: left,
                 top: top,
                 width: width,
                 height: height,
                 child: VideoPlaylistWidget(
+                  key: ValueKey(
+                      '${widget.campaignId ?? ''}_${widget.zoneId}.${z.id ?? 0}'),
                   zoneId: '${widget.zoneId}.${z.id ?? 0}',
                   mediaItems: zoneMedia,
                   campaignId: widget.campaignId,
@@ -820,19 +749,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         print(
             '$yellow⚠️  MEDIA: No restrictions configured and alwaysPlay = false$reset');
         print('$red⏭️  MEDIA: Skipping media (no schedule configured)$reset');
-        // #region agent log
-        agentDebugLog(
-          location: 'campaign_view.dart:_initializeNextMedia',
-          message: 'media_skipped_no_schedule',
-          hypothesisId: 'H7',
-          data: {
-            'zoneId': widget.zoneId,
-            'mediaId': currentMedia.id,
-            'mediaType': currentMedia.mediaType,
-            'alwaysPlay': currentMedia.schedule?.alwaysPlay,
-          },
-        );
-        // #endregion
         print(
             '$magenta═══════════════════════════════════════════════════════════$reset');
         _sendAdProofOfPlay(
@@ -849,12 +765,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         '$magenta═══════════════════════════════════════════════════════════$reset');
 
     if (shouldPlay) {
-      int? durationInt = currentMedia.settings?.duration;
-      String duration = (durationInt ?? 0).toString();
+      final effectiveDuration = _effectiveMediaDurationSeconds(currentMedia);
       print(
-          '$green▶️  MEDIA: Loading and playing media (duration: $duration seconds)$reset');
+          '$green▶️  MEDIA: Loading and playing media (duration: $effectiveDuration seconds)$reset');
       if (!currentMedia.isAd) {
-        _startMediaLoop(duration, currentMedia);
+        _startMediaLoop(effectiveDuration.toString(), currentMedia);
       }
 
       if (_isNestedCampaign(currentMedia)) {
@@ -942,9 +857,14 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     _startMediaLoop(durationSeconds.toString(), adMedia);
   }
 
+  int _effectiveMediaDurationSeconds(MediaItem media) {
+    final duration = media.settings?.duration ?? 0;
+    return duration > 0 ? duration : 15;
+  }
+
   void _startMediaLoop(String duration, MediaItem sourceMedia) {
     print("Starting media loop for duration: $duration");
-    int durationSeconds = int.tryParse(duration) ?? 10;
+    int durationSeconds = int.tryParse(duration) ?? 15;
     if (durationSeconds <= 0) {
       durationSeconds = 15;
     }
@@ -1135,8 +1055,35 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     print(
         "[LOG] Setting video volume to: $volume (${nextMedia.settings?.volume}%)");
 
-    _videoController = VideoPlayerController.file(File(mediaUrl))
+    final isNetwork = _isNetworkMediaUrl(mediaUrl);
+    final localPath =
+        isNetwork ? null : (_normalizeLocalMediaPath(mediaUrl) ?? mediaUrl);
+
+    // #region agent log
+    _agentDebugLog(
+      'campaign_view.dart:_initializeNextVideo',
+      'creating video controller',
+      {
+        'isNetwork': isNetwork,
+        'mediaUrlSample': mediaUrl.length > 100
+            ? '${mediaUrl.substring(0, 100)}...'
+            : mediaUrl,
+        'localPathSample': localPath != null && localPath.length > 100
+            ? '${localPath.substring(0, 100)}...'
+            : localPath,
+      },
+      'A',
+    );
+    // #endregion
+
+    _videoController?.dispose();
+    final VideoPlayerController controller = isNetwork
+        ? VideoPlayerController.network(mediaUrl)
+        : VideoPlayerController.file(File(localPath!));
+
+    _videoController = controller
       ..initialize().then((_) {
+        if (_isDisposed || !mounted) return;
         if (_videoController!.value.isInitialized) {
           int targetDuration = nextMedia.settings?.duration ??
               _videoController!.value.duration.inSeconds;
@@ -1147,6 +1094,18 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
           print("Target play duration: $targetDuration seconds");
           print("Video length: $videoLength seconds");
+
+          // #region agent log
+          _agentDebugLog(
+            'campaign_view.dart:_initializeNextVideo',
+            'video init success',
+            {
+              'isNetwork': isNetwork,
+              'durationSec': videoLength,
+            },
+            'A',
+          );
+          // #endregion
 
           setState(() {
             _videoController!.setVolume(volume.clamp(0.0, 1.0));
@@ -1178,9 +1137,22 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           }
         }
       }).catchError((error) {
+        // #region agent log
+        _agentDebugLog(
+          'campaign_view.dart:_initializeNextVideo',
+          'video init failed',
+          {
+            'isNetwork': isNetwork,
+            'error': error.toString(),
+          },
+          'A',
+        );
+        // #endregion
         print("[LOG] Error initializing video: $error");
         print("[LOG] Video URL: ${nextMedia.mediaUrl}");
-        setState(() {});
+        if (!_isDisposed && mounted) {
+          setState(() {});
+        }
       });
   }
 
@@ -1311,10 +1283,20 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
   @override
   void dispose() {
+    // #region agent log
+    _agentDebugLog(
+      'campaign_view.dart:dispose',
+      'VideoPlaylistWidget disposing',
+      {'cancelledRestrictionTimer': _restrictionCheckTimer != null},
+      'B',
+    );
+    // #endregion
+    _isDisposed = true;
     _timer?.cancel();
     _restrictionCheckTimer?.cancel();
-    _isDisposed = true;
+    _videoController?.removeListener(_checkVideoPlaybackDuration);
     _videoController?.dispose();
+    _videoController = null;
     super.dispose();
   }
 
@@ -1333,30 +1315,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final playbackMedia =
         currentMedia.isAd ? currentMedia.playbackMedia : currentMedia;
     final mediaType = (playbackMedia.mediaType ?? '').toLowerCase();
-
-    if (mediaType == 'composition') {
-      final linked = findLinkedCompositionCampaign(currentMedia, widget.playerCampaigns);
-      // #region agent log
-      agentDebugLog(
-        location: 'campaign_view.dart:build:composition',
-        message: 'composition_resolved',
-        hypothesisId: 'H3',
-        data: {
-          'zoneId': widget.zoneId,
-          'mediaId': currentMedia.id,
-          'zoneCount': playbackMedia.zones?.length ?? 0,
-          'linkedCampaignId': linked?.campaignId,
-          'linkedCampaignZones': linked?.zones?.length ?? 0,
-          'settingsCompId': currentMedia.settings?.compositionCampaignId,
-          'playerCampaignsCount': widget.playerCampaigns.length,
-          'compositionCampaigns': widget.playerCampaigns
-              .where((c) => c.isCompositionLayout)
-              .map((c) => {'id': c.campaignId, 'name': c.campaignName, 'zones': c.zones?.length ?? 0})
-              .toList(),
-        },
-      );
-      // #endregion
-    }
 
     final isWebViewWidget = mediaType == 'text' ||
         mediaType == 'text/html' ||
@@ -1544,46 +1502,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         'remoteSrc=${formatForLog(remoteSrc)} '
         'mediaUrl=${formatForLog(mediaUrl)} '
         'hasHtml=${stickerHtml.isNotEmpty}');
-    // #region agent log
-    agentDebugLog(
-      location: 'campaign_view.dart:_buildStickerWidget',
-      message: 'sticker_render',
-      hypothesisId: 'H8',
-      data: {
-        'zoneId': widget.zoneId,
-        'mediaId': media.id,
-        'mediaType': media.mediaType,
-        'urlLen': effectiveStickerUrl.length,
-        'hasHtml': stickerHtml.isNotEmpty,
-        'durationSec': media.settings?.duration,
-        'effectiveStickerUrlKind': effectiveStickerUrl.isEmpty
-            ? 'empty'
-            : (effectiveStickerUrl.startsWith('data:image')
-                ? 'data:image'
-                : (effectiveStickerUrl.startsWith('http://') ||
-                        effectiveStickerUrl.startsWith('https://'))
-                    ? 'http'
-                    : (effectiveStickerUrl.startsWith('file://')
-                        ? 'file'
-                        : 'path')),
-        'effectiveStickerUrlPreview': effectiveStickerUrl.isEmpty
-            ? ''
-            : (effectiveStickerUrl.length > 60
-                ? effectiveStickerUrl.substring(0, 60)
-                : effectiveStickerUrl),
-        'remoteSrcLen': remoteSrc.length,
-        'remoteSrcPreview': remoteSrc.isEmpty
-            ? ''
-            : (remoteSrc.length > 60 ? remoteSrc.substring(0, 60) : remoteSrc),
-        'mediaUrlLen': mediaUrl.length,
-        'mediaUrlPreview': mediaUrl.isEmpty
-            ? ''
-            : (mediaUrl.length > 60
-                ? mediaUrl.substring(0, 60)
-                : mediaUrl),
-      },
-    );
-    // #endregion
 
     final transition = media.settings?.transition ?? 'none';
 
@@ -1605,8 +1523,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         transition: transition,
         onEnd: _onMediaEnd,
         key: ValueKey('${widget.zoneId}_sticker_inline_${media.id}'),
-        zoneId: widget.zoneId,
-        mediaId: media.id,
       );
     }
 
@@ -1614,60 +1530,17 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     if (localPath != null) {
       final file = File(localPath);
       final exists = file.existsSync();
-      // #region agent log
-      agentDebugLog(
-        location: 'campaign_view.dart:_buildStickerWidget:file',
-        message: 'sticker_file_check',
-        hypothesisId: 'H8',
-        runId: 'post-fix',
-        data: {
-          'zoneId': widget.zoneId,
-          'mediaId': media.id,
-          'path': localPath,
-          'exists': exists,
-          'ext': localPath.contains('.') ? localPath.split('.').last : '',
-        },
-      );
-      // #endregion
       if (exists) {
         if (localPath.toLowerCase().endsWith('.svg')) {
           try {
             final svg = file.readAsStringSync();
-            // #region agent log
-            agentDebugLog(
-              location: 'campaign_view.dart:_buildStickerWidget:file',
-              message: 'sticker_svg_loaded',
-              hypothesisId: 'H8',
-              runId: 'post-fix',
-              data: {
-                'zoneId': widget.zoneId,
-                'mediaId': media.id,
-                'svgLen': svg.length,
-                'useHtmlRaster': _svgNeedsHtmlRaster(svg),
-              },
-            );
-            // #endregion
             return _buildStickerSvgContent(
               svg,
               transition: transition,
               onEnd: _onMediaEnd,
               key: ValueKey('${widget.zoneId}_sticker_file_${media.id}'),
-              zoneId: widget.zoneId,
-              mediaId: media.id,
             );
-          } catch (e) {
-            agentDebugLog(
-              location: 'campaign_view.dart:_buildStickerWidget:file',
-              message: 'sticker_svg_read_error',
-              hypothesisId: 'H8',
-              runId: 'post-fix',
-              data: {
-                'zoneId': widget.zoneId,
-                'mediaId': media.id,
-                'error': e.toString(),
-              },
-            );
-          }
+          } catch (_) {}
         }
         if (isImageFile(localPath)) {
           return ImageWidget(
@@ -1747,7 +1620,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType == 'text/html') {
       print("[LOG] _buildMediaWidget - Building WBViewWidget for text/html");
-      final cacheKey = '${widget.zoneId}_html_${media.id ?? ''}';
+      final cacheKey = _mediaWidgetCacheKey('html', media, mediaUrl);
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
@@ -1766,8 +1639,24 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     if (mediaType == 'web_app_instance') {
       print(
           "[LOG] _buildMediaWidget - Building WBViewWidget for web_app_instance");
-      final cacheKey = '${widget.zoneId}_webapp_${media.id ?? ''}';
-      if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
+      final cacheKey = _mediaWidgetCacheKey('webapp', media, mediaUrl);
+      final cacheHit = _webViewWidgetBuilders.containsKey(cacheKey);
+      // #region agent log
+      _agentDebugLog(
+        'campaign_view.dart:_buildMediaWidget',
+        cacheHit ? 'webapp cache hit' : 'webapp cache miss',
+        {
+          'cacheKey': cacheKey,
+          'campaignId': widget.campaignId ?? '',
+          'mediaIndex': _currentMediaIndex,
+          'mediaUrlSample': mediaUrl.length > 80
+              ? '${mediaUrl.substring(0, 80)}...'
+              : mediaUrl,
+        },
+        'E',
+      );
+      // #endregion
+      if (!cacheHit) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
@@ -1784,7 +1673,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType == 'text') {
       print("[LOG] _buildMediaWidget - Building TextWidget");
-      final cacheKey = '${widget.zoneId}_text_${media.id ?? ''}';
+      final cacheKey = _mediaWidgetCacheKey('text', media, mediaUrl);
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
@@ -1820,20 +1709,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       }
       print(
           '[LOG] _buildMediaWidget - Shape zone=${widget.zoneId} svgLen=${svgContent.length}');
-      // #region agent log
-      agentDebugLog(
-        location: 'campaign_view.dart:_buildMediaWidget:shape',
-        message: 'shape_render',
-        hypothesisId: 'H9',
-        data: {
-          'zoneId': widget.zoneId,
-          'mediaId': media.id,
-          'svgLen': svgContent.length,
-          'fill': media.settings?.fill,
-          'shapeKind': media.settings?.kind,
-        },
-      );
-      // #endregion
       final cacheKey = '${widget.zoneId}_shape_${media.id ?? ''}';
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
@@ -1889,7 +1764,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       print(
           '[LOG] _buildMediaWidget - Building WBViewWidget for web-app iframe: '
           '$iframeUrl');
-      final cacheKey = '${widget.zoneId}_iframe_${media.id ?? ''}';
+      final cacheKey = _mediaWidgetCacheKey('iframe', media, iframeUrl);
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
@@ -2522,30 +2397,6 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
     final html = widget.htmlContent?.trim();
     if (html != null && html.isNotEmpty) return null;
     final src = _resolveSource();
-    // #region agent log
-    agentDebugLog(
-      location: 'campaign_view.dart:StickerHtmlWidget:_createLoadFuture',
-      message: 'sticker_load_start',
-      hypothesisId: 'H8_load',
-      data: {
-        'svgUrlKind': widget.svgUrl.isEmpty
-            ? 'empty'
-            : (widget.svgUrl.startsWith('data:image')
-                ? 'data:image'
-                : (widget.svgUrl.startsWith('http://') ||
-                        widget.svgUrl.startsWith('https://'))
-                    ? 'http'
-                    : (widget.svgUrl.startsWith('file://')
-                        ? 'file'
-                        : 'path')),
-        'svgUrlLen': widget.svgUrl.length,
-        'srcUrl': src.url,
-        'srcUrlLen': src.url?.length ?? 0,
-        'srcPath': src.path,
-        'srcPathLen': src.path?.length ?? 0,
-      },
-    );
-    // #endregion
     if (src.url != null) {
       print('[LOG] StickerHtmlWidget: Loading SVG from URL: ${src.url}');
       return http.read(Uri.parse(src.url!));
@@ -2590,19 +2441,6 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
             return const Center(child: CircularProgressIndicator());
           }
           if (snapshot.hasError || !snapshot.hasData) {
-            final errStr = snapshot.error?.toString() ?? '';
-            final errPreview =
-                errStr.length > 160 ? errStr.substring(0, 160) : errStr;
-            agentDebugLog(
-              location: 'campaign_view.dart:StickerHtmlWidget:build',
-              message: 'sticker_load_error',
-              hypothesisId: 'H8_load',
-              data: {
-                'svgUrl': widget.svgUrl,
-                'hasError': snapshot.hasError,
-                'errorPreview': errPreview,
-              },
-            );
             print(
                 '[ERROR] StickerHtmlWidget: Failed to load ${widget.svgUrl}: '
                 '${snapshot.error}');
@@ -2612,14 +2450,6 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
           }
           final raw = snapshot.data!.trim();
           if (raw.isEmpty) {
-            agentDebugLog(
-              location: 'campaign_view.dart:StickerHtmlWidget:build',
-              message: 'sticker_load_empty',
-              hypothesisId: 'H8_load',
-              data: {
-                'svgUrlLen': widget.svgUrl.length,
-              },
-            );
             return const Center(
               child: Icon(Icons.broken_image_outlined, color: Colors.grey),
             );
@@ -2782,9 +2612,27 @@ class _WBViewWidgetState extends State<WBViewWidget> {
     if (widget.media.startsWith('http://') ||
         widget.media.startsWith('https://')) {
       targetUrl = widget.media;
+    } else if (widget.media.startsWith('/')) {
+      targetUrl = 'https://signagexai.com${widget.media}';
     } else {
       targetUrl = 'file://${widget.media}';
     }
+
+    // #region agent log
+    _agentDebugLog(
+      'campaign_view.dart:WBViewWidget.build',
+      'resolved web view target',
+      {
+        'inputSample': widget.media.length > 120
+            ? '${widget.media.substring(0, 120)}...'
+            : widget.media,
+        'targetSample': targetUrl.length > 120
+            ? '${targetUrl.substring(0, 120)}...'
+            : targetUrl,
+      },
+      'D',
+    );
+    // #endregion
 
     return SizedBox.expand(
       child: Column(

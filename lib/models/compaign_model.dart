@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
-import 'package:digital_signage/utils/agent_debug_log.dart';
 
 int? _asInt(dynamic value) {
   if (value == null) return null;
@@ -146,7 +145,8 @@ class Campaign {
   bool get isCompositionLayout {
     final id = (campaignId ?? '').trim();
     if (id.startsWith('composition_')) return true;
-    return (playbackType ?? '').toLowerCase() == 'composition';
+    if ((playbackType ?? '').toLowerCase() == 'composition') return true;
+    return (zones?.length ?? 0) > 1;
   }
 
   factory Campaign.fromJson(Map<String, dynamic> json) => Campaign(
@@ -699,25 +699,6 @@ class MediaItem {
         break;
       default:
         final looksNested = objectLooksLikeNestedComposition(obj, propMap);
-        // #region agent log
-        agentDebugLog(
-          location: 'compaign_model.dart:_mediaItemFromCompositionObject',
-          message: 'composition_object_parse',
-          hypothesisId: 'H7',
-          runId: 'post-fix',
-          data: {
-            'objectId': obj['id']?.toString(),
-            'objectType': type,
-            'looksNested': looksNested,
-            'hasCompMap': propMap['composition'] != null,
-            'contentId': propMap['content_id'] ?? obj['content_id'],
-            'urlLen': (propMap['mediaUrl'] ?? obj['mediaUrl'] ?? '').toString().length,
-            'isBase64': isRawBase64ImagePayload(
-              (propMap['mediaUrl'] ?? obj['mediaUrl'])?.toString(),
-            ),
-          },
-        );
-        // #endregion
         if (looksNested) {
           return _mediaItemFromCompositionObject(
             {...obj, 'type': 'composition'},
@@ -1507,6 +1488,135 @@ void _collectCompositionCampaignsFromJson(
 
 int _campaignZoneCount(Campaign c) => c.zones?.length ?? 0;
 
+bool _compositionCampaignIdsMatch(String? a, String? b) {
+  final left = a?.trim();
+  final right = b?.trim();
+  if (left == null || left.isEmpty || right == null || right.isEmpty) {
+    return false;
+  }
+  if (left == right) return true;
+  if (left == right.replaceFirst('composition_', '')) return true;
+  if ('composition_$left' == right) return true;
+  if (left.replaceFirst('composition_', '') == right.replaceFirst('composition_', '')) {
+    return left.replaceFirst('composition_', '').isNotEmpty;
+  }
+  return false;
+}
+
+Campaign? _findRegisteredCompositionForCampaign(
+  Campaign campaign,
+  List<Campaign> compositionRegistry,
+) {
+  Campaign? bestMatch;
+  final name = campaign.campaignName?.trim().toLowerCase();
+
+  for (final comp in compositionRegistry) {
+    final idMatch = _compositionCampaignIdsMatch(
+      campaign.campaignId,
+      comp.campaignId,
+    );
+    final nameMatch = name != null &&
+        name.isNotEmpty &&
+        name == comp.campaignName?.trim().toLowerCase();
+    if (!idMatch && !nameMatch) continue;
+
+    if (bestMatch == null ||
+        _campaignZoneCount(comp) > _campaignZoneCount(bestMatch)) {
+      bestMatch = comp;
+    }
+  }
+  return bestMatch;
+}
+
+List<Campaign> _hydratePlayerCampaignsFromCompositions(
+  List<Campaign> playerCampaigns,
+  List<Campaign> compositionRegistry,
+) {
+  if (compositionRegistry.isEmpty) return playerCampaigns;
+
+  return playerCampaigns.map((campaign) {
+    final registered = _findRegisteredCompositionForCampaign(
+      campaign,
+      compositionRegistry,
+    );
+    if (registered == null ||
+        _campaignZoneCount(registered) <= _campaignZoneCount(campaign)) {
+      return campaign;
+    }
+
+    print(
+        '[Composition] Hydrating "${campaign.campaignName}" '
+        '(${_campaignZoneCount(campaign)} zone(s)) from registry '
+        '(${_campaignZoneCount(registered)} zone(s), id=${registered.campaignId})');
+
+    return Campaign(
+      playbackType: 'composition',
+      campaignId: registered.campaignId ?? campaign.campaignId,
+      campaignName: campaign.campaignName ?? registered.campaignName,
+      resolution: registered.resolution ?? campaign.resolution,
+      campaignSchedule: campaign.campaignSchedule ??
+          registered.campaignSchedule ??
+          CampaignSchedule(alwaysPlay: true),
+      campaignSettings: campaign.campaignSettings ?? registered.campaignSettings,
+      zones: registered.zones,
+      isPaused: campaign.isPaused,
+    );
+  }).toList();
+}
+
+bool _isCompositionRepresentedInPlayerList(
+  Campaign comp,
+  List<Campaign> playerCampaigns,
+) {
+  for (final c in playerCampaigns) {
+    if (_compositionCampaignIdsMatch(c.campaignId, comp.campaignId)) {
+      return true;
+    }
+    final compName = comp.campaignName?.trim().toLowerCase();
+    final cName = c.campaignName?.trim().toLowerCase();
+    if (compName != null &&
+        compName.isNotEmpty &&
+        compName == cName &&
+        (c.isCompositionLayout ||
+            _campaignZoneCount(c) >= _campaignZoneCount(comp))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+List<Campaign> _appendMissingStandaloneCompositions(
+  List<Campaign> playerCampaigns,
+  List<Campaign> compositionRegistry,
+) {
+  if (compositionRegistry.isEmpty) return playerCampaigns;
+
+  final result = List<Campaign>.from(playerCampaigns);
+  for (final comp in compositionRegistry) {
+    if (_campaignZoneCount(comp) < 2 && !comp.isCompositionLayout) continue;
+    if (_isCompositionRepresentedInPlayerList(comp, result)) continue;
+
+    print(
+        '[Composition] Adding "${comp.campaignName}" to rotation '
+        '(${_campaignZoneCount(comp)} zone(s), id=${comp.campaignId})');
+
+    result.add(
+      Campaign(
+        playbackType: 'composition',
+        campaignId: comp.campaignId,
+        campaignName: comp.campaignName,
+        resolution: comp.resolution,
+        campaignSchedule:
+            comp.campaignSchedule ?? CampaignSchedule(alwaysPlay: true),
+        campaignSettings: comp.campaignSettings,
+        zones: comp.zones,
+        isPaused: comp.isPaused,
+      ),
+    );
+  }
+  return result;
+}
+
 List<Campaign> _dedupeCampaignsById(List<Campaign> campaigns) {
   final byId = <String, Campaign>{};
   for (final c in campaigns) {
@@ -1687,10 +1797,6 @@ CampaignResponse normalizeCampaignResponse(
   // Get original campaigns from model
   final originalCampaigns = model.data?.playerCampaigns ?? const <Campaign>[];
 
-  // Check if we have regular (non-composition) campaigns
-  final hasRegularCampaigns =
-      originalCampaigns.any((c) => !c.isCompositionLayout);
-
   // Register all compositions (extracted + original) for linking
   final allCompositions = <Campaign>[
     ...extracted,
@@ -1699,16 +1805,27 @@ CampaignResponse normalizeCampaignResponse(
   final dedupedCompositions = _dedupeCampaignsById(allCompositions);
   setGlobalCompositionCampaigns(dedupedCompositions);
 
-  // If we have regular campaigns, don't add extracted compositions as top-level
-  // They will be rendered inside their zones via linking
-  final campaignsToUse = hasRegularCampaigns
-      ? originalCampaigns.where((c) => !c.isCompositionLayout).toList()
-      : (originalCampaigns.isEmpty ? extracted : originalCampaigns);
+  // Keep all originally published player campaigns (including standalone compositions).
+  // Extracted/nested compositions stay in globalCompositionCampaigns for zone linking only.
+  final campaignsToUse =
+      originalCampaigns.isEmpty ? extracted : originalCampaigns;
 
   final deduped = _dedupeCampaignsById(campaignsToUse);
 
+  // Replace thin player-campaign stubs (e.g. preview image) with full layouts
+  // from the composition registry when ids or names match ("final", etc.).
+  final hydrated =
+      _hydratePlayerCampaignsFromCompositions(deduped, dedupedCompositions);
+
+  // When solos + composition publish together, the full layout may live only in
+  // the composition registry — add it to rotation if not already represented.
+  final withStandalones = _appendMissingStandaloneCompositions(
+    hydrated,
+    dedupedCompositions,
+  );
+
   // Inject composition zones into composition media items
-  final withEmbedded = _mergeCompositionPlaceholders(deduped);
+  final withEmbedded = _mergeCompositionPlaceholders(withStandalones);
 
   return CampaignResponse(
     action: model.action,
@@ -1750,6 +1867,13 @@ Campaign? findLinkedCompositionCampaign(
     final prefixed = 'composition_$contentId';
     for (final c in all) {
       if (c.campaignId == prefixed || c.campaignId == contentId) return c;
+    }
+  }
+
+  final nameHint = media.settings?.creativeName?.trim().toLowerCase();
+  if (nameHint != null && nameHint.isNotEmpty) {
+    for (final c in all) {
+      if (c.campaignName?.trim().toLowerCase() == nameHint) return c;
     }
   }
 

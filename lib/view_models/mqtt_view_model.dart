@@ -22,7 +22,6 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
-import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/models/intractivity_model.dart'
     hide MediaItem, Settings;
 import 'package:digital_signage/models/play_list_model.dart';
@@ -32,6 +31,30 @@ import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 import '../data/api_repository/api_repository.dart';
 import '../services/mqtt_client_service.dart';
 import '../utils/constants.dart';
+
+// #region agent log
+void _mqttAgentDebugLog(
+  String location,
+  String message,
+  Map<String, dynamic> data,
+  String hypothesisId, {
+  String runId = 'webapp-solo-fix',
+}) {
+  try {
+    final payload = jsonEncode({
+      'sessionId': '25797a',
+      'timestamp': DateTime.now().millisecondsSinceEpoch,
+      'location': location,
+      'message': message,
+      'data': data,
+      'hypothesisId': hypothesisId,
+      'runId': runId,
+    });
+    File(r'D:\digital-signage-flutter\debug-25797a.log')
+        .writeAsStringSync('$payload\n', mode: FileMode.append);
+  } catch (_) {}
+}
+// #endregion
 
 enum MqttState {
   initial,
@@ -1155,9 +1178,33 @@ EOF
 
     print("Total files to download: $_downloadCount");
 
+    final campaigns = _campaignModel?.data?.playerCampaigns ?? const [];
+    final hasPlayableCampaignMedia = _campaignHasPlayableMediaItems(campaigns);
+
+    // #region agent log
+    _mqttAgentDebugLog(
+      'mqtt_view_model.dart:_startDownloadingForCampaign',
+      'download target summary',
+      {
+        'downloadCount': _downloadCount,
+        'campaignCount': campaigns.length,
+        'hasPlayableCampaignMedia': hasPlayableCampaignMedia,
+      },
+      'C',
+    );
+    // #endregion
+
     if (_downloadCount > 0) {
       _state = MqttState.downloading;
       notifyListeners();
+    } else if (hasPlayableCampaignMedia) {
+      print(
+          'No downloadable files; showing campaign with web/inline media '
+          '(${campaigns.length} campaign(s)).');
+      _selectCompositionCampaignIndexIfPresent();
+      _state = MqttState.campaignScreen;
+      notifyListeners();
+      return;
     } else {
       _state = MqttState.noContent;
       notifyListeners();
@@ -1291,6 +1338,25 @@ EOF
       visitZones(c.zones ?? const <CampaignZone>[]);
     }
     return result;
+  }
+
+  bool _campaignHasPlayableMediaItems(List<Campaign> campaigns) {
+    for (final campaign in campaigns) {
+      if (campaign.isPaused == true) continue;
+      final zones = campaign.zones;
+      if (zones == null || zones.isEmpty) continue;
+
+      bool zoneHasMedia(List<CampaignZone> zoneList) {
+        for (final zone in zoneList) {
+          final items = zone.mediaItems;
+          if (items != null && items.isNotEmpty) return true;
+        }
+        return false;
+      }
+
+      if (zoneHasMedia(zones)) return true;
+    }
+    return false;
   }
 
   Future<String> _ensureLocalMediaUrl(String url,
@@ -1886,101 +1952,43 @@ EOF
         campaignModelFromJson(jsonEncode(jsonObj)),
         jsonObj,
       );
-      // Keep campaign index in bounds when campaign list changes (e.g. single campaign)
       final campaigns = _campaignModel?.data?.playerCampaigns;
       final count = campaigns?.length ?? 0;
+      for (var i = 0; i < count; i++) {
+        final c = campaigns![i];
+        print(
+            '[CampaignList] $i: ${c.campaignName} '
+            'zones=${c.zones?.length ?? 0} '
+            'composition=${c.isCompositionLayout} '
+            'alwaysPlay=${c.campaignSchedule?.alwaysPlay}');
+      }
+      // #region agent log
+      _mqttAgentDebugLog(
+        'mqtt_view_model.dart:publish_campaign',
+        'rotation campaign list',
+        {
+          'count': count,
+          'campaigns': campaigns
+                  ?.map(
+                    (c) => {
+                      'name': c.campaignName,
+                      'zones': c.zones?.length ?? 0,
+                      'composition': c.isCompositionLayout,
+                      'alwaysPlay': c.campaignSchedule?.alwaysPlay,
+                    },
+                  )
+                  .toList() ??
+              [],
+        },
+        'H',
+      );
+      // #endregion
+      // Keep campaign index in bounds when campaign list changes (e.g. single campaign)
       if (count > 0) {
         _selectCompositionCampaignIndexIfPresent();
         if (_currentIndexOfCapmaign >= count) {
           _currentIndexOfCapmaign = 0;
         }
-        // #region agent log
-        final parsedCampaigns = campaigns!;
-        final compCampaigns = parsedCampaigns.where((c) => c.isCompositionLayout).toList();
-        int? zone2CompositionLayers;
-        for (final c in parsedCampaigns) {
-          for (final z in c.zones ?? const <CampaignZone>[]) {
-            if (z.id != 2) continue;
-            for (final m in z.mediaItems ?? const <MediaItem>[]) {
-              if ((m.mediaType ?? '').toLowerCase() == 'composition') {
-                zone2CompositionLayers = m.zones?.length ?? 0;
-              }
-            }
-          }
-        }
-        final regularCamps = parsedCampaigns
-            .where((c) => !c.isCompositionLayout)
-            .toList();
-        final selectedCamp = _currentIndexOfCapmaign < count
-            ? parsedCampaigns[_currentIndexOfCapmaign]
-            : null;
-        final compositionLayerTypes = <Map<String, dynamic>>[];
-        for (final c in parsedCampaigns) {
-          for (final z in c.zones ?? const <CampaignZone>[]) {
-            for (final m in z.mediaItems ?? const <MediaItem>[]) {
-              if ((m.mediaType ?? '').toLowerCase() != 'composition') continue;
-              for (final lz in m.zones ?? const <CampaignZone>[]) {
-                for (final lm in lz.mediaItems ?? const <MediaItem>[]) {
-                  compositionLayerTypes.add({
-                    'zoneId': lz.id,
-                    'mediaId': lm.id,
-                    'type': lm.mediaType,
-                    'svgLen': (lm.mediaUrl ?? '').length,
-                    'hasUrl': (lm.mediaUrl ?? '').isNotEmpty,
-                    'hasRemoteSrc':
-                        (lm.settings?.remoteSrc ?? '').isNotEmpty,
-                    'hasHtml': (lm.settings?.html ?? '').isNotEmpty,
-                    'fill': lm.settings?.fill,
-                    'alwaysPlay': lm.schedule?.alwaysPlay,
-                    'nestedCompId': lm.settings?.compositionCampaignId,
-                    'nestedZones': lm.zones?.length ?? 0,
-                  });
-                }
-              }
-            }
-          }
-        }
-        agentDebugLog(
-          location: 'mqtt_view_model.dart:publish_campaign',
-          message: 'campaigns_parsed',
-          hypothesisId: 'H2',
-          runId: 'post-fix',
-          data: {
-            'count': count,
-            'regularCount': regularCamps.length,
-            'selectedIndex': _currentIndexOfCapmaign,
-            'selectedCampaign': selectedCamp != null
-                ? {
-                    'id': selectedCamp.campaignId,
-                    'name': selectedCamp.campaignName,
-                    'isComposition': selectedCamp.isCompositionLayout,
-                    'zones': selectedCamp.zones?.length ?? 0,
-                  }
-                : null,
-            'zone2CompositionLayers': zone2CompositionLayers,
-            'compositionLayerTypes': compositionLayerTypes,
-            'registryLayerTypes': globalCompositionCampaigns
-                .expand((c) => c.zones ?? const <CampaignZone>[])
-                .expand((z) => z.mediaItems ?? const <MediaItem>[])
-                .map((m) => {
-                      'id': m.id,
-                      'type': m.mediaType,
-                      'svgLen': (m.mediaUrl ?? '').length,
-                    })
-                .toList(),
-            'debugLogPath': debugLogFilePath(),
-            'globalCompositionCount': globalCompositionCampaigns.length,
-            'allCampaigns': parsedCampaigns
-                .map((c) => {
-                      'id': c.campaignId,
-                      'name': c.campaignName,
-                      'zones': c.zones?.length ?? 0,
-                      'isComposition': c.isCompositionLayout,
-                    })
-                .toList(),
-          },
-        );
-        // #endregion
       }
       // Ensure any listening UI updates immediately
       notifyListeners();
@@ -2107,33 +2115,33 @@ EOF
     final campaigns = _campaignModel?.data?.playerCampaigns;
     if (campaigns == null || campaigns.isEmpty) return;
 
-    // Check if there are regular (non-composition) campaigns
-    final regularCampaigns =
-        campaigns.where((c) => !c.isCompositionLayout).toList();
-
-    // If we have regular campaigns, prefer them (compositions are embedded)
-    if (regularCampaigns.isNotEmpty) {
-      final regularIdx = campaigns.indexOf(regularCampaigns.first);
-      if (regularIdx >= 0 && regularIdx != _currentIndexOfCapmaign) {
-        _currentIndexOfCapmaign = regularIdx;
-        print(
-            '[Campaign] Selected regular campaign index $regularIdx '
-            '(${campaigns[regularIdx].campaignName}, '
-            '${campaigns[regularIdx].zones?.length ?? 0} zones)');
-      }
-      return;
+    if (_currentIndexOfCapmaign >= campaigns.length) {
+      _currentIndexOfCapmaign = 0;
     }
 
-    // Only auto-select composition if it's the ONLY campaign (standalone publish)
-    final compositionIdx =
-        campaigns.indexWhere((c) => c.isCompositionLayout);
-    if (compositionIdx >= 0) {
-      _currentIndexOfCapmaign = compositionIdx;
-      print(
-          '[Composition] Selected standalone composition index $compositionIdx '
-          '(${campaigns[compositionIdx].campaignName}, '
-          '${campaigns[compositionIdx].zones?.length ?? 0} zones)');
-    }
+    final current = campaigns[_currentIndexOfCapmaign];
+    print(
+        '[Campaign] Active campaign index $_currentIndexOfCapmaign '
+        '(${current.campaignName}, composition=${current.isCompositionLayout}, '
+        '${current.zones?.length ?? 0} zones)');
+
+    // #region agent log
+    _mqttAgentDebugLog(
+      'mqtt_view_model.dart:_selectCompositionCampaignIndexIfPresent',
+      'campaign index resolved',
+      {
+        'index': _currentIndexOfCapmaign,
+        'totalCampaigns': campaigns.length,
+        'compositionCount':
+            campaigns.where((c) => c.isCompositionLayout).length,
+        'regularCount':
+            campaigns.where((c) => !c.isCompositionLayout).length,
+        'campaignName': current.campaignName,
+        'isComposition': current.isCompositionLayout,
+      },
+      'G',
+    );
+    // #endregion
   }
   Timer? _timerOfCampaign;
 
@@ -2145,7 +2153,12 @@ EOF
     if (currentCampaign == null) return 0;
 
     final campaignSchedule = currentCampaign.campaignSchedule;
-    if (campaignSchedule == null) return 0;
+    if (campaignSchedule == null) {
+      print(
+          'Current Index: $_currentIndexOfCapmaign, Duration: 15 seconds, '
+          'Always Play: true (default, no schedule)');
+      return 15;
+    }
 
     int durationcampagin = 0;
 
@@ -2168,10 +2181,13 @@ EOF
             _isTimeInRangeForCampaign(
               campaignSchedule.period!.time!.from!,
               campaignSchedule.period!.time!.to!,
-            ))) {
+            ))            ) {
       final durationValue = currentCampaign.campaignSettings?.duration;
       if (durationValue != null) {
         durationcampagin = int.tryParse(durationValue) ?? 0;
+      }
+      if (durationcampagin <= 0) {
+        durationcampagin = 15;
       }
     }
 
@@ -2179,20 +2195,33 @@ EOF
     print(
         "Current Index: $_currentIndexOfCapmaign, Duration: $durationcampagin seconds, Always Play: ${campaignSchedule.alwaysPlay}");
 
+    // #region agent log
+    _mqttAgentDebugLog(
+      'mqtt_view_model.dart:currentDurationOfCampaign',
+      'resolved campaign duration',
+      {
+        'campaignIndex': _currentIndexOfCapmaign,
+        'durationSeconds': durationcampagin,
+        'alwaysPlay': campaignSchedule.alwaysPlay,
+        'rawDuration': currentCampaign.campaignSettings?.duration,
+      },
+      'F',
+    );
+    // #endregion
+
     return durationcampagin;
   }
 
   void startPlaylistTimerForCampaign() {
     _timerOfCampaign?.cancel();
 
-    // If the duration is 0, directly update the index and skip the timer setup
-    if (currentDurationOfCampaign == 0) {
+    final duration = currentDurationOfCampaign;
+    if (duration <= 0) {
       _updateIndexForCampain();
-      print("Playlist item not in schedule, skipping timer setup.");
+      print("Campaign not in schedule, skipping timer setup.");
     } else {
-      // Only start the timer if the duration is greater than 0
-      _timerOfCampaign = Timer(
-          Duration(seconds: currentDurationOfCampaign), _updateIndexForCampain);
+      _timerOfCampaign =
+          Timer(Duration(seconds: duration), _updateIndexForCampain);
     }
   }
 
@@ -2234,30 +2263,36 @@ EOF
       return;
     }
 
-    // Get regular (non-composition) campaigns for rotation
-    final regularCampaigns =
-        campaigns!.where((c) => !c.isCompositionLayout).toList();
+    final playableCampaigns = campaigns!;
 
-    // If only compositions exist, stay on current (standalone composition mode)
-    if (regularCampaigns.isEmpty) {
-      notifyListeners();
-      startPlaylistTimerForCampaign();
-      return;
-    }
+    // Rotate through every published player campaign (compositions + solos).
+    _currentIndexOfCapmaign = (_currentIndexOfCapmaign + 1) % count;
 
-    // Rotate only among regular campaigns (skip embedded compositions)
-    final currentRegularIdx = regularCampaigns.indexOf(
-      campaigns[_currentIndexOfCapmaign],
+    final nextCampaign = playableCampaigns[_currentIndexOfCapmaign];
+    print(
+        '[Campaign] Rotating to index $_currentIndexOfCapmaign of $count '
+        '(${nextCampaign.campaignName}, '
+        'composition=${nextCampaign.isCompositionLayout})');
+
+    // #region agent log
+    _mqttAgentDebugLog(
+      'mqtt_view_model.dart:_updateIndexForCampain',
+      'campaign rotated',
+      {
+        'newIndex': _currentIndexOfCapmaign,
+        'totalCampaigns': count,
+        'campaignName': nextCampaign.campaignName,
+        'isComposition': nextCampaign.isCompositionLayout,
+      },
+      'G',
     );
-    final nextRegularIdx =
-        (currentRegularIdx + 1) % regularCampaigns.length;
-    final nextCampaign = regularCampaigns[nextRegularIdx];
-    _currentIndexOfCapmaign = campaigns.indexOf(nextCampaign);
+    // #endregion
+
     Map<String, dynamic> sendLog = {
       "action": "player_logs",
       "log": "Current Campaign",
       "name": (_currentIndexOfCapmaign < count)
-          ? (campaigns![_currentIndexOfCapmaign].campaignName ?? "")
+          ? (playableCampaigns[_currentIndexOfCapmaign].campaignName ?? "")
           : "",
       "type": "info",
       "date_time": DateTime.now().toIso8601String(),
