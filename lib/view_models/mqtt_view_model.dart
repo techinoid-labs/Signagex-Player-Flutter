@@ -344,32 +344,7 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> _restoreSessionFromStorage() async {
-    if (_topic.isEmpty) {
-      return;
-    }
-
-    try {
-      debugPrint('Restoring session for player_code $_topic');
-      await _mqttClientService.connect();
-      subsibeMessage(_topic);
-      if (globleTopic.isNotEmpty) {
-        publishMessage(globleTopic, jsonEncode(deviceInfoMap));
-      }
-
-      final paired = storeState ?? _storedApiResponse?['paired'];
-      if (paired == false) {
-        _state = MqttState.pairedScreen;
-      } else if (paired == true) {
-        _state = MqttState.noContent;
-      } else {
-        _state = MqttState.pairedScreen;
-      }
-      notifyListeners();
-    } catch (error) {
-      _state = MqttState.noInternet;
-      notifyListeners();
-      debugPrint('Error restoring session: $error');
-    }
+    await _checkPairingStatus(refresh: true);
   }
 
   Future<void> checkAndRequestPermissions() async {
@@ -1593,10 +1568,26 @@ class MqttViewModel extends ChangeNotifier {
     return null;
   }
 
-  Future<void> _checkPairingStatus() async {
-    if (_topic.isNotEmpty) {
+  Future<void> _resetLocalPlayerSession() async {
+    _topic = '';
+    globleTopic = '';
+    storeState = null;
+    _storedApiResponse = null;
+    storedJsonObj = {};
+    _campaignModel = null;
+    _playListModel = null;
+    _interactivityModel = null;
+    _currentIndexOfCapmaign = 0;
+  }
+
+  Future<void> _checkPairingStatus({bool refresh = false}) async {
+    if (_topic.isNotEmpty && !refresh) {
       debugPrint('Pairing skipped: player_code already set ($_topic)');
       return;
+    }
+
+    if (refresh && _topic.isNotEmpty) {
+      debugPrint('Refreshing player registration for $_topic');
     }
 
     Map<String, dynamic> requestBody;
@@ -1642,6 +1633,7 @@ class MqttViewModel extends ChangeNotifier {
       bool isSaved = await prefs.setString('apiResponse', jsonResponse);
       print("check status ::::$isSaved");
 
+      _storedApiResponse = Map<String, dynamic>.from(response as Map);
       _topic = response["player_code"] ?? "";
 
       if (_topic.isEmpty) {
@@ -1652,6 +1644,13 @@ class MqttViewModel extends ChangeNotifier {
       }
 
       globleTopic = _topic;
+
+      try {
+        await _mqttClientService.connect();
+      } catch (e) {
+        debugPrint('MQTT connect during pairing failed: $e');
+      }
+
       subsibeMessage(_topic);
       await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
@@ -1662,16 +1661,19 @@ class MqttViewModel extends ChangeNotifier {
 
       if (response["paired"] == false) {
         print("this is state screeen ${response["paired"]}");
-        await prefs.setBool('storeState', response["paired"]);
+        storeState = false;
+        await prefs.setBool('storeState', false);
 
         _state = MqttState.pairedScreen;
       } else if (response["paired"] == true) {
-        // Start capturing screenshots every second
-        // Timer.periodic(Duration(seconds: 1), (timer) async {
-        //   await captureAndSendScreenshot(globleTopic);
-        // });
+        storeState = true;
+        await prefs.setBool('storeState', true);
 
-        _state = MqttState.noContent;
+        if (_state != MqttState.downloading &&
+            _state != MqttState.campaignScreen &&
+            _state != MqttState.playlistScreen) {
+          _state = MqttState.noContent;
+        }
       } else {
         _state = MqttState.failure;
       }
@@ -1848,10 +1850,8 @@ class MqttViewModel extends ChangeNotifier {
       };
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
-      if (storeState != null) {
-        if (storeState == false) {
-          await _checkPairingStatus();
-        }
+      if (storeState != true) {
+        await _checkPairingStatus(refresh: true);
       }
       // print("action mute${jsonObj["settings"]?["mute_audio"]}");
       if (jsonObj["settings"] != null &&
@@ -2132,7 +2132,8 @@ class MqttViewModel extends ChangeNotifier {
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       SharedPreferences prefs = await SharedPreferences.getInstance();
-      prefs.clear();
+      await prefs.clear();
+      await _resetLocalPlayerSession();
 
       await _checkPairingStatus();
     } else if (jsonObj["action"] == "action_delete") {
@@ -2145,9 +2146,10 @@ class MqttViewModel extends ChangeNotifier {
       };
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
-      debugPrint("remove playlist and update screen");
+      debugPrint("Player deleted from dashboard – resetting local session");
       SharedPreferences prefs = await SharedPreferences.getInstance();
-      prefs.clear();
+      await prefs.clear();
+      await _resetLocalPlayerSession();
       await _checkPairingStatus();
       await getStoredState();
     } else if (jsonObj["action"] == "remove_campaign") {
@@ -2162,7 +2164,8 @@ class MqttViewModel extends ChangeNotifier {
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       SharedPreferences prefs = await SharedPreferences.getInstance();
-      prefs.clear();
+      await prefs.clear();
+      await _resetLocalPlayerSession();
       await _checkPairingStatus();
     }
     notifyListeners();
