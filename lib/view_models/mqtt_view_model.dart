@@ -765,105 +765,116 @@ class MqttViewModel extends ChangeNotifier {
 
   Future<void> getDataForLinux() async {
     try {
-      final result = await getAllSystemInfoFLinux();
-      if (result.exitCode == 0) {
-        final output = result.stdout.trim();
-
-        // Parse the JSON output
-        final Map<String, dynamic> systemInfo = jsonDecode(output);
-
-        devicesinfo["sender"] = "Linux";
-        devicesinfo["time_zone"] = systemInfo["TimeZone"];
-        devicesinfo["mac_address"]["platform"] = "Linux";
-        devicesinfo["mac_address"]["macAddress"][0]["interface"] = "wlan0";
-        if (devicesinfo["mac_address"]["macAddress"][0]["interface"] ==
-            "wlan0") {
-          devicesinfo["mac_address"]["macAddress"][0]["mac"] =
-              systemInfo["MacAddress"];
-        }
-        devicesinfo["ram_info"] = systemInfo["InstalledRAM"].toString();
-
-        devicesinfo["hardware_details"]["model"] = systemInfo["DeviceName"];
-        print(systemInfo["TimeZone"]);
-        devicesinfo["hardware_details"]["device_id"] = systemInfo["MacAddress"];
-        devicesinfo["storage_info"]["total_storage"] =
-            systemInfo["DiskCapacity"].toString();
-
-        print(systemInfo["TimeZone"]);
-        devicesinfo["hardware_details"]["ram"] = systemInfo["InstalledRAM"];
-        devicesinfo["cpu_information"]["cpu_architecture"] =
-            systemInfo["CPUArchitecture"];
-        devicesinfo["cpu_information"]["processor"] = systemInfo["CPUInfo"];
-
-        // Print all the system information
-        systemInfo.forEach((key, value) {
-          print('$key: $value');
-        });
-
-        _fetchCurrentLocation();
-        await _checkPairingStatus();
-      } else {
-        print('Error: ${result.stderr}');
-      }
+      final systemInfo = await _collectLinuxSystemInfo();
+      _applyLinuxSystemInfo(systemInfo);
+      systemInfo.forEach((key, value) {
+        print('$key: $value');
+      });
     } catch (e) {
-      print('An error occurred: $e');
+      print('Linux system info collection failed: $e');
     }
+
+    _fetchCurrentLocation();
+    if (_topic.isEmpty) {
+      await _checkPairingStatus();
+    }
+  }
+
+  Future<String> _runLinuxShell(String command) async {
+    final result = await Process.run('bash', ['-c', command]);
+    if (result.exitCode != 0) {
+      return '';
+    }
+    return result.stdout.toString().trim();
+  }
+
+  Future<Map<String, String>> _collectLinuxSystemInfo() async {
+    final machineId = await getDeviceIDForLinux();
+    final macAddress = await _runLinuxShell(
+      "ip addr show | grep 'link/ether' | awk '{print \$2}' | head -n 1",
+    );
+    final osVersion = await _runLinuxShell('uname -r');
+    final cpuInfo = await _runLinuxShell(
+      "lscpu | grep 'Model name' | awk -F: '{print \$2}' | xargs",
+    );
+    final cpuArchitecture = await _runLinuxShell('uname -m');
+    final availableMemory = await _runLinuxShell(
+      "free -m | grep 'Mem:' | awk '{print \$7}'",
+    );
+    final networkAdapters = await _runLinuxShell(
+      "ip link show | awk -F: '/^[0-9]+:/{print \$2}' | xargs",
+    );
+    final timeZone = await _runLinuxShell(
+      "timedatectl 2>/dev/null | grep 'Time zone' | awk '{print \$3}'",
+    );
+    final deviceName = await _runLinuxShell('hostname');
+    final installedRam = await _runLinuxShell(
+      "free -m | grep 'Mem:' | awk '{print \$2}'",
+    );
+    final diskCapacity = await _runLinuxShell(
+      "df -h --total 2>/dev/null | grep 'total' | awk '{print \$2}'",
+    );
+
+    return {
+      'MachineId': machineId,
+      'MacAddress': macAddress,
+      'OSVersion': osVersion,
+      'CPUInfo': cpuInfo,
+      'CPUArchitecture': cpuArchitecture,
+      'AvailableMemory': availableMemory.isEmpty ? '' : '$availableMemory MB',
+      'NetworkAdapters': networkAdapters,
+      'TimeZone': timeZone,
+      'DeviceName': deviceName,
+      'InstalledRAM': installedRam.isEmpty ? '' : '$installedRam MB',
+      'DiskCapacity': diskCapacity,
+    };
+  }
+
+  void _applyLinuxSystemInfo(Map<String, String> systemInfo) {
+    final macAddress = systemInfo['MacAddress'] ?? '';
+    final machineId = systemInfo['MachineId'] ?? '';
+
+    devicesinfo['sender'] = 'Linux';
+    devicesinfo['time_zone'] = systemInfo['TimeZone'] ?? '';
+    devicesinfo['mac_address']['platform'] = 'Linux';
+    devicesinfo['mac_address']['macAddress'][0]['interface'] = 'wlan0';
+    devicesinfo['mac_address']['macAddress'][0]['mac'] =
+        macAddress.isNotEmpty ? macAddress : machineId;
+    devicesinfo['ram_info'] = systemInfo['InstalledRAM'] ?? '';
+    devicesinfo['hardware_details']['model'] =
+        systemInfo['DeviceName'] ?? 'Linux';
+    devicesinfo['hardware_details']['device_id'] =
+        machineId.isNotEmpty ? machineId : macAddress;
+    devicesinfo['storage_info']['total_storage'] =
+        systemInfo['DiskCapacity'] ?? '';
+    devicesinfo['hardware_details']['ram'] = systemInfo['InstalledRAM'] ?? '';
+    devicesinfo['cpu_information']['cpu_architecture'] =
+        systemInfo['CPUArchitecture'] ?? '';
+    devicesinfo['cpu_information']['processor'] = systemInfo['CPUInfo'] ?? '';
+    devicesinfo['android_version'] = systemInfo['OSVersion'] ?? '';
   }
 
   Future<String> getDeviceIDForLinux() async {
-    final result =
-        await Process.run('bash', ['-c', 'sudo dmidecode -s system-uuid']);
-
-    if (result.exitCode != 0) {
-      return 'Error: ${result.stderr}';
+    for (final path in ['/etc/machine-id', '/var/lib/dbus/machine-id']) {
+      try {
+        final file = File(path);
+        if (await file.exists()) {
+          final id = (await file.readAsString()).trim();
+          if (id.isNotEmpty) {
+            return id;
+          }
+        }
+      } catch (e) {
+        print('Failed to read Linux machine id from $path: $e');
+      }
     }
 
-    return result.stdout.trim();
-  }
-
-  Future<ProcessResult> getAllSystemInfoFLinux() {
-    return Process.run('bash', [
-      '-c',
-      '''
-    # Get system information
-    mac_address=\$(ip addr show | grep 'link/ether' | awk '{print \$2}' | head -n 1)
-    serial_number=\$(sudo dmidecode -s system-serial-number)
-    os_version=\$(uname -r)
-    cpu_info=\$(lscpu | grep 'Model name' | awk -F: '{print \$2}' | xargs)
-    cpu_architecture=\$(uname -m)
-    available_memory=\$(free -m | grep 'Mem:' | awk '{print \$7}')
-    ram_info=\$(sudo dmidecode -t memory | grep -A16 'Memory Device' | grep -E 'Size|Manufacturer|Speed' | grep -v 'No Module Installed')
-    network_adapters=\$(ip link show | awk -F: '/^[0-9]+:/{print \$2}' | xargs)
-    time_zone=\$(timedatectl | grep 'Time zone' | awk '{print \$3}')
-    device_name=\$(hostname)
-    installed_ram=\$(free -m | grep 'Mem:' | awk '{print \$2}')
-    product_id=\$(sudo dmidecode -s system-product-name)
-    disk_capacity=\$(df -h --total | grep 'total' | awk '{print \$2}')
-
-    # Create JSON structure including Disk Capacity
-    info=\$(cat <<EOF
-    {
-      "MacAddress": "\$mac_address",
-      "SerialNumber": "\$serial_number",
-      "OSVersion": "\$os_version",
-      "CPUInfo": "\$cpu_info",
-      "CPUArchitecture": "\$cpu_architecture",
-      "AvailableMemory": "\$available_memory MB",
-      "RAMInfo": "\$ram_info",
-      "NetworkAdapters": "\$network_adapters",
-      "TimeZone": "\$time_zone",
-      "DeviceName": "\$device_name",
-      "InstalledRAM": "\$installed_ram MB",
-      "ProductID": "\$product_id",
-      "DiskCapacity": "\$disk_capacity"
+    final hostname = await _runLinuxShell('hostname');
+    if (hostname.isNotEmpty) {
+      return hostname;
     }
-EOF
-    )
 
-    # Output JSON
-    echo "\$info"
-    '''
-    ]);
+    return 'linux-${DateTime.now().millisecondsSinceEpoch}';
   }
 
   Future<Map<String, dynamic>?> getDeviceIdentifiersForMac() async {
@@ -930,7 +941,7 @@ EOF
       await _mqttClientService.connect();
       _state = MqttState.connectionScreen;
       notifyListeners();
-      if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
+      if (_topic.isEmpty) {
         await _checkPairingStatus();
       }
     } catch (error) {
@@ -1540,6 +1551,11 @@ EOF
   }
 
   Future<void> _checkPairingStatus() async {
+    if (_topic.isNotEmpty) {
+      debugPrint('Pairing skipped: player_code already set ($_topic)');
+      return;
+    }
+
     Map<String, dynamic> requestBody;
 
     if (Platform.isAndroid) {
