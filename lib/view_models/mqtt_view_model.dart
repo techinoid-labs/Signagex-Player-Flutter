@@ -105,6 +105,7 @@ class MqttViewModel extends ChangeNotifier {
     'eth0': null,
   };
   Map<String, dynamic> storedJsonObj = {};
+  Map<String, dynamic>? _storedApiResponse;
   Future<void> _loadStoredJsonObj() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
 
@@ -147,6 +148,7 @@ class MqttViewModel extends ChangeNotifier {
       if (_topic.isNotEmpty) {
         globleTopic = _topic;
       }
+      _storedApiResponse = jsonResponse;
       return jsonResponse;
     } else {
       print('No stored response found.');
@@ -157,7 +159,7 @@ class MqttViewModel extends ChangeNotifier {
   Future<void> loadDeviceInfoFromSharedPreferences() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     String? jsonString = prefs.getString('deviceInfoMap');
-    prefs.clear();
+    await prefs.remove('deviceInfoMap');
     if (jsonString != null) {
       deviceInfoMap = Map<String, dynamic>.from(jsonDecode(jsonString));
       print('Loaded device info from SharedPreferences: $deviceInfoMap');
@@ -239,98 +241,135 @@ class MqttViewModel extends ChangeNotifier {
     await getStoredState();
     await retrieveStoredResponse();
     await loadDeviceInfoFromSharedPreferences();
+
+    if (await InternetConnectionChecker().hasConnection) {
+      await _handleConnectivityChange(true);
+    }
+
     InternetConnectionChecker().onStatusChange.listen((status) async {
-      final hasConnection = status == InternetConnectionStatus.connected;
-
-      if (hasConnection) {
-        print("this is data $storedJsonObj");
-
-        if (storedJsonObj["action"] == "publish_playlist") {
-          await _mqttClientService.connect();
-
-          if (_topic.isNotEmpty) {
-            subsibeMessage(_topic);
-          }
-          if (globleTopic.isNotEmpty) {
-            publishMessage(globleTopic, jsonEncode(deviceInfoMap));
-          }
-          _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
-
-          for (var playlist in _playListModel!.data.playlist) {
-            // Check if the playlist contains any media
-            if (playlist.media != null && playlist.media!.isNotEmpty) {
-              for (var media in playlist.media!) {
-                print("Media URL: ${media.mediaUrl}");
-
-                // Start downloading for each media item
-                _startDownloadingForPlaylist();
-              }
-            }
-          }
-        } else if (storedJsonObj["action"] == "publish_campaign") {
-          await _mqttClientService.connect();
-
-          if (_topic.isNotEmpty) {
-            subsibeMessage(_topic);
-          }
-          if (globleTopic.isNotEmpty) {
-            publishMessage(globleTopic, jsonEncode(deviceInfoMap));
-          }
-          _campaignModel = normalizeCampaignResponse(
-            campaignModelFromJson(jsonEncode(storedJsonObj)),
-            storedJsonObj,
-          );
-          _selectCompositionCampaignIndexIfPresent();
-
-          print(_mediaList);
-          for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
-            for (var zone in campaign.zones ?? []) {
-              for (var media in zone.mediaItems ?? []) {
-                print("Media URL: ${media.mediaUrl}");
-                _startDownloadingForCampaign();
-              }
-            }
-          }
-        } else {
-          print("elssssssssssssssssssssse caseeeeeee}");
-          _mqttConnection();
-        }
-      } else {
-        if (storedJsonObj["action"] == "publish_playlist") {
-          _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
-          print(_mediaList);
-          for (var playlist in _playListModel!.data.playlist) {
-            // Check if the playlist contains any media
-            if (playlist.media != null && playlist.media!.isNotEmpty) {
-              for (var media in playlist.media!) {
-                print("Media URL: ${media.mediaUrl}");
-
-                // Start downloading for each media item
-                _startDownloadingForPlaylist();
-              }
-            }
-          }
-        } else if (storedJsonObj["action"] == "publish_campaign") {
-          _campaignModel = normalizeCampaignResponse(
-            campaignModelFromJson(jsonEncode(storedJsonObj)),
-            storedJsonObj,
-          );
-          _selectCompositionCampaignIndexIfPresent();
-
-          for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
-            for (var zone in campaign.zones ?? []) {
-              for (var media in zone.mediaItems ?? []) {
-                print("Media URL: ${media.mediaUrl}");
-                _startDownloadingForCampaign();
-              }
-            }
-          }
-        } else {
-          _state = MqttState.noInternet;
-          notifyListeners();
-        }
-      }
+      await _handleConnectivityChange(
+        status == InternetConnectionStatus.connected,
+      );
     });
+  }
+
+  Future<void> _handleConnectivityChange(bool hasConnection) async {
+    if (hasConnection) {
+      print("this is data $storedJsonObj");
+
+      if (storedJsonObj["action"] == "publish_playlist") {
+        await _mqttClientService.connect();
+
+        if (_topic.isNotEmpty) {
+          subsibeMessage(_topic);
+        }
+        if (globleTopic.isNotEmpty) {
+          publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+        }
+        _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
+
+        for (var playlist in _playListModel!.data.playlist) {
+          if (playlist.media != null && playlist.media!.isNotEmpty) {
+            for (var media in playlist.media!) {
+              print("Media URL: ${media.mediaUrl}");
+              _startDownloadingForPlaylist();
+            }
+          }
+        }
+      } else if (storedJsonObj["action"] == "publish_campaign") {
+        await _mqttClientService.connect();
+
+        if (_topic.isNotEmpty) {
+          subsibeMessage(_topic);
+        }
+        if (globleTopic.isNotEmpty) {
+          publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+        }
+        _campaignModel = normalizeCampaignResponse(
+          campaignModelFromJson(jsonEncode(storedJsonObj)),
+          storedJsonObj,
+        );
+        _selectCompositionCampaignIndexIfPresent();
+
+        print(_mediaList);
+        for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
+          for (var zone in campaign.zones ?? []) {
+            for (var media in zone.mediaItems ?? []) {
+              print("Media URL: ${media.mediaUrl}");
+              _startDownloadingForCampaign();
+            }
+          }
+        }
+      } else if (_topic.isNotEmpty) {
+        await _restoreSessionFromStorage();
+      } else {
+        print("elssssssssssssssssssssse caseeeeeee}");
+        await _mqttConnection();
+      }
+    } else {
+      if (storedJsonObj["action"] == "publish_playlist") {
+        _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
+        print(_mediaList);
+        for (var playlist in _playListModel!.data.playlist) {
+          if (playlist.media != null && playlist.media!.isNotEmpty) {
+            for (var media in playlist.media!) {
+              print("Media URL: ${media.mediaUrl}");
+              _startDownloadingForPlaylist();
+            }
+          }
+        }
+      } else if (storedJsonObj["action"] == "publish_campaign") {
+        _campaignModel = normalizeCampaignResponse(
+          campaignModelFromJson(jsonEncode(storedJsonObj)),
+          storedJsonObj,
+        );
+        _selectCompositionCampaignIndexIfPresent();
+
+        for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
+          for (var zone in campaign.zones ?? []) {
+            for (var media in zone.mediaItems ?? []) {
+              print("Media URL: ${media.mediaUrl}");
+              _startDownloadingForCampaign();
+            }
+          }
+        }
+      } else if (_topic.isNotEmpty && storeState == false) {
+        _state = MqttState.pairedScreen;
+        notifyListeners();
+      } else {
+        _state = MqttState.noInternet;
+        notifyListeners();
+      }
+    }
+  }
+
+  Future<void> _restoreSessionFromStorage() async {
+    if (_topic.isEmpty) {
+      return;
+    }
+
+    try {
+      debugPrint('Restoring session for player_code $_topic');
+      await _mqttClientService.connect();
+      subsibeMessage(_topic);
+      if (globleTopic.isNotEmpty) {
+        publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+      }
+
+      final paired = storeState ?? _storedApiResponse?['paired'];
+      if (paired == false) {
+        _state = MqttState.pairedScreen;
+      } else if (paired == true) {
+        _state = MqttState.noContent;
+      } else {
+        _state = MqttState.pairedScreen;
+      }
+      notifyListeners();
+    } catch (error) {
+      _state = MqttState.noInternet;
+      notifyListeners();
+      debugPrint('Error restoring session: $error');
+    }
   }
 
   Future<void> checkAndRequestPermissions() async {
@@ -777,6 +816,8 @@ class MqttViewModel extends ChangeNotifier {
     _fetchCurrentLocation();
     if (_topic.isEmpty) {
       await _checkPairingStatus();
+    } else {
+      await _restoreSessionFromStorage();
     }
   }
 
@@ -938,12 +979,14 @@ class MqttViewModel extends ChangeNotifier {
   Future<void> _mqttConnection() async {
     try {
       debugPrint("Attempting to reconnect to MQTT.");
+      if (_topic.isNotEmpty) {
+        await _restoreSessionFromStorage();
+        return;
+      }
       await _mqttClientService.connect();
       _state = MqttState.connectionScreen;
       notifyListeners();
-      if (_topic.isEmpty) {
-        await _checkPairingStatus();
-      }
+      await _checkPairingStatus();
     } catch (error) {
       _state = MqttState.noInternet;
       notifyListeners();
