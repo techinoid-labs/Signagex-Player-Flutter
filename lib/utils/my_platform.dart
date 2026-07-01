@@ -12,5 +12,5 @@ class MyPlatform {
   static bool get isAndroidTV => isTv && Platform.isAndroid;
 
   static bool get isMobile => isIOS || isAndroid;
-  static bool get isDesktop => isMacOS;
+  static bool get isDesktop => isMacOS || Platform.isLinux || Platform.isWindows;
 }

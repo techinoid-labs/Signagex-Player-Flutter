@@ -50,7 +50,7 @@ void _mqttAgentDebugLog(
       'hypothesisId': hypothesisId,
       'runId': runId,
     });
-    File(r'D:\digital-signage-flutter\debug-25797a.log')
+    File('/tmp/debug-25797a.log')
         .writeAsStringSync('$payload\n', mode: FileMode.append);
   } catch (_) {}
 }
@@ -197,8 +197,13 @@ class MqttViewModel extends ChangeNotifier {
         final Uint8List imageBytes = byteData.buffer.asUint8List();
         debugPrint("Original image size: ${imageBytes.length}");
 
-        // Compress the image further
-        final compressedImageBytes = await _compressImage(imageBytes);
+        // Compress the image further (not supported on Linux — skip compression)
+        final Uint8List compressedImageBytes;
+        if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
+          compressedImageBytes = await _compressImage(imageBytes);
+        } else {
+          compressedImageBytes = imageBytes;
+        }
         debugPrint("Compressed image size: ${compressedImageBytes.length}");
 
         // Convert to Base64 string
