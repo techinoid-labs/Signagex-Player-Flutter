@@ -97,7 +97,10 @@ class NetworkApiService extends BaseApiService {
       case 201:
         return jsonDecode(response.body);
       case 400:
-        throw BadRequestException("Invalid Request");
+        final detail = response.body.trim();
+        throw BadRequestException(
+          detail.isNotEmpty ? detail : 'Invalid Request',
+        );
       case 401:
         throw BadRequestException("Invalid Url");
       case 403:

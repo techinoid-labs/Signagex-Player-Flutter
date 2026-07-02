@@ -6,10 +6,10 @@ import 'dart:typed_data';
 import 'package:flutter/material.dart';
 
 import 'package:flutter_html/flutter_html.dart';
+import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:video_player/video_player.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
@@ -120,7 +120,11 @@ Widget _buildStickerSvgContent(
       message: 'sticker_svg_too_large_for_html',
       hypothesisId: 'H8',
       runId: 'post-fix',
-      data: {'zoneId': zoneId, 'mediaId': mediaId, 'encodedLen': encoded.length},
+      data: {
+        'zoneId': zoneId,
+        'mediaId': mediaId,
+        'encodedLen': encoded.length
+      },
     );
     return const Center(
       child: Icon(Icons.broken_image_outlined, color: Colors.grey),
@@ -260,6 +264,7 @@ class _CampaignViewState extends State<CampaignView> {
     // #endregion
 
     final campaignSchedule = campaign.campaignSchedule;
+    final isAdCampaignUpdate = mqttViewModel.isAdCampaignUpdate;
 
     const String reset = '\x1B[0m';
     const String red = '\x1B[31m';
@@ -299,11 +304,21 @@ class _CampaignViewState extends State<CampaignView> {
       }
     }
 
+    if (isAdCampaignUpdate) {
+      print(
+          '$yellow📢 AD CAMPAIGN UPDATE: ad slots will use flight schedule$reset');
+    }
+
     print(
         '$cyan═══════════════════════════════════════════════════════════$reset');
 
     if (campaignCanPlay) {
-      return _buildZones(campaign, campaigns, campaignCanPlay);
+      return _buildZones(
+        campaign,
+        campaigns,
+        campaignCanPlay,
+        isAdCampaignUpdate: isAdCampaignUpdate,
+      );
     } else {
       return Scaffold(
         backgroundColor: Colors.white,
@@ -342,8 +357,9 @@ class _CampaignViewState extends State<CampaignView> {
   Widget _buildZones(
     PlayerCampaign campaign,
     List<Campaign> playerCampaigns,
-    bool campaignCanPlay,
-  ) {
+    bool campaignCanPlay, {
+    required bool isAdCampaignUpdate,
+  }) {
     final screenSize = MediaQuery.of(context).size;
     final deviceWidth = screenSize.width;
     final deviceHeight = screenSize.height;
@@ -395,8 +411,8 @@ class _CampaignViewState extends State<CampaignView> {
             final zoneMediaTypes = (zone.mediaItems ?? [])
                 .map((m) => m.mediaType ?? 'unknown')
                 .toList();
-            final hasComposition = zoneMediaTypes.any(
-              (t) => t.toLowerCase() == 'composition');
+            final hasComposition =
+                zoneMediaTypes.any((t) => t.toLowerCase() == 'composition');
             agentDebugLog(
               location: 'campaign_view.dart:_buildZones:zone',
               message: 'zone_render',
@@ -404,8 +420,10 @@ class _CampaignViewState extends State<CampaignView> {
               data: {
                 'campaignId': campaign.campaignId,
                 'zoneId': zone.id,
-                'position': '${scaledX.toStringAsFixed(0)},${scaledY.toStringAsFixed(0)}',
-                'size': '${scaledWidth.toStringAsFixed(0)}x${scaledHeight.toStringAsFixed(0)}',
+                'position':
+                    '${scaledX.toStringAsFixed(0)},${scaledY.toStringAsFixed(0)}',
+                'size':
+                    '${scaledWidth.toStringAsFixed(0)}x${scaledHeight.toStringAsFixed(0)}',
                 'mediaTypes': zoneMediaTypes,
                 'hasComposition': hasComposition,
               },
@@ -424,6 +442,7 @@ class _CampaignViewState extends State<CampaignView> {
                 playerCampaigns: playerCampaigns,
                 campaignCanPlay: campaignCanPlay,
                 campaignSchedule: campaign.campaignSchedule,
+                isAdCampaignUpdate: isAdCampaignUpdate,
                 coordinateBaseWidth: campaignWidth,
                 coordinateBaseHeight: campaignHeight,
               ),
@@ -442,6 +461,7 @@ class VideoPlaylistWidget extends StatefulWidget {
   final List<Campaign> playerCampaigns;
   final bool campaignCanPlay;
   final CampaignSchedule? campaignSchedule;
+  final bool isAdCampaignUpdate;
 
   final double coordinateBaseWidth;
   final double coordinateBaseHeight;
@@ -454,6 +474,7 @@ class VideoPlaylistWidget extends StatefulWidget {
     this.playerCampaigns = const [],
     required this.campaignCanPlay,
     required this.campaignSchedule,
+    this.isAdCampaignUpdate = false,
     required this.coordinateBaseWidth,
     required this.coordinateBaseHeight,
   });
@@ -466,6 +487,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   int _currentMediaIndex = 0;
   Timer? _timer;
   Timer? _restrictionCheckTimer;
+  Timer? _adSlotRecheckTimer;
   double _opacity = 1.0;
   VideoPlayerController? _videoController;
   DateTime? _videoStartTime;
@@ -473,6 +495,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
   final Map<String, Widget Function()> _webViewWidgetBuilders = {};
   bool _adProofReported = false;
+  bool _adScheduleFailReported = false;
+  bool _scheduleAllowsPlayback = false;
   String? _adPlaybackSessionKey;
 
   @override
@@ -492,6 +516,62 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         return;
       }
       _checkCampaignRestrictions();
+      _checkAdSlotSchedule();
+    });
+  }
+
+  MediaItem _slotMediaForScheduleCheck() {
+    if (_currentMediaIndex < 0 ||
+        _currentMediaIndex >= widget.mediaItems.length) {
+      return MediaItem();
+    }
+    return widget.mediaItems[_currentMediaIndex];
+  }
+
+  bool _isScheduleAllowedForCurrentMedia() {
+    if (!widget.campaignCanPlay) return false;
+    final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
+    final slotMedia = _slotMediaForScheduleCheck();
+    final mediaToCheck =
+        mediaItemIsAdSlot(slotMedia) ? slotMedia : _resolvedMediaAt(_currentMediaIndex);
+    return shouldPlayMediaForSchedule(
+      mediaToCheck,
+      checkRestrictions: mqttViewModel.checkRestrictions,
+    );
+  }
+
+  void _checkAdSlotSchedule() {
+    if (!widget.mediaItems.any((m) => mediaItemIsAdSlot(m))) return;
+
+    final allowed = _isScheduleAllowedForCurrentMedia();
+    if (allowed == _scheduleAllowsPlayback) return;
+
+    _scheduleAllowsPlayback = allowed;
+    if (allowed) {
+      _adScheduleFailReported = false;
+      _initializeNextMedia();
+      return;
+    }
+
+    _stopMedia();
+    final slot = _slotMediaForScheduleCheck();
+    if (mediaItemIsAdSlot(slot) && !_adScheduleFailReported) {
+      _adScheduleFailReported = true;
+      _sendAdProofOfPlay(
+        slot,
+        status: 'failed',
+        errorMessage: 'restrictions_failed',
+      );
+    }
+    _scheduleAdSlotRecheck();
+    if (mounted) setState(() {});
+  }
+
+  void _scheduleAdSlotRecheck() {
+    _adSlotRecheckTimer?.cancel();
+    _adSlotRecheckTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted) return;
+      _initializeNextMedia();
     });
   }
 
@@ -551,7 +631,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final oldUrl = _mediaUrlAt(_currentMediaIndex, oldWidget.mediaItems);
     final newUrl = _mediaUrlAt(_currentMediaIndex, widget.mediaItems);
     if (oldUrl != newUrl && newUrl.isNotEmpty) {
-      print('[AdPoP] Ad creative URL became available, restarting slot session');
+      print(
+          '[AdPoP] Ad creative URL became available, restarting slot session');
       _adProofReported = false;
       _adPlaybackSessionKey = null;
       _initializeNextMedia();
@@ -568,6 +649,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     _timer?.cancel();
     _adPlaybackSessionKey = null;
     _adProofReported = false;
+    _adScheduleFailReported = false;
+    _scheduleAllowsPlayback = false;
     _videoController?.removeListener(_checkVideoPlaybackDuration);
     _videoController?.dispose();
     _videoController = null;
@@ -600,7 +683,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   Widget _buildNestedZones(MediaItem media) {
     final zones = media.zones ?? const <CampaignZone>[];
     if (zones.isEmpty) {
-      final linked = findLinkedCompositionCampaign(media, widget.playerCampaigns);
+      final linked =
+          findLinkedCompositionCampaign(media, widget.playerCampaigns);
       print(
           '[Composition] Zone ${widget.zoneId}: no layers on media "${media.id}"; '
           'linked campaign=${linked?.campaignId ?? "none"}, '
@@ -655,8 +739,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           data: {
             'zoneId': widget.zoneId,
             'mediaId': media.id,
-            'parentConstraints': '${constraints.maxWidth}x${constraints.maxHeight}',
-            'nestedBase': '${nestedCoordinateBaseWidth}x$nestedCoordinateBaseHeight',
+            'parentConstraints':
+                '${constraints.maxWidth}x${constraints.maxHeight}',
+            'nestedBase':
+                '${nestedCoordinateBaseWidth}x$nestedCoordinateBaseHeight',
             'scaleX': scaleX,
             'scaleY': scaleY,
             'zoneCount': zones.length,
@@ -693,7 +779,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                 data: {
                   'parentZoneId': widget.zoneId,
                   'nestedZoneId': z.id,
-                  'size': '${width.toStringAsFixed(1)}x${height.toStringAsFixed(1)}',
+                  'size':
+                      '${width.toStringAsFixed(1)}x${height.toStringAsFixed(1)}',
                   'media': zoneMedia
                       .map((m) => {
                             'id': m.id,
@@ -724,6 +811,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   playerCampaigns: widget.playerCampaigns,
                   campaignCanPlay: widget.campaignCanPlay,
                   campaignSchedule: widget.campaignSchedule,
+                  isAdCampaignUpdate: widget.isAdCampaignUpdate,
                   coordinateBaseWidth: nestedCoordinateBaseWidth,
                   coordinateBaseHeight: nestedCoordinateBaseHeight,
                 ),
@@ -758,6 +846,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     const String cyan = '\x1B[36m';
 
     MediaItem currentMedia = _resolvedMediaAt(_currentMediaIndex);
+    final scheduleMedia = mediaItemIsAdSlot(_slotMediaForScheduleCheck())
+        ? _slotMediaForScheduleCheck()
+        : currentMedia;
     final adSessionKey = currentMedia.isAd
         ? '${currentMedia.id}|${currentMedia.adCreativeUrl}'
         : '';
@@ -797,20 +888,30 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       return;
     }
 
-    bool shouldPlay = false;
     final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
+    final shouldPlay = shouldPlayMediaForSchedule(
+      scheduleMedia,
+      checkRestrictions: mqttViewModel.checkRestrictions,
+    );
 
-    // Missing schedule = play (SignageX layers often omit schedule on stickers/compositions).
-    if (currentMedia.schedule == null ||
+    if (mediaItemIsAdSlot(scheduleMedia)) {
+      final scheduleEval = evaluateAdSlotSchedule(scheduleMedia);
+      print(
+          '$blue📅 AD flight: ${describeAdSlotFlightSchedule(scheduleMedia)}$reset');
+      if (shouldPlay) {
+        print('$green✅ MEDIA: Ad slot is within flight schedule$reset');
+      } else {
+        print(
+            '$red❌ MEDIA: Ad slot blocked (${scheduleEval.reason})$reset');
+      }
+    } else if (currentMedia.schedule == null ||
         (currentMedia.schedule?.alwaysPlay ?? false)) {
-      shouldPlay = true;
       print('$green✅ MEDIA: alwaysPlay = true → Media can play$reset');
     } else {
       final restrictions = currentMedia.schedule?.restrictions;
       if (restrictions != null && restrictions.isNotEmpty) {
         print(
             '$yellow🔍 MEDIA: Checking ${restrictions.length} restriction(s)...$reset');
-        shouldPlay = mqttViewModel.checkRestrictions(restrictions);
         if (shouldPlay) {
           print('$green✅ MEDIA: Restrictions PASSED → Media can play$reset');
         } else {
@@ -820,7 +921,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         print(
             '$yellow⚠️  MEDIA: No restrictions configured and alwaysPlay = false$reset');
         print('$red⏭️  MEDIA: Skipping media (no schedule configured)$reset');
-        // #region agent log
         agentDebugLog(
           location: 'campaign_view.dart:_initializeNextMedia',
           message: 'media_skipped_no_schedule',
@@ -832,7 +932,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
             'alwaysPlay': currentMedia.schedule?.alwaysPlay,
           },
         );
-        // #endregion
         print(
             '$magenta═══════════════════════════════════════════════════════════$reset');
         _sendAdProofOfPlay(
@@ -849,6 +948,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         '$magenta═══════════════════════════════════════════════════════════$reset');
 
     if (shouldPlay) {
+      _scheduleAllowsPlayback = true;
+      _adScheduleFailReported = false;
       int? durationInt = currentMedia.settings?.duration;
       String duration = (durationInt ?? 0).toString();
       print(
@@ -863,13 +964,23 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       }
       _loadMedia(currentMedia);
     } else {
+      _scheduleAllowsPlayback = false;
+      _stopMedia();
       print('$red⏭️  MEDIA: Skipping media (restrictions did not pass)$reset');
-      _sendAdProofOfPlay(
-        currentMedia,
-        status: 'failed',
-        errorMessage: 'restrictions_failed',
-      );
-      _onMediaEnd();
+      if (mediaItemIsAdSlot(scheduleMedia) && !_adScheduleFailReported) {
+        _adScheduleFailReported = true;
+        _sendAdProofOfPlay(
+          scheduleMedia,
+          status: 'failed',
+          errorMessage: 'restrictions_failed',
+        );
+      }
+      if (mediaItemIsAdSlot(scheduleMedia)) {
+        _scheduleAdSlotRecheck();
+      } else {
+        _onMediaEnd();
+      }
+      if (mounted) setState(() {});
     }
   }
 
@@ -904,9 +1015,12 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       errorMessage: errorMessage,
     );
 
-    print(
-        '[AdPoP] Scheduling proof-of-play (status=$status) → zone=$zoneId, '
+    print('[AdPoP] Scheduling proof-of-play (status=$status) → zone=$zoneId, '
         'ad_campaign_id=${settings?.adCampaignId ?? "(missing)"}');
+    if (!canReportAdProofOfPlay(request)) {
+      print('[AdPoP] Skipped: no ad_campaign_id for ${adMedia.id}');
+      return;
+    }
     await mqttViewModel.reportAdProofOfPlay(request);
   }
 
@@ -932,11 +1046,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     var durationSeconds = adMedia.settings?.duration ?? 0;
     if (durationSeconds <= 0) {
       durationSeconds = 15;
-      print('[AdPoP] Ad slot duration missing, defaulting to ${durationSeconds}s');
+      print(
+          '[AdPoP] Ad slot duration missing, defaulting to ${durationSeconds}s');
     }
 
-    print(
-        '[AdPoP] Ad slot session started: id=${adMedia.id}, '
+    print('[AdPoP] Ad slot session started: id=${adMedia.id}, '
         'zone=${widget.zoneId}, duration=${durationSeconds}s '
         '(proof-of-play on completion only)');
     _startMediaLoop(durationSeconds.toString(), adMedia);
@@ -980,18 +1094,28 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         setState(() {});
         return;
       }
-      print(
-          '[LOG] Composition has no nested zones/layers in campaign data '
+      print('[LOG] Composition has no nested zones/layers in campaign data '
           '(${nextMedia.id})');
       setState(() {});
       return;
     }
 
-    if (nextMedia.isAd) {
+    if (mediaItemIsAdSlot(nextMedia)) {
+      final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
+      if (!shouldPlayMediaForSchedule(
+        nextMedia,
+        checkRestrictions: mqttViewModel.checkRestrictions,
+      )) {
+        print('[LOG] Ad slot blocked by flight schedule (${nextMedia.id})');
+        _scheduleAllowsPlayback = false;
+        _stopMedia();
+        _scheduleAdSlotRecheck();
+        if (mounted) setState(() {});
+        return;
+      }
       final creative = nextMedia.playbackMedia;
       final creativeUrl = creative.mediaUrl ?? '';
-      print(
-          "[LOG] Resolved ad/ad_slot creative for playback: "
+      print("[LOG] Resolved ad/ad_slot creative for playback: "
           '${nextMedia.mediaType} → ${creative.mediaType} (${creative.id})');
       if (creativeUrl.isEmpty) {
         print("[LOG] Ad slot has no creative URL yet (${nextMedia.id})");
@@ -1004,8 +1128,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     }
 
     if (mediaType == 'web_app_instance') {
-      print(
-          "[LOG] Current media is web_app_instance, loading remote web app in WebView");
+      final webAppUrl = mediaItemWebAppInstanceUrl(nextMedia);
+      print('[LOG] Current media is web_app_instance, loading in WebView: '
+          '${formatForLog(webAppUrl)}');
       setState(() {});
       return;
     }
@@ -1313,6 +1438,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   void dispose() {
     _timer?.cancel();
     _restrictionCheckTimer?.cancel();
+    _adSlotRecheckTimer?.cancel();
     _isDisposed = true;
     _videoController?.dispose();
     super.dispose();
@@ -1322,6 +1448,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   Widget build(BuildContext context) {
     if (widget.mediaItems.isEmpty) {
       return Center(child: Text("Zone ${widget.zoneId}: No media items."));
+    }
+
+    if (!widget.campaignCanPlay || !_scheduleAllowsPlayback) {
+      return const SizedBox.shrink();
     }
 
     if (_currentMediaIndex < 0 ||
@@ -1335,7 +1465,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final mediaType = (playbackMedia.mediaType ?? '').toLowerCase();
 
     if (mediaType == 'composition') {
-      final linked = findLinkedCompositionCampaign(currentMedia, widget.playerCampaigns);
+      final linked =
+          findLinkedCompositionCampaign(currentMedia, widget.playerCampaigns);
       // #region agent log
       agentDebugLog(
         location: 'campaign_view.dart:build:composition',
@@ -1351,7 +1482,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           'playerCampaignsCount': widget.playerCampaigns.length,
           'compositionCampaigns': widget.playerCampaigns
               .where((c) => c.isCompositionLayout)
-              .map((c) => {'id': c.campaignId, 'name': c.campaignName, 'zones': c.zones?.length ?? 0})
+              .map((c) => {
+                    'id': c.campaignId,
+                    'name': c.campaignName,
+                    'zones': c.zones?.length ?? 0
+                  })
               .toList(),
         },
       );
@@ -1365,7 +1500,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         mediaType == 'web_app_instance' ||
         (mediaType == 'content' && mediaItemIsWebAppIframe(playbackMedia));
 
-    final mediaWidget = _buildMediaWidget(playbackMedia, sourceMedia: currentMedia);
+    final mediaWidget =
+        _buildMediaWidget(playbackMedia, sourceMedia: currentMedia);
 
     if (isWebViewWidget) {
       return AnimatedOpacity(
@@ -1539,8 +1675,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final stickerHtml = media.settings?.html?.trim() ?? '';
     final mediaUrl = media.mediaUrl ?? '';
     final effectiveStickerUrl = remoteSrc.isNotEmpty ? remoteSrc : mediaUrl;
-    print(
-        '[LOG] _buildMediaWidget - Sticker zone=${widget.zoneId} '
+    print('[LOG] _buildMediaWidget - Sticker zone=${widget.zoneId} '
         'remoteSrc=${formatForLog(remoteSrc)} '
         'mediaUrl=${formatForLog(mediaUrl)} '
         'hasHtml=${stickerHtml.isNotEmpty}');
@@ -1578,9 +1713,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         'mediaUrlLen': mediaUrl.length,
         'mediaUrlPreview': mediaUrl.isEmpty
             ? ''
-            : (mediaUrl.length > 60
-                ? mediaUrl.substring(0, 60)
-                : mediaUrl),
+            : (mediaUrl.length > 60 ? mediaUrl.substring(0, 60) : mediaUrl),
       },
     );
     // #endregion
@@ -1696,16 +1829,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final mediaUrl = media.mediaUrl ?? '';
     final adSource = sourceMedia ?? media;
 
-    print(
-        '[LOG] _buildMediaWidget - Media ID: ${adSource.id}, '
+    print('[LOG] _buildMediaWidget - Media ID: ${adSource.id}, '
         "Type: '$mediaType', URL: ${formatForLog(mediaUrl)}");
     if (isAdMediaType(adSource.mediaType)) {
-      print(
-          '[LOG] _buildMediaWidget - Ad slot '
+      print('[LOG] _buildMediaWidget - Ad slot '
           '(ad_campaign_id=${adSource.settings?.adCampaignId ?? "missing"})');
     }
-    print(
-        '[LOG] _buildMediaWidget - Settings HTML: '
+    print('[LOG] _buildMediaWidget - Settings HTML: '
         '${formatForLog(media.settings?.html, maxLen: 60)}');
 
     if (_isNestedCampaign(media)) {
@@ -1731,8 +1861,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         }
       }
       final zoneCount = nestedMedia.zones?.length ?? 0;
-      print(
-          "[LOG] _buildMediaWidget - Building nested layout "
+      print("[LOG] _buildMediaWidget - Building nested layout "
           '(${nestedMedia.mediaType}, $zoneCount zone(s))');
       if (zoneCount == 0) {
         return Center(
@@ -1764,16 +1893,21 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     }
 
     if (mediaType == 'web_app_instance') {
+      final webAppUrl = mediaItemWebAppInstanceUrl(media);
       print(
-          "[LOG] _buildMediaWidget - Building WBViewWidget for web_app_instance");
-      final cacheKey = '${widget.zoneId}_webapp_${media.id ?? ''}';
+          '[LOG] _buildMediaWidget - Building WBViewWidget for web_app_instance: '
+          '${formatForLog(webAppUrl)}');
+      if (webAppUrl.isEmpty) {
+        return const Center(child: Text('Web app URL missing'));
+      }
+      final cacheKey = '${widget.zoneId}_webapp_${media.id ?? ''}_$webAppUrl';
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
                 child: WBViewWidget(
                   key: ValueKey(cacheKey),
-                  media: mediaUrl,
+                  media: webAppUrl,
                   onMediaEnd: _onMediaEnd,
                 ),
               ),
@@ -2535,9 +2669,7 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
                 : (widget.svgUrl.startsWith('http://') ||
                         widget.svgUrl.startsWith('https://'))
                     ? 'http'
-                    : (widget.svgUrl.startsWith('file://')
-                        ? 'file'
-                        : 'path')),
+                    : (widget.svgUrl.startsWith('file://') ? 'file' : 'path')),
         'svgUrlLen': widget.svgUrl.length,
         'srcUrl': src.url,
         'srcUrlLen': src.url?.length ?? 0,
@@ -2603,8 +2735,7 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
                 'errorPreview': errPreview,
               },
             );
-            print(
-                '[ERROR] StickerHtmlWidget: Failed to load ${widget.svgUrl}: '
+            print('[ERROR] StickerHtmlWidget: Failed to load ${widget.svgUrl}: '
                 '${snapshot.error}');
             return const Center(
               child: Icon(Icons.broken_image_outlined, color: Colors.grey),
@@ -2774,10 +2905,6 @@ class _WBViewWidgetState extends State<WBViewWidget> {
 
   @override
   Widget build(BuildContext context) {
-    if (Platform.isMacOS) {
-      return const SizedBox.shrink();
-    }
-
     final String targetUrl;
     if (widget.media.startsWith('http://') ||
         widget.media.startsWith('https://')) {
@@ -2815,8 +2942,7 @@ class _WBViewWidgetState extends State<WBViewWidget> {
                 });
               },
               onReceivedError: (controller, request, error) {
-                print(
-                    "[LOG] WBViewWidget load error: ${error.description}");
+                print("[LOG] WBViewWidget load error: ${error.description}");
               },
               onReceivedHttpError: (controller, request, errorResponse) {
                 print(

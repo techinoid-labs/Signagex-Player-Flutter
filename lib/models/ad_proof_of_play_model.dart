@@ -50,25 +50,66 @@ class AdProofOfPlayRequest {
     this.errorMessage,
   });
 
-  Map<String, dynamic> toJson() => {
-        'player_code': playerCode,
-        'ad_campaign_id': adCampaignId,
-        'campaign_id': campaignId,
-        'ad_campaign_item_id': adCampaignItemId,
-        'content_id': contentId,
-        'slot_timeline_id': slotTimelineId,
-        'ad_zone_id': adZoneId,
-        'zone_id': zoneId,
-        'zone_name': zoneName,
-        'creative_name': creativeName,
-        'creative_url': creativeUrl,
-        'media_type': mediaType,
-        'status': status,
-        'duration_seconds': durationSeconds,
-        'completion_percent': completionPercent,
-        'played_at': playedAt,
-        'error_message': errorMessage ?? '',
-      };
+  Map<String, dynamic> toJson() {
+    final json = <String, dynamic>{
+      'player_code': playerCode,
+      'ad_campaign_id': adCampaignId,
+      'campaign_id': campaignId,
+      'ad_campaign_item_id': adCampaignItemId,
+      'content_id': contentId,
+      'slot_timeline_id': slotTimelineId,
+      'ad_zone_id': adZoneId,
+      'zone_id': zoneId,
+      'zone_name': zoneName,
+      'creative_name': creativeName,
+      'creative_url': creativeUrl,
+      'media_type': mediaType,
+      'status': status,
+      'duration_seconds': durationSeconds,
+      'completion_percent': completionPercent,
+      'played_at': playedAt,
+    };
+    if (status == 'failed') {
+      json['error_message'] = errorMessage ?? 'pending';
+    }
+    return json;
+  }
+}
+
+/// Server requires at least [ad_campaign_id] on proof-of-play payloads.
+bool canReportAdProofOfPlay(AdProofOfPlayRequest request) {
+  return request.adCampaignId.trim().isNotEmpty;
+}
+
+/// Resolves API [error_message] for failed proof-of-play (e.g. `"pending"`).
+String resolveAdProofOfPlayErrorMessage({
+  String? errorMessage,
+  String? skipReason,
+  bool? skipPlayback,
+}) {
+  final reason = (skipReason ?? '').trim();
+  if (reason.isNotEmpty) return reason;
+
+  final message = (errorMessage ?? '').trim();
+  if (message.isNotEmpty) {
+    switch (message) {
+      case 'outside_date_range':
+      case 'outside_time_range':
+      case 'no_flight_schedule':
+      case 'empty_slot_skip_playback':
+      case 'no_settings':
+      case 'restrictions_failed':
+      case 'campaign_not_allowed':
+      case 'no_schedule_configured':
+      case 'no_creative_url':
+        return 'pending';
+      default:
+        return message;
+    }
+  }
+
+  if (skipPlayback == true) return 'pending';
+  return 'pending';
 }
 
 bool isAdMediaType(String? mediaType) {

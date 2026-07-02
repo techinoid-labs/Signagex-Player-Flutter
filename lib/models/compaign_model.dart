@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/utils/agent_debug_log.dart';
+import 'package:digital_signage/utils/constants.dart';
 
 int? _asInt(dynamic value) {
   if (value == null) return null;
@@ -14,9 +15,10 @@ int? _asInt(dynamic value) {
 String? _jsonStringField(Map<String, dynamic> json, List<String> keys) {
   for (final key in keys) {
     final v = json[key];
-    if (v != null && v.toString().isNotEmpty) {
-      return v.toString();
-    }
+    if (v == null) continue;
+    final s = v.toString().trim();
+    if (s.isEmpty || s.toLowerCase() == 'null') continue;
+    return s;
   }
   return null;
 }
@@ -401,10 +403,7 @@ class MediaItem {
     Map<String, dynamic> obj,
     Map<String, dynamic> propMap,
   ) {
-    final type = (obj['type'] ??
-            obj['mediaType'] ??
-            obj['media_type'] ??
-            '')
+    final type = (obj['type'] ?? obj['mediaType'] ?? obj['media_type'] ?? '')
         .toString()
         .toLowerCase();
     if (type == 'composition' || type == 'campaign') return true;
@@ -413,14 +412,14 @@ class MediaItem {
     if (compositionMapFromJson(merged) != null) return true;
     if (compositionCampaignIdFromJson(merged, null) != null) return true;
 
-    final kind = (propMap['kind'] ?? obj['name'] ?? '').toString().toLowerCase();
+    final kind =
+        (propMap['kind'] ?? obj['name'] ?? '').toString().toLowerCase();
     if (kind.contains('composition')) return true;
 
-    final contentType = (propMap['content_type'] ??
-            propMap['contentType'] ??
-            '')
-        .toString()
-        .toLowerCase();
+    final contentType =
+        (propMap['content_type'] ?? propMap['contentType'] ?? '')
+            .toString()
+            .toLowerCase();
     if (contentType == 'composition' || contentType.contains('composition')) {
       return true;
     }
@@ -515,7 +514,8 @@ class MediaItem {
     final fill = props['fill']?.toString() ?? '#cccccc';
     final stroke =
         props['stroke']?.toString() ?? props['strokeColor']?.toString() ?? '';
-    final strokeWidth = _asInt(props['strokeWidth'] ?? props['stroke_width']) ?? 0;
+    final strokeWidth =
+        _asInt(props['strokeWidth'] ?? props['stroke_width']) ?? 0;
     final path = props['path']?.toString() ?? props['d']?.toString() ?? '';
     final points = props['points']?.toString() ?? '';
 
@@ -570,12 +570,10 @@ class MediaItem {
     Map<String, dynamic> obj,
     int index,
   ) {
-    final type = (obj['type'] ??
-            obj['mediaType'] ??
-            obj['media_type'] ??
-            'content')
-        .toString()
-        .toLowerCase();
+    final type =
+        (obj['type'] ?? obj['mediaType'] ?? obj['media_type'] ?? 'content')
+            .toString()
+            .toLowerCase();
     if (type == 'svg' || type == 'icon' || type == 'svg+xml') {
       return _mediaItemFromCompositionObject(
         {...obj, 'type': 'shape'},
@@ -583,8 +581,7 @@ class MediaItem {
       );
     }
     final props = obj['properties'];
-    final propMap =
-        props is Map<String, dynamic> ? props : <String, dynamic>{};
+    final propMap = props is Map<String, dynamic> ? props : <String, dynamic>{};
 
     String mediaType;
     String? mediaUrl;
@@ -711,7 +708,9 @@ class MediaItem {
             'looksNested': looksNested,
             'hasCompMap': propMap['composition'] != null,
             'contentId': propMap['content_id'] ?? obj['content_id'],
-            'urlLen': (propMap['mediaUrl'] ?? obj['mediaUrl'] ?? '').toString().length,
+            'urlLen': (propMap['mediaUrl'] ?? obj['mediaUrl'] ?? '')
+                .toString()
+                .length,
             'isBase64': isRawBase64ImagePayload(
               (propMap['mediaUrl'] ?? obj['mediaUrl'])?.toString(),
             ),
@@ -926,8 +925,7 @@ class MediaItem {
     if (zones == null) return false;
     for (final z in zones) {
       for (final m in z.mediaItems ?? const <MediaItem>[]) {
-        if ((m.mediaType ?? '').toLowerCase() == 'shape' &&
-            _shapeHasSvg(m)) {
+        if ((m.mediaType ?? '').toLowerCase() == 'shape' && _shapeHasSvg(m)) {
           return true;
         }
       }
@@ -982,9 +980,8 @@ class MediaItem {
 
   factory MediaItem.fromJson(Map<String, dynamic> json) {
     final mediaType = _mediaTypeFromJson(json);
-    Settings? settings = json["settings"] == null
-        ? null
-        : Settings.fromJson(json["settings"]);
+    Settings? settings =
+        json["settings"] == null ? null : Settings.fromJson(json["settings"]);
     if (isAdMediaType(mediaType?.toString()) ||
         idLooksLikeAdSlot(json['id']?.toString())) {
       settings = Settings.mergeAdFields(json, settings);
@@ -1125,6 +1122,12 @@ class Settings {
   String? creativeName;
   String? creativeUrl;
   String? creativeMediaType;
+  String? adFlightStartDate;
+  String? adFlightEndDate;
+  String? adFlightStartTime;
+  String? adFlightEndTime;
+  bool? adSkipPlayback;
+  String? adSkipReason;
 
   Settings({
     this.duration,
@@ -1155,13 +1158,42 @@ class Settings {
     this.creativeName,
     this.creativeUrl,
     this.creativeMediaType,
+    this.adFlightStartDate,
+    this.adFlightEndDate,
+    this.adFlightStartTime,
+    this.adFlightEndTime,
+    this.adSkipPlayback,
+    this.adSkipReason,
   });
+
+  static String? _filenameFromUrl(String? url) {
+    if (url == null || url.trim().isEmpty) return null;
+    final path = url.split('?').first;
+    final name = path.split('/').last.trim();
+    return name.isNotEmpty ? name : null;
+  }
 
   static String? _jsonString(Map<String, dynamic> json, List<String> keys) {
     for (final key in keys) {
       final v = json[key];
-      if (v != null && v.toString().isNotEmpty) {
-        return v.toString();
+      if (v == null) continue;
+      final s = v.toString().trim();
+      if (s.isEmpty || s.toLowerCase() == 'null') continue;
+      return s;
+    }
+    return null;
+  }
+
+  static bool? _readSkipPlayback(
+    Map<String, dynamic> json,
+    Map<String, dynamic>? firstItem,
+  ) {
+    for (final source in [json, if (firstItem != null) firstItem]) {
+      if (source['skip_playback'] == true || source['skipPlayback'] == true) {
+        return true;
+      }
+      if (source['skip_playback'] == false || source['skipPlayback'] == false) {
+        return false;
       }
     }
     return null;
@@ -1194,8 +1226,8 @@ class Settings {
       strokeWidth: nested?.strokeWidth,
       shadowBlur: nested?.shadowBlur,
       kind: nested?.kind,
-      contentId: nested?.contentId ??
-          _jsonString(json, ['content_id', 'contentId']),
+      contentId:
+          nested?.contentId ?? _jsonString(json, ['content_id', 'contentId']),
       rotation: nested?.rotation,
       remoteSrc: nested?.remoteSrc,
       iframeSrc: nested?.iframeSrc,
@@ -1216,11 +1248,48 @@ class Settings {
     Map<String, dynamic> json,
     Settings? base,
   ) {
-    final nested = base ?? (json["settings"] is Map<String, dynamic>
-        ? Settings.fromJson(json["settings"] as Map<String, dynamic>)
-        : null);
+    final nested = base ??
+        (json["settings"] is Map<String, dynamic>
+            ? Settings.fromJson(json["settings"] as Map<String, dynamic>)
+            : null);
+
+    Map<String, dynamic>? firstItem;
+    final items = json['items'];
+    if (items is List && items.isNotEmpty && items.first is Map) {
+      firstItem = Map<String, dynamic>.from(items.first as Map);
+    }
+
+    String? pickField(List<String> keys) {
+      final fromJson = _jsonString(json, keys);
+      if (fromJson != null && fromJson.isNotEmpty) return fromJson;
+      if (firstItem != null) {
+        return _jsonString(firstItem, keys);
+      }
+      return null;
+    }
+
+    String? pickUrl(List<String> keys) {
+      final fromJson = _jsonString(json, keys);
+      if (fromJson != null && fromJson.isNotEmpty) {
+        return _cleanMediaUrl(fromJson);
+      }
+      if (firstItem != null) {
+        final fromItem = _cleanMediaUrl(
+          firstItem['mediaUrl'] ??
+              firstItem['media_url'] ??
+              firstItem['creative_url'] ??
+              firstItem['creativeUrl'],
+        );
+        if (fromItem != null && fromItem.isNotEmpty) return fromItem;
+      }
+      return null;
+    }
+
     return Settings(
-      duration: nested?.duration ?? _asInt(json["duration"]),
+      duration: nested?.duration ??
+          _asInt(json['duration']) ??
+          _asInt(json['duration_seconds']) ??
+          _asInt(firstItem?['duration_seconds']),
       transition: nested?.transition ?? json["transition"],
       ratio: nested?.ratio ?? json["ratio"],
       volume: nested?.volume ?? _asInt(json["volume"]),
@@ -1236,37 +1305,48 @@ class Settings {
       strokeWidth: nested?.strokeWidth ?? _asInt(json["strokeWidth"]),
       shadowBlur: nested?.shadowBlur ?? _asInt(json["shadowBlur"]),
       kind: nested?.kind ?? json["kind"],
-      contentId: nested?.contentId ??
-          _jsonString(json, ['content_id', 'contentId']),
+      contentId: nested?.contentId ?? pickField(['content_id', 'contentId']),
       rotation: nested?.rotation ?? _asInt(json["rotation"]),
       remoteSrc: nested?.remoteSrc ?? json["remoteSrc"],
-      iframeSrc: nested?.iframeSrc ??
-          _jsonString(json, ['iframeSrc', 'iframe_src']),
-      adCampaignId: nested?.adCampaignId ??
-          _jsonString(json, ['ad_campaign_id', 'adCampaignId']),
+      iframeSrc:
+          nested?.iframeSrc ?? _jsonString(json, ['iframeSrc', 'iframe_src']),
+      adCampaignId:
+          nested?.adCampaignId ?? pickField(['ad_campaign_id', 'adCampaignId']),
       adCampaignItemId: nested?.adCampaignItemId ??
-          _jsonString(json, ['ad_campaign_item_id', 'adCampaignItemId']),
+          pickField(['ad_campaign_item_id', 'adCampaignItemId']),
       slotTimelineId: nested?.slotTimelineId ??
-          _jsonString(json, ['slot_timeline_id', 'slotTimelineId']),
-      adZoneId: nested?.adZoneId ??
-          _jsonString(json, ['ad_zone_id', 'adZoneId']),
-      zoneName: nested?.zoneName ??
-          _jsonString(json, ['zone_name', 'zoneName']),
+          pickField(['slot_timeline_id', 'slotTimelineId']),
+      adZoneId: nested?.adZoneId ?? pickField(['ad_zone_id', 'adZoneId']),
+      zoneName: nested?.zoneName ?? pickField(['zone_name', 'zoneName']),
       creativeName: nested?.creativeName ??
-          _jsonString(json, ['creative_name', 'creativeName']),
+          pickField(['creative_name', 'creativeName', 'name']) ??
+          _filenameFromUrl(pickUrl(['creative_url', 'creativeUrl', 'media_url', 'mediaUrl'])),
       creativeUrl: nested?.creativeUrl ??
+          pickUrl(['creative_url', 'creativeUrl', 'media_url', 'mediaUrl']) ??
           _cleanMediaUrl(
-            json["creative_url"] ??
-                json["creativeUrl"] ??
-                json["mediaUrl"],
+            json["creative_url"] ?? json["creativeUrl"] ?? json["mediaUrl"],
           ),
       creativeMediaType: nested?.creativeMediaType ??
-          _jsonString(json, [
+          pickField([
             'creative_media_type',
             'creativeMediaType',
             'media_type',
             'mediaType',
+            'content_media_type',
+            'contentMediaType',
           ]),
+      adFlightStartDate:
+          nested?.adFlightStartDate ?? pickField(['start_date', 'startDate']),
+      adFlightEndDate:
+          nested?.adFlightEndDate ?? pickField(['end_date', 'endDate']),
+      adFlightStartTime:
+          nested?.adFlightStartTime ?? pickField(['start_time', 'startTime']),
+      adFlightEndTime:
+          nested?.adFlightEndTime ?? pickField(['end_time', 'endTime']),
+      adSkipPlayback:
+          _readSkipPlayback(json, firstItem) ?? nested?.adSkipPlayback,
+      adSkipReason:
+          nested?.adSkipReason ?? pickField(['skip_reason', 'skipReason']),
     );
   }
 
@@ -1301,8 +1381,14 @@ class Settings {
         zoneName: json["zone_name"],
         creativeName: json["creative_name"],
         creativeUrl: _cleanMediaUrl(json["creative_url"]),
-        creativeMediaType:
-            json["creative_media_type"] ?? json["media_type"],
+        creativeMediaType: json["creative_media_type"] ?? json["media_type"],
+        adFlightStartDate: json["start_date"] ?? json["startDate"],
+        adFlightEndDate: json["end_date"] ?? json["endDate"],
+        adFlightStartTime: json["start_time"] ?? json["startTime"],
+        adFlightEndTime: json["end_time"] ?? json["endTime"],
+        adSkipPlayback:
+            json["skip_playback"] == true || json["skipPlayback"] == true,
+        adSkipReason: json["skip_reason"] ?? json["skipReason"],
       );
 
   Map<String, dynamic> toJson() => {
@@ -1334,6 +1420,12 @@ class Settings {
         "creative_name": creativeName,
         "creative_url": creativeUrl,
         "creative_media_type": creativeMediaType,
+        "start_date": adFlightStartDate,
+        "end_date": adFlightEndDate,
+        "start_time": adFlightStartTime,
+        "end_time": adFlightEndTime,
+        "skip_playback": adSkipPlayback,
+        "skip_reason": adSkipReason,
       };
 }
 
@@ -1345,7 +1437,54 @@ bool isAdPlaybackCreativeId(String? id) {
 bool idLooksLikeAdSlot(String? id) {
   if (isAdPlaybackCreativeId(id)) return false;
   final s = (id ?? '').toLowerCase();
-  return s.contains('adslot') || s.contains('ad_slot');
+  if (s.isEmpty) return false;
+  return s.contains('adslot') ||
+      s.contains('ad_slot') ||
+      s.contains('_adslot') ||
+      RegExp(r'_ad[a-z]').hasMatch(s);
+}
+
+bool mediaItemIsAdSlot(MediaItem media) {
+  return media.isAd || idLooksLikeAdSlot(media.id);
+}
+
+bool campaignPayloadContainsAdSlots(CampaignResponse? model) {
+  final campaigns = model?.data?.playerCampaigns;
+  if (campaigns == null) return false;
+  for (final campaign in campaigns) {
+    for (final zone in campaign.zones ?? const <CampaignZone>[]) {
+      for (final media in zone.mediaItems ?? const <MediaItem>[]) {
+        if (mediaItemIsAdSlot(media)) return true;
+      }
+    }
+  }
+  return false;
+}
+
+bool storedPayloadContainsAdSlots(Map<String, dynamic> raw) {
+  final data = raw['data'];
+  if (data is! Map<String, dynamic>) return false;
+  final campaigns = data['playerCampaigns'] ?? data['player_campaigns'];
+  if (campaigns is! List) return false;
+  for (final campaign in campaigns) {
+    if (campaign is! Map<String, dynamic>) continue;
+    final zones = campaign['zones'];
+    if (zones is! List) continue;
+    for (final zone in zones) {
+      if (zone is! Map<String, dynamic>) continue;
+      final items = zone['mediaItems'] ?? zone['media_items'];
+      if (items is! List) continue;
+      for (final item in items) {
+        if (item is! Map<String, dynamic>) continue;
+        final id = item['id']?.toString();
+        final type = item['mediaType'] ?? item['media_type'];
+        if (isAdMediaType(type?.toString()) || idLooksLikeAdSlot(id)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
 }
 
 bool hasAdProofMetadata(Settings? settings) {
@@ -1354,6 +1493,232 @@ bool hasAdProofMetadata(Settings? settings) {
       (settings.adZoneId?.isNotEmpty ?? false) ||
       (settings.slotTimelineId?.isNotEmpty ?? false) ||
       (settings.adCampaignItemId?.isNotEmpty ?? false);
+}
+
+bool isAdCampaignUpdateMessage(String? message) {
+  return (message ?? '').toLowerCase().contains('ad campaign update');
+}
+
+DateTime? _parseScheduleDateOnly(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return null;
+  final value = raw.trim();
+  try {
+    if (value.contains('T')) {
+      final parsed = DateTime.parse(value);
+      return DateTime(parsed.year, parsed.month, parsed.day);
+    }
+    final parts = value.split('-');
+    if (parts.length == 3) {
+      return DateTime(
+        int.parse(parts[0]),
+        int.parse(parts[1]),
+        int.parse(parts[2]),
+      );
+    }
+    final parsed = DateTime.parse(value);
+    return DateTime(parsed.year, parsed.month, parsed.day);
+  } catch (_) {
+    return null;
+  }
+}
+
+DateTime? _parseScheduleTimeToday(String? raw) {
+  return _parseScheduleTimeOnDate(raw, DateTime.now());
+}
+
+/// Ad flight times from the API are UTC (same as proof-of-play timestamps).
+DateTime? _parseScheduleTimeUtcToday(String? raw) {
+  return _parseScheduleTimeOnDate(raw, DateTime.now().toUtc());
+}
+
+DateTime? _parseScheduleTimeOnDate(String? raw, DateTime anchor) {
+  if (raw == null || raw.trim().isEmpty) return null;
+  final parts = raw.trim().split(':');
+  if (parts.length < 2) return null;
+  final hour = int.tryParse(parts[0]);
+  final minute = int.tryParse(parts[1]);
+  final second = parts.length > 2 ? int.tryParse(parts[2]) : 0;
+  if (hour == null || minute == null) return null;
+  final isUtc = anchor.isUtc;
+  return isUtc
+      ? DateTime.utc(
+          anchor.year, anchor.month, anchor.day, hour, minute, second ?? 0)
+      : DateTime(
+          anchor.year, anchor.month, anchor.day, hour, minute, second ?? 0);
+}
+
+bool _isTimeInAdFlightWindow(
+  DateTime now,
+  DateTime startTime,
+  DateTime endTime,
+) {
+  // Same-day window, e.g. 09:00 -> 17:00 (end inclusive)
+  if (!endTime.isBefore(startTime)) {
+    return !now.isBefore(startTime) && !now.isAfter(endTime);
+  }
+  // Overnight window, e.g. 14:20 -> 02:35 (next day)
+  return !now.isBefore(startTime) || !now.isAfter(endTime);
+}
+
+/// Result of evaluating an ad slot against its flight schedule.
+class AdSlotScheduleEvaluation {
+  final bool hasCreative;
+  final bool? inDateRange;
+  final bool? inTimeRange;
+  final bool skipPlayback;
+  final bool shouldPlay;
+  final String reason;
+
+  const AdSlotScheduleEvaluation({
+    required this.hasCreative,
+    required this.inDateRange,
+    required this.inTimeRange,
+    required this.skipPlayback,
+    required this.shouldPlay,
+    required this.reason,
+  });
+}
+
+AdSlotScheduleEvaluation evaluateAdSlotSchedule(MediaItem media) {
+  final settings = media.settings;
+  final hasCreative = media.adCreativeUrl.isNotEmpty;
+  final skipPlayback = settings?.adSkipPlayback == true;
+
+  if (settings == null) {
+    return AdSlotScheduleEvaluation(
+      hasCreative: hasCreative,
+      inDateRange: null,
+      inTimeRange: null,
+      skipPlayback: skipPlayback,
+      shouldPlay: false,
+      reason: 'no_settings',
+    );
+  }
+
+  // Empty slot: skip_playback marks server empty/pending slots.
+  if (!hasCreative) {
+    return AdSlotScheduleEvaluation(
+      hasCreative: false,
+      inDateRange: null,
+      inTimeRange: null,
+      skipPlayback: skipPlayback,
+      shouldPlay: false,
+      reason: skipPlayback ? 'empty_slot_skip_playback' : 'no_creative',
+    );
+  }
+
+  final nowUtc = DateTime.now().toUtc();
+  final startDate = _parseScheduleDateOnly(settings.adFlightStartDate);
+  final endDate = _parseScheduleDateOnly(settings.adFlightEndDate);
+  bool? inDateRange;
+  if (startDate != null && endDate != null) {
+    final todayUtc =
+        DateTime.utc(nowUtc.year, nowUtc.month, nowUtc.day);
+    inDateRange =
+        !todayUtc.isBefore(startDate) && !todayUtc.isAfter(endDate);
+    if (inDateRange == false) {
+      return AdSlotScheduleEvaluation(
+        hasCreative: true,
+        inDateRange: false,
+        inTimeRange: null,
+        skipPlayback: skipPlayback,
+        shouldPlay: false,
+        reason: 'outside_date_range',
+      );
+    }
+  }
+
+  final startTime = _parseScheduleTimeUtcToday(settings.adFlightStartTime);
+  final endTime = _parseScheduleTimeUtcToday(settings.adFlightEndTime);
+  bool? inTimeRange;
+  if (startTime != null && endTime != null) {
+    inTimeRange = _isTimeInAdFlightWindow(nowUtc, startTime, endTime);
+    if (inTimeRange == false) {
+      return AdSlotScheduleEvaluation(
+        hasCreative: true,
+        inDateRange: inDateRange,
+        inTimeRange: false,
+        skipPlayback: skipPlayback,
+        shouldPlay: false,
+        reason: 'outside_time_range',
+      );
+    }
+  }
+
+  final hasFlightWindow = startDate != null ||
+      endDate != null ||
+      startTime != null ||
+      endTime != null;
+  if (!hasFlightWindow) {
+    return AdSlotScheduleEvaluation(
+      hasCreative: true,
+      inDateRange: inDateRange,
+      inTimeRange: inTimeRange,
+      skipPlayback: skipPlayback,
+      shouldPlay: false,
+      reason: 'no_flight_schedule',
+    );
+  }
+
+  return AdSlotScheduleEvaluation(
+    hasCreative: true,
+    inDateRange: inDateRange,
+    inTimeRange: inTimeRange,
+    skipPlayback: skipPlayback,
+    shouldPlay: true,
+    reason: 'in_schedule',
+  );
+}
+
+/// Ad campaign publishes carry flight windows on the ad_slot payload, not always_play.
+bool isAdSlotInFlightSchedule(MediaItem media) {
+  return evaluateAdSlotSchedule(media).shouldPlay;
+}
+
+/// Human-readable ad slot flight window for debug logs.
+String describeAdSlotFlightSchedule(MediaItem media) {
+  final s = media.settings;
+  final e = evaluateAdSlotSchedule(media);
+  final nowLocal = DateTime.now();
+  final nowUtc = nowLocal.toUtc();
+  String flag(bool? value) => value == null ? 'n/a' : (value ? 'yes' : 'no');
+  final parts = <String>[
+    'now_local=${nowLocal.toIso8601String()}',
+    'now_utc=${formatProofOfPlayPlayedAt(nowUtc)}',
+    'skip_playback=${s?.adSkipPlayback ?? "unset"}',
+    'start_date=${s?.adFlightStartDate ?? "unset"}',
+    'end_date=${s?.adFlightEndDate ?? "unset"}',
+    'start_time_utc=${s?.adFlightStartTime ?? "unset"}',
+    'end_time_utc=${s?.adFlightEndTime ?? "unset"}',
+    'has_creative=${e.hasCreative}',
+    'in_date_range=${flag(e.inDateRange)}',
+    'in_time_range=${flag(e.inTimeRange)}',
+    'should_play=${e.shouldPlay}',
+    'reason=${e.reason}',
+  ];
+  return parts.join(', ');
+}
+
+bool shouldPlayMediaForSchedule(
+  MediaItem media, {
+  required bool Function(List<Restriction>? restrictions) checkRestrictions,
+}) {
+  // Ad slots always use flight window from ad_slot payload, never schedule.always_play.
+  if (mediaItemIsAdSlot(media)) {
+    return isAdSlotInFlightSchedule(media);
+  }
+
+  final schedule = media.schedule;
+  if (schedule == null || (schedule.alwaysPlay ?? false)) {
+    return true;
+  }
+
+  final restrictions = schedule.restrictions;
+  if (restrictions != null && restrictions.isNotEmpty) {
+    return checkRestrictions(restrictions);
+  }
+
+  return false;
 }
 
 /// Composition campaigns extracted from publish payload (not always top-level).
@@ -1384,9 +1749,8 @@ String? compositionCampaignIdFromJson(
   final nested = settings?.compositionCampaignId?.trim();
   if (nested != null && nested.isNotEmpty) return nested;
 
-  final mediaUrl = (json['mediaUrl'] ?? settings?.creativeUrl ?? '')
-      .toString()
-      .trim();
+  final mediaUrl =
+      (json['mediaUrl'] ?? settings?.creativeUrl ?? '').toString().trim();
   if (mediaUrl.startsWith('composition_')) return mediaUrl;
 
   final contentId = _jsonStringField(json, ['content_id', 'contentId']) ??
@@ -1441,9 +1805,8 @@ Campaign? _campaignFromCompositionMediaMap(Map<String, dynamic> json) {
             json['name'] ??
             'Composition')
         .toString(),
-    resolution: resolutionMap == null
-        ? null
-        : Resolution.fromJson(resolutionMap),
+    resolution:
+        resolutionMap == null ? null : Resolution.fromJson(resolutionMap),
     campaignSchedule: json['campaign_schedule'] is Map<String, dynamic>
         ? CampaignSchedule.fromJson(
             json['campaign_schedule'] as Map<String, dynamic>,
@@ -1533,8 +1896,7 @@ MediaItem _mergeCompositionInMediaItem(
     if (linked == null && compositions.length == 1) {
       linked = compositions.first;
     }
-    final chosen =
-        MediaItem._pickCompositionZones(result.zones, linked?.zones);
+    final chosen = MediaItem._pickCompositionZones(result.zones, linked?.zones);
     if (chosen != null && chosen.isNotEmpty) {
       result = MediaItem(
         id: result.id,
@@ -1599,8 +1961,9 @@ List<CampaignZone> _mergeCompositionInZoneList(
     final items = zone.mediaItems;
     if (items == null) return zone;
 
-    final mergedItems =
-        items.map((m) => _mergeCompositionInMediaItem(m, compositions)).toList();
+    final mergedItems = items
+        .map((m) => _mergeCompositionInMediaItem(m, compositions))
+        .toList();
 
     var zoneChanged = false;
     if (mergedItems.length != items.length) {
@@ -1766,8 +2129,7 @@ MediaItem resolveCompositionMediaItem(
   if (type != 'composition') return media;
 
   final linked = findLinkedCompositionCampaign(media, campaigns);
-  final zones =
-      MediaItem._pickCompositionZones(media.zones, linked?.zones);
+  final zones = MediaItem._pickCompositionZones(media.zones, linked?.zones);
   if (zones == null || zones.isEmpty) return media;
 
   return MediaItem(
@@ -1785,12 +2147,39 @@ bool mediaItemIsWebAppIframe(MediaItem media) {
   return kind.contains('web-app') || kind.contains('web_app');
 }
 
+/// Resolves playlist/campaign web URLs (absolute, path-only, or slug).
+String normalizeRemoteWebUrl(String? raw, {String? fallbackIframe}) {
+  final iframe = fallbackIframe?.trim();
+  if (iframe != null && iframe.isNotEmpty) {
+    return _resolveAbsoluteWebUrl(iframe);
+  }
+  final url = raw?.trim() ?? '';
+  if (url.isEmpty) return '';
+  return _resolveAbsoluteWebUrl(url);
+}
+
+String _resolveAbsoluteWebUrl(String raw) {
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+  if (raw.startsWith('/')) {
+    final origin = Uri.parse(baseurl).origin;
+    return '$origin$raw';
+  }
+  final prefix = baseurl.endsWith('/') ? baseurl : '$baseurl/';
+  return '$prefix$raw';
+}
+
+String mediaItemWebAppInstanceUrl(MediaItem media) {
+  return normalizeRemoteWebUrl(
+    media.mediaUrl,
+    fallbackIframe: media.settings?.iframeSrc,
+  );
+}
+
 String mediaItemWebAppIframeUrl(MediaItem media) {
-  final iframe = media.settings?.iframeSrc?.trim();
-  if (iframe != null && iframe.isNotEmpty) return iframe;
-  final url = media.mediaUrl?.trim() ?? '';
-  if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  return '';
+  return normalizeRemoteWebUrl(
+    media.mediaUrl,
+    fallbackIframe: media.settings?.iframeSrc,
+  );
 }
 
 extension MediaItemAdExtensions on MediaItem {
@@ -1847,8 +2236,7 @@ extension MediaItemAdExtensions on MediaItem {
   }
 
   String get adCreativeName =>
-      settings?.creativeName ??
-      adCreativeUrl.split('/').last.split('?').first;
+      settings?.creativeName ?? adCreativeUrl.split('/').last.split('?').first;
 
   AdProofOfPlayRequest toProofOfPlayRequest({
     required String playerCode,
@@ -1861,8 +2249,15 @@ extension MediaItemAdExtensions on MediaItem {
   }) {
     final s = settings;
     final durationSeconds = s?.duration ?? 0;
-    final resolvedCompletion = completionPercent ??
-        (status == 'completed' ? 100 : 0);
+    final resolvedCompletion =
+        completionPercent ?? (status == 'completed' ? 100 : 0);
+    final resolvedError = status == 'failed'
+        ? resolveAdProofOfPlayErrorMessage(
+            errorMessage: errorMessage,
+            skipReason: s?.adSkipReason,
+            skipPlayback: s?.adSkipPlayback,
+          )
+        : null;
 
     return AdProofOfPlayRequest(
       playerCode: playerCode,
@@ -1881,7 +2276,7 @@ extension MediaItemAdExtensions on MediaItem {
       durationSeconds: durationSeconds > 0 ? durationSeconds : 0,
       completionPercent: resolvedCompletion,
       playedAt: formatProofOfPlayPlayedAt(playedAt),
-      errorMessage: errorMessage,
+      errorMessage: resolvedError,
     );
   }
 

@@ -23,7 +23,7 @@ void main() {
         debugShowCheckedModeBanner: false,
         home: RepaintBoundary(
           key: boundaryKey,
-          child: MqttProvider(
+          child: const MqttProvider(
             child: MyHomePage(),
           ),
         )),
@@ -31,6 +31,8 @@ void main() {
 }
 
 class MyHomePage extends StatelessWidget {
+  const MyHomePage({super.key});
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(

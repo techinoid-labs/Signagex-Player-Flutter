@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 
 import 'package:digital_signage/models/play_list_model.dart';
+import 'package:digital_signage/models/compaign_model.dart';
 import 'package:digital_signage/view_models/mqtt_view_model.dart';
 
 class PlaylistScreen extends StatefulWidget {
@@ -273,17 +274,33 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     return webExtensions.any((ext) => path.endsWith(ext));
   }
 
+  bool _isWebViewMedia(Media media) {
+    final type = media.mediaType.toLowerCase();
+    if (type == 'web_app_instance' || type == 'text/html') return true;
+    final url = media.mediaUrl.trim();
+    return isWebFile(url) ||
+        url.startsWith('http://') ||
+        url.startsWith('https://');
+  }
+
+  String _webViewUrlForMedia(Media media) {
+    return normalizeRemoteWebUrl(media.mediaUrl);
+  }
+
   void _loadMedia(Media nextMedia) {
-    print("[LOG] Loading media: ${nextMedia.mediaUrl}");
+    final webViewUrl = _webViewUrlForMedia(nextMedia);
+    print(
+        '[LOG] Loading media: type=${nextMedia.mediaType}, url=${webViewUrl.isNotEmpty ? webViewUrl : nextMedia.mediaUrl}');
     if (isVideoFile(nextMedia.mediaUrl)) {
       _initializeNextVideo(nextMedia);
-    } else if (isWebFile(nextMedia.mediaUrl)) {
-      // Ensure you are not reinitializing the WebView if the file is the same
+    } else if (_isWebViewMedia(nextMedia)) {
       if (_currentIndex > 0 &&
-          widget.mediaPaths[_currentIndex - 1].mediaUrl == nextMedia.mediaUrl) {
-        print("[LOG] Skipping recreation of the same WebView");
+          _webViewUrlForMedia(widget.mediaPaths[_currentIndex - 1]) ==
+              webViewUrl) {
+        print('[LOG] Skipping recreation of the same WebView');
         return;
       }
+      setState(() {});
     } else {
       print("[LOG] Current media is an image: ${nextMedia.mediaUrl}");
       int durationSeconds =
@@ -552,11 +569,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   aspectRatio: getAspectRatio(currentMedia.settings.ratio),
                   transitionType: currentMedia.settings.transition,
                 )
-              : isWebFile(currentMedia.mediaUrl)
+              : _isWebViewMedia(currentMedia)
                   ? SizedBox.expand(
-                      key: ValueKey(currentMedia.mediaUrl),
+                      key: ValueKey(_webViewUrlForMedia(currentMedia)),
                       child: WBViewWidget(
-                          media: currentMedia.mediaUrl,
+                          media: _webViewUrlForMedia(currentMedia),
                           onMediaEnd: _onMediaEnd,
                           transitionType: currentMedia.settings.transition),
                     )
@@ -833,20 +850,6 @@ class _WBViewWidgetState extends State<WBViewWidget> {
 
   @override
   Widget build(BuildContext context) {
-    // On macOS, avoid embedded WebViews (they cause recreating_view). Open externally.
-    if (Platform.isMacOS) {
-      print(
-          "[LOG] Playlist WBViewWidget - macOS detected, opening in external browser");
-      // Best-effort: treat media as URL if it looks like one, otherwise do nothing.
-      if (widget.media.startsWith('http://') ||
-          widget.media.startsWith('https://')) {
-        // Launch externally via url_launcher (handled in ViewModel).
-        // We don't have direct access here, so use a platform channel or leave as is.
-      }
-      return const SizedBox.shrink();
-    }
-
-    // Decide whether this is a local file path or a remote URL
     final String targetUrl;
     if (widget.media.startsWith('http://') ||
         widget.media.startsWith('https://')) {

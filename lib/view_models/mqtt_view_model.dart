@@ -22,10 +22,10 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
-import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/models/intractivity_model.dart'
     hide MediaItem, Settings;
 import 'package:digital_signage/models/play_list_model.dart';
+import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 
@@ -72,6 +72,17 @@ class MqttViewModel extends ChangeNotifier {
   CampaignModel? _campaignModel;
 
   CampaignModel? get campaignModel => _campaignModel;
+
+  bool get isAdCampaignUpdate {
+    if (isAdCampaignUpdateMessage(_campaignModel?.data?.message)) return true;
+    if (campaignPayloadContainsAdSlots(_campaignModel)) return true;
+    final data = storedJsonObj['data'];
+    if (data is Map) {
+      if (isAdCampaignUpdateMessage(data['message']?.toString())) return true;
+    }
+    if (storedPayloadContainsAdSlots(storedJsonObj)) return true;
+    return false;
+  }
 
   InteractivityModel? _interactivityModel;
 
@@ -180,15 +191,15 @@ class MqttViewModel extends ChangeNotifier {
         final base64String = base64Encode(compressedImageBytes);
 
         // Publish the Base64-encoded string
-        Map<String, dynamic> sendLog = {
-          "action": "screenShot",
-          "name": "screenshot",
-          "type": "screenShot",
-          "dateTime": DateTime.now()
-              .toIso8601String(), // Current date and time in ISO 8601 format
-        };
+        // Map<String, dynamic> sendLog = {
+        //   "action": "screenShot",
+        //   "name": "screenshot",
+        //   "type": "screenShot",
+        //   "dateTime": DateTime.now()
+        //       .toIso8601String(), // Current date and time in ISO 8601 format
+        // };
 
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
+        // _mqttClientService.publish(topic, jsonEncode(sendLog));
         _mqttClientService.publishMessage(topic, utf8.encode(base64String));
       } else {
         debugPrint("Failed to capture screenshot: ByteData is null.");
@@ -949,14 +960,14 @@ EOF
       (count, playlist) => count + (playlist.media?.length ?? 0),
     );
 
-    Map<String, dynamic> sendLog = {
-      "action": "player_logs",
-      "log": "Download Playlist",
-      "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-      "type": "info",
-      "date_time": DateTime.now().toIso8601String(),
-    };
-    _mqttClientService.publish(topic, jsonEncode(sendLog));
+    // Map<String, dynamic> sendLog = {
+    //   "action": "player_logs",
+    //   "log": "Download Playlist",
+    //   "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+    //   "type": "info",
+    //   "date_time": DateTime.now().toIso8601String(),
+    // };
+    // _mqttClientService.publish(topic, jsonEncode(sendLog));
     print("Total media files to download: $_downloadCount");
 
     if (_downloadCount > 0) {
@@ -1010,16 +1021,16 @@ EOF
             _updateOverallProgress(completedDownloads);
           } catch (error) {
             print("Error downloading file: $error");
-            Map<String, dynamic> errorLog = {
-              "action": "player_logs",
-              "log": "Download Playlist",
-              "name":
-                  "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-              "type": "error",
-              "date_time": DateTime.now().toIso8601String(),
-            };
+            // Map<String, dynamic> errorLog = {
+            //   "action": "player_logs",
+            //   "log": "Download Playlist",
+            //   "name":
+            //       "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+            //   "type": "error",
+            //   "date_time": DateTime.now().toIso8601String(),
+            // };
 
-            _mqttClientService.publish(topic, jsonEncode(errorLog));
+            // _mqttClientService.publish(topic, jsonEncode(errorLog));
             _state = MqttState.failure;
             notifyListeners();
           }
@@ -1137,15 +1148,15 @@ EOF
       return;
     }
 
-    Map<String, dynamic> sendLog = {
-      "action": "player_logs",
-      "log": "Download Campaign",
-      "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-      "type": "info",
-      "date_time": DateTime.now().toIso8601String(),
-    };
+    // Map<String, dynamic> sendLog = {
+    //   "action": "player_logs",
+    //   "log": "Download Campaign",
+    //   "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+    //   "type": "info",
+    //   "date_time": DateTime.now().toIso8601String(),
+    // };
 
-    _mqttClientService.publish(topic, jsonEncode(sendLog));
+    // _mqttClientService.publish(topic, jsonEncode(sendLog));
 
     // Collect ALL downloadable media items (including nested sub-zones inside campaign media).
     final downloadTargets = _collectCampaignMediaItemsForDownload(
@@ -1215,15 +1226,15 @@ EOF
         notifyListeners();
       } catch (error) {
         print("Error downloading file: $error");
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "Download Campaign",
-          "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-          "type": "error",
-          "date_time": DateTime.now().toIso8601String(),
-        };
+        // Map<String, dynamic> sendLog = {
+        //   "action": "player_logs",
+        //   "log": "Download Campaign",
+        //   "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+        //   "type": "error",
+        //   "date_time": DateTime.now().toIso8601String(),
+        // };
 
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
+        // _mqttClientService.publish(topic, jsonEncode(sendLog));
         // Keep original URL so campaign view can still try to load from network.
         // Don't set failure – continue and show campaign with partial downloads.
         completedDownloads++;
@@ -1433,6 +1444,18 @@ EOF
     final url = '$baseurl$adCampaignProofOfPlayPath';
     if (playerCode.isEmpty) {
       print('[AdPoP] Skipped: player_code is empty (POST $url)');
+      return;
+    }
+    if (!canReportAdProofOfPlay(request)) {
+      print(
+          '[AdPoP] Skipped: ad_campaign_id is missing (zone=${request.zoneId})');
+      return;
+    }
+    final creativeUrl = request.creativeUrl.trim();
+    if (creativeUrl.isNotEmpty &&
+        !creativeUrl.toLowerCase().startsWith('http')) {
+      print(
+          '[AdPoP] Skipped: creative_url must be remote HTTPS, got: $creativeUrl');
       return;
     }
     try {
@@ -1693,14 +1716,14 @@ EOF
     print(jsonObj["action"]);
     if (jsonObj["action"] == "action_reboot") {
       print("action rebooot");
-      Map<String, dynamic> sendLog = {
-        "action": "Action Reboot",
-        "name": "Player ${deviceInfo!["hardware_details"]["model"]}",
-        "type": "info",
-        "dateTime": DateTime.now().toIso8601String(),
-      };
+      // Map<String, dynamic> sendLog = {
+      //   "action": "Action Reboot",
+      //   "name": "Player ${deviceInfo!["hardware_details"]["model"]}",
+      //   "type": "info",
+      //   "dateTime": DateTime.now().toIso8601String(),
+      // };
 
-      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      // _mqttClientService.publish(topic, jsonEncode(sendLog));
       var data = {"success": true};
       publishMessage(globleTopic, jsonEncode(data));
 
@@ -1715,14 +1738,14 @@ EOF
         deviceSettings.rebootDeviceForLinux();
       }
     } else if (jsonObj["action"] == "action_setup_player") {
-      Map<String, dynamic> sendLog = {
-        "action": "Action Setup Player",
-        "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-        "type": "info",
-        "dateTime": DateTime.now().toIso8601String(),
-      };
+      // Map<String, dynamic> sendLog = {
+      //   "action": "Action Setup Player",
+      //   "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+      //   "type": "info",
+      //   "dateTime": DateTime.now().toIso8601String(),
+      // };
 
-      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      // _mqttClientService.publish(topic, jsonEncode(sendLog));
       if (storeState != null) {
         if (storeState == false) {
           await _checkPairingStatus();
@@ -1731,15 +1754,15 @@ EOF
       // print("action mute${jsonObj["settings"]?["mute_audio"]}");
       if (jsonObj["settings"] != null &&
           jsonObj["settings"]["mute_audio"] == true) {
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "Mute Audio",
-          "name": "Player ${deviceInfo!["hardware_details"]["model"]}",
-          "type": "info",
-          "date_time": DateTime.now().toIso8601String(),
-        };
+        // Map<String, dynamic> sendLog = {
+        //   "action": "player_logs",
+        //   "log": "Mute Audio",
+        //   "name": "Player ${deviceInfo!["hardware_details"]["model"]}",
+        //   "type": "info",
+        //   "date_time": DateTime.now().toIso8601String(),
+        // };
 
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
+        // _mqttClientService.publish(topic, jsonEncode(sendLog));
         if (Platform.isMacOS) {
           deviceSettings.muteVolumeForMac();
         } else if (Platform.isAndroid) {
@@ -1752,15 +1775,15 @@ EOF
         }
       } else if (jsonObj["settings"] != null &&
           jsonObj["settings"]["mute_audio"] == false) {
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "Unmute Audio",
-          "name": "Player $globleTopic}",
-          "type": "info",
-          "date_time": DateTime.now().toIso8601String(),
-        };
+        // Map<String, dynamic> sendLog = {
+        //   "action": "player_logs",
+        //   "log": "Unmute Audio",
+        //   "name": "Player $globleTopic}",
+        //   "type": "info",
+        //   "date_time": DateTime.now().toIso8601String(),
+        // };
 
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
+        // _mqttClientService.publish(topic, jsonEncode(sendLog));
         if (Platform.isMacOS) {
           deviceSettings.unmuteVolumeForMac();
         } else if (Platform.isAndroid) {
@@ -1774,15 +1797,15 @@ EOF
       } else if (jsonObj["settings"] != null &&
           jsonObj["settings"]["brightness"] != null &&
           jsonObj["settings"]["brightness"]['value'] != null) {
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "brightness",
-          "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-          "type": "info",
-          "date_time": DateTime.now().toIso8601String(),
-        };
+        // Map<String, dynamic> sendLog = {
+        //   "action": "player_logs",
+        //   "log": "brightness",
+        //   "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+        //   "type": "info",
+        //   "date_time": DateTime.now().toIso8601String(),
+        // };
 
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
+        // _mqttClientService.publish(topic, jsonEncode(sendLog));
         if (Platform.isMacOS) {
           print("No brightness For Mac");
           deviceSettings.unmuteVolumeForMac();
@@ -1799,15 +1822,15 @@ EOF
         }
       } else if (jsonObj["settings"] != null &&
           jsonObj["settings"]["volume"] != null) {
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "Volume",
-          "name": "Player ${deviceInfo!["hardware_details"]["model"]}",
-          "type": "info",
-          "date_time": DateTime.now().toIso8601String(),
-        };
+        // Map<String, dynamic> sendLog = {
+        //   "action": "player_logs",
+        //   "log": "Volume",
+        //   "name": "Player ${deviceInfo!["hardware_details"]["model"]}",
+        //   "type": "info",
+        //   "date_time": DateTime.now().toIso8601String(),
+        // };
 
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
+        // _mqttClientService.publish(topic, jsonEncode(sendLog));
         if (Platform.isMacOS) {
           print("No Volue For Mac");
           var res = jsonObj["settings"]["volume"];
@@ -1829,15 +1852,15 @@ EOF
     } else if (jsonObj["action"] == "action click") {
       print(" i am in action  click");
     } else if (jsonObj["action"] == "publish_playlist") {
-      Map<String, dynamic> sendLog = {
-        "action": "player_logs",
-        "log": "Publish Playlist",
-        "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-        "type": "info",
-        "date_time": DateTime.now().toIso8601String(),
-      };
+      // Map<String, dynamic> sendLog = {
+      //   "action": "player_logs",
+      //   "log": "Publish Playlist",
+      //   "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+      //   "type": "info",
+      //   "date_time": DateTime.now().toIso8601String(),
+      // };
 
-      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      // _mqttClientService.publish(topic, jsonEncode(sendLog));
 // Deserialize the JSON into the model
       // await _checkPairingStatus();
       _playListModel = playListModelFromJson(jsonEncode(jsonObj));
@@ -1872,15 +1895,15 @@ EOF
         }
       }
     } else if (jsonObj["action"] == "publish_campaign") {
-      Map<String, dynamic> sendLog = {
-        "action": "player_logs",
-        "log": "Publish Campaign",
-        "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-        "type": "info",
-        "date_time": DateTime.now().toIso8601String(),
-      };
+      // Map<String, dynamic> sendLog = {
+      //   "action": "player_logs",
+      //   "log": "Publish Campaign",
+      //   "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+      //   "type": "info",
+      //   "date_time": DateTime.now().toIso8601String(),
+      // };
 
-      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      // _mqttClientService.publish(topic, jsonEncode(sendLog));
       _msg = jsonObj["action"];
       _campaignModel = normalizeCampaignResponse(
         campaignModelFromJson(jsonEncode(jsonObj)),
@@ -1896,7 +1919,8 @@ EOF
         }
         // #region agent log
         final parsedCampaigns = campaigns!;
-        final compCampaigns = parsedCampaigns.where((c) => c.isCompositionLayout).toList();
+        final compCampaigns =
+            parsedCampaigns.where((c) => c.isCompositionLayout).toList();
         int? zone2CompositionLayers;
         for (final c in parsedCampaigns) {
           for (final z in c.zones ?? const <CampaignZone>[]) {
@@ -1908,9 +1932,8 @@ EOF
             }
           }
         }
-        final regularCamps = parsedCampaigns
-            .where((c) => !c.isCompositionLayout)
-            .toList();
+        final regularCamps =
+            parsedCampaigns.where((c) => !c.isCompositionLayout).toList();
         final selectedCamp = _currentIndexOfCapmaign < count
             ? parsedCampaigns[_currentIndexOfCapmaign]
             : null;
@@ -1927,8 +1950,7 @@ EOF
                     'type': lm.mediaType,
                     'svgLen': (lm.mediaUrl ?? '').length,
                     'hasUrl': (lm.mediaUrl ?? '').isNotEmpty,
-                    'hasRemoteSrc':
-                        (lm.settings?.remoteSrc ?? '').isNotEmpty,
+                    'hasRemoteSrc': (lm.settings?.remoteSrc ?? '').isNotEmpty,
                     'hasHtml': (lm.settings?.html ?? '').isNotEmpty,
                     'fill': lm.settings?.fill,
                     'alwaysPlay': lm.schedule?.alwaysPlay,
@@ -2055,29 +2077,29 @@ EOF
       print("i am in intractvity");
     } else if (jsonObj["action"] == "remove_playlist") {
       debugPrint("remove playlist and update screen");
-      Map<String, dynamic> sendLog = {
-        "action": "player_logs",
-        "log": "Remove Playlist",
-        "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-        "type": "info",
-        "date_time": DateTime.now().toIso8601String(),
-      };
+      // Map<String, dynamic> sendLog = {
+      //   "action": "player_logs",
+      //   "log": "Remove Playlist",
+      //   "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+      //   "type": "info",
+      //   "date_time": DateTime.now().toIso8601String(),
+      // };
 
-      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      // _mqttClientService.publish(topic, jsonEncode(sendLog));
       SharedPreferences prefs = await SharedPreferences.getInstance();
       prefs.clear();
 
       await _checkPairingStatus();
     } else if (jsonObj["action"] == "action_delete") {
-      Map<String, dynamic> sendLog = {
-        "action": "player_logs",
-        "log": "Action Delete",
-        "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-        "type": "info",
-        "date_time": DateTime.now().toIso8601String(),
-      };
+      // Map<String, dynamic> sendLog = {
+      //   "action": "player_logs",
+      //   "log": "Action Delete",
+      //   "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+      //   "type": "info",
+      //   "date_time": DateTime.now().toIso8601String(),
+      // };
 
-      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      // _mqttClientService.publish(topic, jsonEncode(sendLog));
       debugPrint("remove playlist and update screen");
       SharedPreferences prefs = await SharedPreferences.getInstance();
       prefs.clear();
@@ -2085,15 +2107,15 @@ EOF
       await getStoredState();
     } else if (jsonObj["action"] == "remove_campaign") {
       debugPrint("remove playlist and update screen");
-      Map<String, dynamic> sendLog = {
-        "action": "player_logs",
-        "log": "Remove Campaign",
-        "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-        "type": "info",
-        "date_time": DateTime.now().toIso8601String(),
-      };
+      // Map<String, dynamic> sendLog = {
+      //   "action": "player_logs",
+      //   "log": "Remove Campaign",
+      //   "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+      //   "type": "info",
+      //   "date_time": DateTime.now().toIso8601String(),
+      // };
 
-      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      // _mqttClientService.publish(topic, jsonEncode(sendLog));
       SharedPreferences prefs = await SharedPreferences.getInstance();
       prefs.clear();
       await _checkPairingStatus();
@@ -2116,8 +2138,7 @@ EOF
       final regularIdx = campaigns.indexOf(regularCampaigns.first);
       if (regularIdx >= 0 && regularIdx != _currentIndexOfCapmaign) {
         _currentIndexOfCapmaign = regularIdx;
-        print(
-            '[Campaign] Selected regular campaign index $regularIdx '
+        print('[Campaign] Selected regular campaign index $regularIdx '
             '(${campaigns[regularIdx].campaignName}, '
             '${campaigns[regularIdx].zones?.length ?? 0} zones)');
       }
@@ -2125,8 +2146,7 @@ EOF
     }
 
     // Only auto-select composition if it's the ONLY campaign (standalone publish)
-    final compositionIdx =
-        campaigns.indexWhere((c) => c.isCompositionLayout);
+    final compositionIdx = campaigns.indexWhere((c) => c.isCompositionLayout);
     if (compositionIdx >= 0) {
       _currentIndexOfCapmaign = compositionIdx;
       print(
@@ -2135,6 +2155,7 @@ EOF
           '${campaigns[compositionIdx].zones?.length ?? 0} zones)');
     }
   }
+
   Timer? _timerOfCampaign;
 
   int get currentIndexOfCapmaign => _currentIndexOfCapmaign;
@@ -2197,25 +2218,25 @@ EOF
   }
 
   void publishLogsForPlayList(String name) {
-    Map<String, dynamic> sendLog = {
-      "action": "Playlist",
-      "name": "$name",
-      "type": "info",
-      "dateTime": DateTime.now().toIso8601String(),
-    };
+    // Map<String, dynamic> sendLog = {
+    //   "action": "Playlist",
+    //   "name": "$name",
+    //   "type": "info",
+    //   "dateTime": DateTime.now().toIso8601String(),
+    // };
 
-    _mqttClientService.publish(topic, jsonEncode(sendLog));
+    // _mqttClientService.publish(topic, jsonEncode(sendLog));
   }
 
   void publishLogsForCampaign(String name) {
-    Map<String, dynamic> sendLog = {
-      "action": "Campaign",
-      "name": "$name",
-      "type": "info",
-      "dateTime": DateTime.now().toIso8601String(),
-    };
+    // Map<String, dynamic> sendLog = {
+    //   "action": "Campaign",
+    //   "name": "$name",
+    //   "type": "info",
+    //   "dateTime": DateTime.now().toIso8601String(),
+    // };
 
-    _mqttClientService.publish(topic, jsonEncode(sendLog));
+    // _mqttClientService.publish(topic, jsonEncode(sendLog));
   }
 
   void _updateIndexForCampain() {
@@ -2249,21 +2270,20 @@ EOF
     final currentRegularIdx = regularCampaigns.indexOf(
       campaigns[_currentIndexOfCapmaign],
     );
-    final nextRegularIdx =
-        (currentRegularIdx + 1) % regularCampaigns.length;
+    final nextRegularIdx = (currentRegularIdx + 1) % regularCampaigns.length;
     final nextCampaign = regularCampaigns[nextRegularIdx];
     _currentIndexOfCapmaign = campaigns.indexOf(nextCampaign);
-    Map<String, dynamic> sendLog = {
-      "action": "player_logs",
-      "log": "Current Campaign",
-      "name": (_currentIndexOfCapmaign < count)
-          ? (campaigns![_currentIndexOfCapmaign].campaignName ?? "")
-          : "",
-      "type": "info",
-      "date_time": DateTime.now().toIso8601String(),
-    };
+    // Map<String, dynamic> sendLog = {
+    //   "action": "player_logs",
+    //   "log": "Current Campaign",
+    //   "name": (_currentIndexOfCapmaign < count)
+    //       ? (campaigns![_currentIndexOfCapmaign].campaignName ?? "")
+    //       : "",
+    //   "type": "info",
+    //   "date_time": DateTime.now().toIso8601String(),
+    // };
 
-    _mqttClientService.publish(topic, jsonEncode(sendLog));
+    // _mqttClientService.publish(topic, jsonEncode(sendLog));
     notifyListeners();
     startPlaylistTimerForCampaign();
   }
@@ -2376,15 +2396,15 @@ EOF
     print(
         "current playlist ${_playListModel!.data.playlist[_currentIndex].name} ");
 
-    Map<String, dynamic> sendLog = {
-      "action": "player_logs",
-      "log": "Current Playlist",
-      "name": "${_playListModel!.data.playlist[_currentIndex].name}",
-      "type": "info",
-      "date_time": DateTime.now().toIso8601String(),
-    };
+    // Map<String, dynamic> sendLog = {
+    //   "action": "player_logs",
+    //   "log": "Current Playlist",
+    //   "name": "${_playListModel!.data.playlist[_currentIndex].name}",
+    //   "type": "info",
+    //   "date_time": DateTime.now().toIso8601String(),
+    // };
 
-    _mqttClientService.publish(topic, jsonEncode(sendLog));
+    // _mqttClientService.publish(topic, jsonEncode(sendLog));
 
     notifyListeners();
     startPlaylistTimer();
