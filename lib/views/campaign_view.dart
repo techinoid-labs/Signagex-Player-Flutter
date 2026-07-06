@@ -10,6 +10,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+import 'package:webview_cef/webview_cef.dart' as cef;
 import 'package:video_player/video_player.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
@@ -2609,26 +2610,7 @@ class _WBViewWidgetState extends State<WBViewWidget> {
     }
 
     if (Platform.isLinux) {
-      final url = widget.media.startsWith('http')
-          ? widget.media
-          : 'https://signagexai.com${widget.media}';
-      return Container(
-        color: Colors.black,
-        child: Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const Icon(Icons.web, color: Colors.white54, size: 64),
-              const SizedBox(height: 16),
-              Text(
-                url,
-                style: const TextStyle(color: Colors.white54, fontSize: 12),
-                textAlign: TextAlign.center,
-              ),
-            ],
-          ),
-        ),
-      );
+      return _LinuxWebViewWidget(url: targetUrl);
     }
 
     final String targetUrl;
@@ -2697,6 +2679,42 @@ class _WBViewWidgetState extends State<WBViewWidget> {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _LinuxWebViewWidget extends StatefulWidget {
+  final String url;
+  const _LinuxWebViewWidget({required this.url});
+
+  @override
+  State<_LinuxWebViewWidget> createState() => _LinuxWebViewWidgetState();
+}
+
+class _LinuxWebViewWidgetState extends State<_LinuxWebViewWidget> {
+  late cef.WebViewController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = cef.WebviewManager().createWebView(
+      loading: const Center(child: CircularProgressIndicator()),
+    );
+    _controller.initialize(widget.url);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ValueListenableBuilder<bool>(
+      valueListenable: _controller,
+      builder: (_, ready, __) =>
+          ready ? _controller.webviewWidget : _controller.loadingWidget,
     );
   }
 }

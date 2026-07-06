@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:flutter_phoenix/flutter_phoenix.dart';
 import 'package:fvp/fvp.dart' as fvp;
+import 'package:webview_cef/webview_cef.dart' as cef;
 
 import 'package:digital_signage/provider/main_provider.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
@@ -17,9 +18,11 @@ class MyHttpOverrides extends HttpOverrides {
   }
 }
 
-void main() {
+void main() async {
+  WidgetsFlutterBinding.ensureInitialized();
   if (Platform.isLinux) {
     fvp.registerWith(options: {'platforms': ['linux']});
+    await cef.WebviewManager().initialize();
   }
   HttpOverrides.global = MyHttpOverrides();
   runApp(Phoenix(
