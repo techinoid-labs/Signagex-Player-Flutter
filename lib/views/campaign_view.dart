@@ -2608,6 +2608,29 @@ class _WBViewWidgetState extends State<WBViewWidget> {
       return const SizedBox.shrink();
     }
 
+    if (Platform.isLinux) {
+      final url = widget.media.startsWith('http')
+          ? widget.media
+          : 'https://signagexai.com${widget.media}';
+      return Container(
+        color: Colors.black,
+        child: Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.web, color: Colors.white54, size: 64),
+              const SizedBox(height: 16),
+              Text(
+                url,
+                style: const TextStyle(color: Colors.white54, fontSize: 12),
+                textAlign: TextAlign.center,
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
     final String targetUrl;
     if (widget.media.startsWith('http://') ||
         widget.media.startsWith('https://')) {
