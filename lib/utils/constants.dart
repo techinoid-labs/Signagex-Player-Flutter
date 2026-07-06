@@ -5,6 +5,8 @@ const int mqttPort = 1883;
 const String baseurl = "https://stage.signagexai.com/v1/";
 const String adCampaignProofOfPlayPath = "player/ad-campaign-proof-of-play";
 const String port = "3002/";
+
+
 bool isIos = Platform.isIOS;
 bool isMac = Platform.isMacOS;
 Map<String, dynamic> deviceInfoMap = {
