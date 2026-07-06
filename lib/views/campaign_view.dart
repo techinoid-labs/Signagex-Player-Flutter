@@ -2609,10 +2609,6 @@ class _WBViewWidgetState extends State<WBViewWidget> {
       return const SizedBox.shrink();
     }
 
-    if (Platform.isLinux) {
-      return _LinuxWebViewWidget(url: targetUrl);
-    }
-
     final String targetUrl;
     if (widget.media.startsWith('http://') ||
         widget.media.startsWith('https://')) {
@@ -2621,6 +2617,10 @@ class _WBViewWidgetState extends State<WBViewWidget> {
       targetUrl = 'https://signagexai.com${widget.media}';
     } else {
       targetUrl = 'file://${widget.media}';
+    }
+
+    if (Platform.isLinux) {
+      return _LinuxWebViewWidget(url: targetUrl);
     }
 
     // #region agent log
