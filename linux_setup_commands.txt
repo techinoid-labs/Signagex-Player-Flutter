@@ -1,0 +1,44 @@
+====== SIGNAGEX LINUX SETUP COMMANDS ======
+Run these commands one step at a time in the Ubuntu terminal.
+Paste any errors to Claude before continuing.
+
+--- STEP 1: Install System Dependencies ---
+sudo apt-get update
+
+sudo apt-get install -y git curl cmake ninja-build clang pkg-config libgtk-3-dev libmpv-dev libwebkit2gtk-4.1-dev liblzma-dev unzip xz-utils zip libglu1-mesa
+
+--- STEP 2: Install Flutter ---
+cd ~
+
+git clone https://github.com/flutter/flutter.git -b stable --depth 1
+
+echo 'export PATH="$HOME/flutter/bin:$PATH"' >> ~/.bashrc
+
+source ~/.bashrc
+
+flutter config --enable-linux-desktop
+
+flutter doctor
+
+--- STEP 3: Clone Project (linux branch) ---
+git clone -b linux https://github.com/techinoid-labs/Signagex-Player-Flutter.git ~/signagex-player
+
+--- STEP 4: Build ---
+cd ~/signagex-player
+
+flutter pub get
+
+flutter build linux --release
+
+--- STEP 5: Find and Run the App ---
+ls ~/signagex-player/build/linux/x64/release/bundle/
+
+~/signagex-player/build/linux/x64/release/bundle/signagex_player
+
+======= END =======
+
+NOTES:
+- Step 1 takes 2-3 minutes
+- Step 2 (flutter doctor) takes 10-15 minutes on first run (looks frozen but it's downloading)
+- Step 4 (flutter build) takes 5-10 minutes
+- If any command fails, paste the error to Claude
