@@ -1650,30 +1650,17 @@ class MqttViewModel extends ChangeNotifier {
 
       globleTopic = _topic;
 
-      try {
-        await _mqttClientService.connect();
-      } catch (e) {
-        debugPrint('MQTT connect during pairing failed: $e');
-      }
-
-      subsibeMessage(_topic);
-      await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
-      publishMessage(globleTopic, jsonEncode(deviceInfoMap));
-
-      // await captureAndSendScreenshot(globleTopic);
-      // Reset retry counter on successful connection
-      _pairingRetryCount = 0;
-
+      // Process pairing status FIRST so state updates even if MQTT ops fail below
       if (response["paired"] == false) {
         print("this is state screeen ${response["paired"]}");
         storeState = false;
         await prefs.setBool('storeState', false);
-
         _state = MqttState.pairedScreen;
+        _startPairingPollingTimer();
       } else if (response["paired"] == true) {
         storeState = true;
         await prefs.setBool('storeState', true);
-
+        _stopPairingPollingTimer();
         if (_state != MqttState.downloading &&
             _state != MqttState.campaignScreen &&
             _state != MqttState.playlistScreen) {
@@ -1683,14 +1670,30 @@ class MqttViewModel extends ChangeNotifier {
         _state = MqttState.failure;
       }
       notifyListeners();
+
+      // MQTT ops after state update — failures here don't block pairing state
+      try {
+        await _mqttClientService.connect();
+      } catch (e) {
+        debugPrint('MQTT connect during pairing failed: $e');
+      }
+
+      try {
+        subsibeMessage(_topic);
+      } catch (e) {
+        debugPrint('Subscribe during pairing failed: $e');
+      }
+      await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
+      try {
+        publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+      } catch (e) {
+        debugPrint('Publish during pairing failed: $e');
+      }
+
+      // Reset retry counter on successful API call
+      _pairingRetryCount = 0;
     } catch (error) {
       debugPrint("Error during pairing check: $error");
-
-      // Don't restart or retry if already paired - just log the error
-      if (_state == MqttState.pairedScreen) {
-        debugPrint("Device is already paired. Skipping retry and restart.");
-        return;
-      }
 
       _pairingRetryCount++;
 
@@ -1766,6 +1769,25 @@ class MqttViewModel extends ChangeNotifier {
   // Retry counter for pairing status check
   int _pairingRetryCount = 0;
   static const int _maxPairingRetries = 3;
+
+  Timer? _pairingPollingTimer;
+
+  void _startPairingPollingTimer() {
+    _pairingPollingTimer?.cancel();
+    _pairingPollingTimer = Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (_state == MqttState.pairedScreen) {
+        debugPrint('MQTT_LOGS:: Polling pairing status...');
+        await _checkPairingStatus(refresh: true);
+      } else {
+        _stopPairingPollingTimer();
+      }
+    });
+  }
+
+  void _stopPairingPollingTimer() {
+    _pairingPollingTimer?.cancel();
+    _pairingPollingTimer = null;
+  }
 
   void setTapPosition(double x, double y) {
     tapX = x;
