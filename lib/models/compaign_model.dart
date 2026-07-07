@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
+import 'package:digital_signage/utils/constants.dart';
 
 int? _asInt(dynamic value) {
   if (value == null) return null;
@@ -1909,12 +1910,39 @@ bool mediaItemIsWebAppIframe(MediaItem media) {
   return kind.contains('web-app') || kind.contains('web_app');
 }
 
+/// Resolves playlist/campaign web URLs (absolute, path-only, or slug).
+String normalizeRemoteWebUrl(String? raw, {String? fallbackIframe}) {
+  final iframe = fallbackIframe?.trim();
+  if (iframe != null && iframe.isNotEmpty) {
+    return _resolveAbsoluteWebUrl(iframe);
+  }
+  final url = raw?.trim() ?? '';
+  if (url.isEmpty) return '';
+  return _resolveAbsoluteWebUrl(url);
+}
+
+String _resolveAbsoluteWebUrl(String raw) {
+  if (raw.startsWith('http://') || raw.startsWith('https://')) return raw;
+  if (raw.startsWith('/')) {
+    final origin = Uri.parse(baseurl).origin;
+    return '$origin$raw';
+  }
+  final prefix = baseurl.endsWith('/') ? baseurl : '$baseurl/';
+  return '$prefix$raw';
+}
+
+String mediaItemWebAppInstanceUrl(MediaItem media) {
+  return normalizeRemoteWebUrl(
+    media.mediaUrl,
+    fallbackIframe: media.settings?.iframeSrc,
+  );
+}
+
 String mediaItemWebAppIframeUrl(MediaItem media) {
-  final iframe = media.settings?.iframeSrc?.trim();
-  if (iframe != null && iframe.isNotEmpty) return iframe;
-  final url = media.mediaUrl?.trim() ?? '';
-  if (url.startsWith('http://') || url.startsWith('https://')) return url;
-  return '';
+  return normalizeRemoteWebUrl(
+    media.mediaUrl,
+    fallbackIframe: media.settings?.iframeSrc,
+  );
 }
 
 extension MediaItemAdExtensions on MediaItem {

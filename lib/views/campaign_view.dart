@@ -1638,9 +1638,14 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     }
 
     if (mediaType == 'web_app_instance') {
+      final webAppUrl = mediaItemWebAppInstanceUrl(media);
       print(
-          "[LOG] _buildMediaWidget - Building WBViewWidget for web_app_instance");
-      final cacheKey = _mediaWidgetCacheKey('webapp', media, mediaUrl);
+          "[LOG] _buildMediaWidget - Building WBViewWidget for web_app_instance: "
+          '${formatForLog(webAppUrl)}');
+      if (webAppUrl.isEmpty) {
+        return const Center(child: Text('Web app URL missing'));
+      }
+      final cacheKey = _mediaWidgetCacheKey('webapp', media, webAppUrl);
       final cacheHit = _webViewWidgetBuilders.containsKey(cacheKey);
       // #region agent log
       _agentDebugLog(
@@ -1650,9 +1655,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           'cacheKey': cacheKey,
           'campaignId': widget.campaignId ?? '',
           'mediaIndex': _currentMediaIndex,
-          'mediaUrlSample': mediaUrl.length > 80
-              ? '${mediaUrl.substring(0, 80)}...'
-              : mediaUrl,
+          'mediaUrlSample': webAppUrl.length > 80
+              ? '${webAppUrl.substring(0, 80)}...'
+              : webAppUrl,
         },
         'E',
       );
@@ -1663,7 +1668,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               child: SizedBox.expand(
                 child: WBViewWidget(
                   key: ValueKey(cacheKey),
-                  media: mediaUrl,
+                  media: webAppUrl,
                   onMediaEnd: _onMediaEnd,
                 ),
               ),
@@ -2613,8 +2618,6 @@ class _WBViewWidgetState extends State<WBViewWidget> {
     if (widget.media.startsWith('http://') ||
         widget.media.startsWith('https://')) {
       targetUrl = widget.media;
-    } else if (widget.media.startsWith('/')) {
-      targetUrl = 'https://signagexai.com${widget.media}';
     } else {
       targetUrl = 'file://${widget.media}';
     }
