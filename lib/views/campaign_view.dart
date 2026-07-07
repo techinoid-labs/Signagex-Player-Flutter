@@ -367,6 +367,9 @@ class _CampaignViewState extends State<CampaignView> {
             final scaledY = (zone.y ?? 0) * scaleY;
             final scaledWidth = (zone.width ?? 0) * scaleX;
             final scaledHeight = (zone.height ?? 0) * scaleY;
+            print(
+                '[LOG] Zone ${zone.id} raw=(${zone.x}, ${zone.y}, ${zone.width}, ${zone.height}) '
+                'scaled=($scaledX, $scaledY, $scaledWidth, $scaledHeight)');
 
             return Positioned(
               left: scaledX,
@@ -2176,14 +2179,28 @@ class ImageWidget extends StatelessWidget {
         ),
       );
     } else {
+      final file = File(filePath);
+      final exists = file.existsSync();
+      final length = exists ? file.lengthSync() : -1;
+      print(
+          '[LOG] ImageWidget - local file exists=$exists length=$length path=$filePath');
       imageChild = Image.file(
-        File(filePath),
+        file,
         fit: BoxFit.cover,
         height: MediaQuery.sizeOf(context).height,
         width: MediaQuery.sizeOf(context).width,
-        errorBuilder: (_, __, ___) => const Center(
-          child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
-        ),
+        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+          if (frame == null) {
+            print('[LOG] ImageWidget - no frame decoded yet for $filePath');
+          }
+          return child;
+        },
+        errorBuilder: (_, error, ___) {
+          print('[ERROR] ImageWidget - failed to load $filePath: $error');
+          return const Center(
+            child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
+          );
+        },
       );
     }
 
@@ -2697,17 +2714,29 @@ class _LinuxWebViewWidget extends StatefulWidget {
 class _LinuxWebViewWidgetState extends State<_LinuxWebViewWidget> {
   late cef.WebViewController _controller;
 
+  void _onReadyChanged() {
+    print(
+        '[LOG] _LinuxWebViewWidget - ready=${_controller.value} url=${widget.url}');
+  }
+
   @override
   void initState() {
     super.initState();
+    print('[LOG] _LinuxWebViewWidget - initState url=${widget.url}');
     _controller = cef.WebviewManager().createWebView(
       loading: const Center(child: CircularProgressIndicator()),
     );
-    _controller.initialize(widget.url);
+    _controller.addListener(_onReadyChanged);
+    _controller.initialize(widget.url).then((_) {
+      print('[LOG] _LinuxWebViewWidget - initialize completed for ${widget.url}');
+    }).catchError((Object e, StackTrace st) {
+      print('[ERROR] _LinuxWebViewWidget - initialize failed for ${widget.url}: $e');
+    });
   }
 
   @override
   void dispose() {
+    _controller.removeListener(_onReadyChanged);
     _controller.dispose();
     super.dispose();
   }
