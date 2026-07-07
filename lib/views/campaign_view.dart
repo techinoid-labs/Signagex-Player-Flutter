@@ -2725,6 +2725,7 @@ class _LinuxWebViewWidgetState extends State<_LinuxWebViewWidget> {
     print('[LOG] _LinuxWebViewWidget - initState url=${widget.url}');
     _controller = cef.WebviewManager().createWebView(
       loading: const Center(child: CircularProgressIndicator()),
+      injectUserScripts: cef.InjectUserScripts(),
     );
     _controller.addListener(_onReadyChanged);
     _controller.initialize(widget.url).then((_) {
