@@ -1107,6 +1107,12 @@ class Settings {
   String? creativeName;
   String? creativeUrl;
   String? creativeMediaType;
+  String? adFlightStartDate;
+  String? adFlightEndDate;
+  String? adFlightStartTime;
+  String? adFlightEndTime;
+  bool? adSkipPlayback;
+  String? adSkipReason;
 
   Settings({
     this.duration,
@@ -1137,6 +1143,12 @@ class Settings {
     this.creativeName,
     this.creativeUrl,
     this.creativeMediaType,
+    this.adFlightStartDate,
+    this.adFlightEndDate,
+    this.adFlightStartTime,
+    this.adFlightEndTime,
+    this.adSkipPlayback,
+    this.adSkipReason,
   });
 
   static String? _jsonString(Map<String, dynamic> json, List<String> keys) {
@@ -1249,6 +1261,18 @@ class Settings {
             'media_type',
             'mediaType',
           ]),
+      adFlightStartDate: nested?.adFlightStartDate ??
+          _jsonString(json, ['start_date', 'startDate']),
+      adFlightEndDate: nested?.adFlightEndDate ??
+          _jsonString(json, ['end_date', 'endDate']),
+      adFlightStartTime: nested?.adFlightStartTime ??
+          _jsonString(json, ['start_time', 'startTime']),
+      adFlightEndTime: nested?.adFlightEndTime ??
+          _jsonString(json, ['end_time', 'endTime']),
+      adSkipPlayback: nested?.adSkipPlayback ??
+          (json['skip_playback'] == true || json['skipPlayback'] == true),
+      adSkipReason: nested?.adSkipReason ??
+          _jsonString(json, ['skip_reason', 'skipReason']),
     );
   }
 
@@ -1285,6 +1309,13 @@ class Settings {
         creativeUrl: _cleanMediaUrl(json["creative_url"]),
         creativeMediaType:
             json["creative_media_type"] ?? json["media_type"],
+        adFlightStartDate: json["start_date"] ?? json["startDate"],
+        adFlightEndDate: json["end_date"] ?? json["endDate"],
+        adFlightStartTime: json["start_time"] ?? json["startTime"],
+        adFlightEndTime: json["end_time"] ?? json["endTime"],
+        adSkipPlayback:
+            json["skip_playback"] == true || json["skipPlayback"] == true,
+        adSkipReason: json["skip_reason"] ?? json["skipReason"],
       );
 
   Map<String, dynamic> toJson() => {
@@ -1316,6 +1347,12 @@ class Settings {
         "creative_name": creativeName,
         "creative_url": creativeUrl,
         "creative_media_type": creativeMediaType,
+        "start_date": adFlightStartDate,
+        "end_date": adFlightEndDate,
+        "start_time": adFlightStartTime,
+        "end_time": adFlightEndTime,
+        "skip_playback": adSkipPlayback,
+        "skip_reason": adSkipReason,
       };
 }
 
@@ -1336,6 +1373,229 @@ bool hasAdProofMetadata(Settings? settings) {
       (settings.adZoneId?.isNotEmpty ?? false) ||
       (settings.slotTimelineId?.isNotEmpty ?? false) ||
       (settings.adCampaignItemId?.isNotEmpty ?? false);
+}
+
+bool mediaItemIsAdSlot(MediaItem media) {
+  return media.isAd || idLooksLikeAdSlot(media.id);
+}
+
+DateTime? _parseScheduleDateOnly(String? raw) {
+  if (raw == null || raw.trim().isEmpty) return null;
+  final value = raw.trim();
+  try {
+    if (value.contains('T')) {
+      final parsed = DateTime.parse(value);
+      return DateTime(parsed.year, parsed.month, parsed.day);
+    }
+    final parts = value.split('-');
+    if (parts.length == 3) {
+      return DateTime(
+        int.parse(parts[0]),
+        int.parse(parts[1]),
+        int.parse(parts[2]),
+      );
+    }
+    final parsed = DateTime.parse(value);
+    return DateTime(parsed.year, parsed.month, parsed.day);
+  } catch (_) {
+    return null;
+  }
+}
+
+/// Ad flight times from the API are UTC (same as proof-of-play timestamps).
+DateTime? _parseScheduleTimeUtcToday(String? raw) {
+  return _parseScheduleTimeOnDate(raw, DateTime.now().toUtc());
+}
+
+DateTime? _parseScheduleTimeOnDate(String? raw, DateTime anchor) {
+  if (raw == null || raw.trim().isEmpty) return null;
+  final parts = raw.trim().split(':');
+  if (parts.length < 2) return null;
+  final hour = int.tryParse(parts[0]);
+  final minute = int.tryParse(parts[1]);
+  final second = parts.length > 2 ? int.tryParse(parts[2]) : 0;
+  if (hour == null || minute == null) return null;
+  final isUtc = anchor.isUtc;
+  return isUtc
+      ? DateTime.utc(
+          anchor.year, anchor.month, anchor.day, hour, minute, second ?? 0)
+      : DateTime(
+          anchor.year, anchor.month, anchor.day, hour, minute, second ?? 0);
+}
+
+bool _isTimeInAdFlightWindow(
+  DateTime now,
+  DateTime startTime,
+  DateTime endTime,
+) {
+  // Same-day window, e.g. 09:00 -> 17:00 (end inclusive)
+  if (!endTime.isBefore(startTime)) {
+    return !now.isBefore(startTime) && !now.isAfter(endTime);
+  }
+  // Overnight window, e.g. 14:20 -> 02:35 (next day)
+  return !now.isBefore(startTime) || !now.isAfter(endTime);
+}
+
+/// Result of evaluating an ad slot against its flight schedule.
+class AdSlotScheduleEvaluation {
+  final bool hasCreative;
+  final bool? inDateRange;
+  final bool? inTimeRange;
+  final bool skipPlayback;
+  final bool shouldPlay;
+  final String reason;
+
+  const AdSlotScheduleEvaluation({
+    required this.hasCreative,
+    required this.inDateRange,
+    required this.inTimeRange,
+    required this.skipPlayback,
+    required this.shouldPlay,
+    required this.reason,
+  });
+}
+
+AdSlotScheduleEvaluation evaluateAdSlotSchedule(MediaItem media) {
+  final settings = media.settings;
+  final hasCreative = media.adCreativeUrl.isNotEmpty;
+  final skipPlayback = settings?.adSkipPlayback == true;
+
+  if (settings == null) {
+    return AdSlotScheduleEvaluation(
+      hasCreative: hasCreative,
+      inDateRange: null,
+      inTimeRange: null,
+      skipPlayback: skipPlayback,
+      shouldPlay: false,
+      reason: 'no_settings',
+    );
+  }
+
+  // Empty slot: skip_playback marks server empty/pending slots.
+  if (!hasCreative) {
+    return AdSlotScheduleEvaluation(
+      hasCreative: false,
+      inDateRange: null,
+      inTimeRange: null,
+      skipPlayback: skipPlayback,
+      shouldPlay: false,
+      reason: skipPlayback ? 'empty_slot_skip_playback' : 'no_creative',
+    );
+  }
+
+  final nowUtc = DateTime.now().toUtc();
+  final startDate = _parseScheduleDateOnly(settings.adFlightStartDate);
+  final endDate = _parseScheduleDateOnly(settings.adFlightEndDate);
+  bool? inDateRange;
+  if (startDate != null && endDate != null) {
+    final todayUtc =
+        DateTime.utc(nowUtc.year, nowUtc.month, nowUtc.day);
+    inDateRange =
+        !todayUtc.isBefore(startDate) && !todayUtc.isAfter(endDate);
+    if (inDateRange == false) {
+      return AdSlotScheduleEvaluation(
+        hasCreative: true,
+        inDateRange: false,
+        inTimeRange: null,
+        skipPlayback: skipPlayback,
+        shouldPlay: false,
+        reason: 'outside_date_range',
+      );
+    }
+  }
+
+  final startTime = _parseScheduleTimeUtcToday(settings.adFlightStartTime);
+  final endTime = _parseScheduleTimeUtcToday(settings.adFlightEndTime);
+  bool? inTimeRange;
+  if (startTime != null && endTime != null) {
+    inTimeRange = _isTimeInAdFlightWindow(nowUtc, startTime, endTime);
+    if (inTimeRange == false) {
+      return AdSlotScheduleEvaluation(
+        hasCreative: true,
+        inDateRange: inDateRange,
+        inTimeRange: false,
+        skipPlayback: skipPlayback,
+        shouldPlay: false,
+        reason: 'outside_time_range',
+      );
+    }
+  }
+
+  final hasFlightWindow = startDate != null ||
+      endDate != null ||
+      startTime != null ||
+      endTime != null;
+  if (!hasFlightWindow) {
+    return AdSlotScheduleEvaluation(
+      hasCreative: true,
+      inDateRange: inDateRange,
+      inTimeRange: inTimeRange,
+      skipPlayback: skipPlayback,
+      shouldPlay: false,
+      reason: 'no_flight_schedule',
+    );
+  }
+
+  return AdSlotScheduleEvaluation(
+    hasCreative: true,
+    inDateRange: inDateRange,
+    inTimeRange: inTimeRange,
+    skipPlayback: skipPlayback,
+    shouldPlay: true,
+    reason: 'in_schedule',
+  );
+}
+
+/// Ad campaign publishes carry flight windows on the ad_slot payload, not always_play.
+bool isAdSlotInFlightSchedule(MediaItem media) {
+  return evaluateAdSlotSchedule(media).shouldPlay;
+}
+
+/// Human-readable ad slot flight window for debug logs.
+String describeAdSlotFlightSchedule(MediaItem media) {
+  final s = media.settings;
+  final e = evaluateAdSlotSchedule(media);
+  final nowLocal = DateTime.now();
+  final nowUtc = nowLocal.toUtc();
+  String flag(bool? value) => value == null ? 'n/a' : (value ? 'yes' : 'no');
+  final parts = <String>[
+    'now_local=${nowLocal.toIso8601String()}',
+    'now_utc=${formatProofOfPlayPlayedAt(nowUtc)}',
+    'skip_playback=${s?.adSkipPlayback ?? "unset"}',
+    'start_date=${s?.adFlightStartDate ?? "unset"}',
+    'end_date=${s?.adFlightEndDate ?? "unset"}',
+    'start_time_utc=${s?.adFlightStartTime ?? "unset"}',
+    'end_time_utc=${s?.adFlightEndTime ?? "unset"}',
+    'has_creative=${e.hasCreative}',
+    'in_date_range=${flag(e.inDateRange)}',
+    'in_time_range=${flag(e.inTimeRange)}',
+    'should_play=${e.shouldPlay}',
+    'reason=${e.reason}',
+  ];
+  return parts.join(', ');
+}
+
+bool shouldPlayMediaForSchedule(
+  MediaItem media, {
+  required bool Function(List<Restriction>? restrictions) checkRestrictions,
+}) {
+  // Ad slots always use flight window from ad_slot payload, never schedule.always_play.
+  if (mediaItemIsAdSlot(media)) {
+    return isAdSlotInFlightSchedule(media);
+  }
+
+  final schedule = media.schedule;
+  if (schedule == null || (schedule.alwaysPlay ?? false)) {
+    return true;
+  }
+
+  final restrictions = schedule.restrictions;
+  if (restrictions != null && restrictions.isNotEmpty) {
+    return checkRestrictions(restrictions);
+  }
+
+  // No restrictions configured means nothing blocks playback, so allow it.
+  return true;
 }
 
 /// Composition campaigns extracted from publish payload (not always top-level).

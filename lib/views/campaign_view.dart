@@ -428,6 +428,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   int _currentMediaIndex = 0;
   Timer? _timer;
   Timer? _restrictionCheckTimer;
+  Timer? _adSlotRecheckTimer;
   double _opacity = 1.0;
   VideoPlayerController? _videoController;
   DateTime? _videoStartTime;
@@ -436,6 +437,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
   final Map<String, Widget Function()> _webViewWidgetBuilders = {};
   bool _adProofReported = false;
+  bool _adScheduleFailReported = false;
+  bool _scheduleAllowsPlayback = false;
   String? _adPlaybackSessionKey;
 
   @override
@@ -461,6 +464,66 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         return;
       }
       _checkCampaignRestrictions();
+      _checkAdSlotSchedule();
+    });
+  }
+
+  MediaItem _slotMediaForScheduleCheck() {
+    if (_currentMediaIndex < 0 ||
+        _currentMediaIndex >= widget.mediaItems.length) {
+      return MediaItem();
+    }
+    return widget.mediaItems[_currentMediaIndex];
+  }
+
+  bool _isScheduleAllowedForCurrentMedia() {
+    if (_isDisposed || !mounted) return false;
+    if (!widget.campaignCanPlay) return false;
+    final mqttViewModel = _mqttViewModel;
+    if (mqttViewModel == null) return false;
+    final slotMedia = _slotMediaForScheduleCheck();
+    final mediaToCheck = mediaItemIsAdSlot(slotMedia)
+        ? slotMedia
+        : _resolvedMediaAt(_currentMediaIndex);
+    return shouldPlayMediaForSchedule(
+      mediaToCheck,
+      checkRestrictions: mqttViewModel.checkRestrictions,
+    );
+  }
+
+  void _checkAdSlotSchedule() {
+    if (_isDisposed || !mounted) return;
+    if (!widget.mediaItems.any((m) => mediaItemIsAdSlot(m))) return;
+
+    final allowed = _isScheduleAllowedForCurrentMedia();
+    if (allowed == _scheduleAllowsPlayback) return;
+
+    _scheduleAllowsPlayback = allowed;
+    if (allowed) {
+      _adScheduleFailReported = false;
+      _initializeNextMedia();
+      return;
+    }
+
+    _stopMedia();
+    final slot = _slotMediaForScheduleCheck();
+    if (mediaItemIsAdSlot(slot) && !_adScheduleFailReported) {
+      _adScheduleFailReported = true;
+      _sendAdProofOfPlay(
+        slot,
+        status: 'failed',
+        errorMessage: 'restrictions_failed',
+      );
+    }
+    _scheduleAdSlotRecheck();
+    if (mounted) setState(() {});
+  }
+
+  void _scheduleAdSlotRecheck() {
+    _adSlotRecheckTimer?.cancel();
+    _adSlotRecheckTimer = Timer(const Duration(seconds: 8), () {
+      if (_isDisposed || !mounted) return;
+      _initializeNextMedia();
     });
   }
 
@@ -484,7 +547,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       if (restrictions != null && restrictions.isNotEmpty) {
         canPlay = mqttViewModel.checkRestrictions(restrictions);
       } else {
-        canPlay = false;
+        // No restrictions configured means nothing blocks playback, so allow it.
+        canPlay = true;
       }
     }
 
@@ -732,20 +796,32 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       return;
     }
 
-    bool shouldPlay = false;
     final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
+    final scheduleMedia = mediaItemIsAdSlot(_slotMediaForScheduleCheck())
+        ? _slotMediaForScheduleCheck()
+        : currentMedia;
+    final shouldPlay = shouldPlayMediaForSchedule(
+      scheduleMedia,
+      checkRestrictions: mqttViewModel.checkRestrictions,
+    );
 
-    // Missing schedule = play (SignageX layers often omit schedule on stickers/compositions).
-    if (currentMedia.schedule == null ||
+    if (mediaItemIsAdSlot(scheduleMedia)) {
+      final scheduleEval = evaluateAdSlotSchedule(scheduleMedia);
+      print(
+          '$blue📅 AD flight: ${describeAdSlotFlightSchedule(scheduleMedia)}$reset');
+      if (shouldPlay) {
+        print('$green✅ MEDIA: Ad slot is within flight schedule$reset');
+      } else {
+        print('$red❌ MEDIA: Ad slot blocked (${scheduleEval.reason})$reset');
+      }
+    } else if (currentMedia.schedule == null ||
         (currentMedia.schedule?.alwaysPlay ?? false)) {
-      shouldPlay = true;
       print('$green✅ MEDIA: alwaysPlay = true → Media can play$reset');
     } else {
       final restrictions = currentMedia.schedule?.restrictions;
       if (restrictions != null && restrictions.isNotEmpty) {
         print(
             '$yellow🔍 MEDIA: Checking ${restrictions.length} restriction(s)...$reset');
-        shouldPlay = mqttViewModel.checkRestrictions(restrictions);
         if (shouldPlay) {
           print('$green✅ MEDIA: Restrictions PASSED → Media can play$reset');
         } else {
@@ -754,7 +830,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       } else {
         // No restrictions configured means nothing blocks playback, so allow it
         // (mirrors the "missing schedule = play" fallback above).
-        shouldPlay = true;
         print(
             '$green✅ MEDIA: No restrictions configured → Media can play$reset');
       }
@@ -764,6 +839,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         '$magenta═══════════════════════════════════════════════════════════$reset');
 
     if (shouldPlay) {
+      _scheduleAllowsPlayback = true;
+      _adScheduleFailReported = false;
       final effectiveDuration = _effectiveMediaDurationSeconds(currentMedia);
       print(
           '$green▶️  MEDIA: Loading and playing media (duration: $effectiveDuration seconds)$reset');
@@ -777,13 +854,28 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       }
       _loadMedia(currentMedia);
     } else {
+      _scheduleAllowsPlayback = false;
+      _stopMedia();
       print('$red⏭️  MEDIA: Skipping media (restrictions did not pass)$reset');
-      _sendAdProofOfPlay(
-        currentMedia,
-        status: 'failed',
-        errorMessage: 'restrictions_failed',
-      );
-      _onMediaEnd();
+      if (mediaItemIsAdSlot(scheduleMedia)) {
+        if (!_adScheduleFailReported) {
+          _adScheduleFailReported = true;
+          _sendAdProofOfPlay(
+            scheduleMedia,
+            status: 'failed',
+            errorMessage: 'restrictions_failed',
+          );
+        }
+        _scheduleAdSlotRecheck();
+      } else {
+        _sendAdProofOfPlay(
+          currentMedia,
+          status: 'failed',
+          errorMessage: 'restrictions_failed',
+        );
+        _onMediaEnd();
+      }
+      if (mounted) setState(() {});
     }
   }
 
@@ -906,7 +998,19 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       return;
     }
 
-    if (nextMedia.isAd) {
+    if (mediaItemIsAdSlot(nextMedia)) {
+      final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
+      if (!shouldPlayMediaForSchedule(
+        nextMedia,
+        checkRestrictions: mqttViewModel.checkRestrictions,
+      )) {
+        print('[LOG] Ad slot blocked by flight schedule (${nextMedia.id})');
+        _scheduleAllowsPlayback = false;
+        _stopMedia();
+        _scheduleAdSlotRecheck();
+        if (mounted) setState(() {});
+        return;
+      }
       final creative = nextMedia.playbackMedia;
       final creativeUrl = creative.mediaUrl ?? '';
       print(
@@ -1293,6 +1397,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     _isDisposed = true;
     _timer?.cancel();
     _restrictionCheckTimer?.cancel();
+    _adSlotRecheckTimer?.cancel();
     _videoController?.removeListener(_checkVideoPlaybackDuration);
     _videoController?.dispose();
     _videoController = null;
