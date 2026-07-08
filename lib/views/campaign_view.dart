@@ -2235,6 +2235,78 @@ class ImageWidget extends StatelessWidget {
 
   bool get _isDataUri => filePath.startsWith('data:image');
 
+  /// Sniffs the file header before handing it to the native image decoder.
+  /// A truncated/corrupted download (esp. WebP) can crash the whole process
+  /// with a native segfault instead of a catchable Dart exception, so this
+  /// must run before Image.file ever touches the bytes.
+  bool _looksLikeValidImageFile(File file) {
+    try {
+      final length = file.lengthSync();
+      if (length < 12) return false;
+      final raf = file.openSync();
+      final header = raf.readSync(16);
+      raf.closeSync();
+      if (header.length < 12) return false;
+
+      // WEBP: 'RIFF' + little-endian chunk size + 'WEBP'. The chunk size must
+      // equal file length - 8; a mismatch means the download was truncated.
+      if (header[0] == 0x52 &&
+          header[1] == 0x49 &&
+          header[2] == 0x46 &&
+          header[3] == 0x46 &&
+          header[8] == 0x57 &&
+          header[9] == 0x45 &&
+          header[10] == 0x42 &&
+          header[11] == 0x50) {
+        final riffSize =
+            header[4] | (header[5] << 8) | (header[6] << 16) | (header[7] << 24);
+        if (riffSize + 8 != length) {
+          print('[ERROR] ImageWidget - WEBP RIFF size mismatch '
+              '(declared=${riffSize + 8}, actual=$length) for ${file.path}');
+          return false;
+        }
+        return true;
+      }
+
+      // PNG signature
+      if (header[0] == 0x89 &&
+          header[1] == 0x50 &&
+          header[2] == 0x4E &&
+          header[3] == 0x47 &&
+          header[4] == 0x0D &&
+          header[5] == 0x0A &&
+          header[6] == 0x1A &&
+          header[7] == 0x0A) {
+        return true;
+      }
+
+      // JPEG signature
+      if (header[0] == 0xFF && header[1] == 0xD8 && header[2] == 0xFF) {
+        return true;
+      }
+
+      // GIF signature
+      if (header[0] == 0x47 &&
+          header[1] == 0x49 &&
+          header[2] == 0x46 &&
+          header[3] == 0x38) {
+        return true;
+      }
+
+      // BMP signature
+      if (header[0] == 0x42 && header[1] == 0x4D) {
+        return true;
+      }
+
+      // Unrecognized extension/signature — let Flutter's own errorBuilder
+      // handle it rather than risk false positives on formats we don't check.
+      return true;
+    } catch (e) {
+      print('[ERROR] ImageWidget - failed to validate file header: $e');
+      return false;
+    }
+  }
+
   Uint8List? _decodeBase64Image(String source) {
     try {
       var payload = source.trim();
@@ -2284,24 +2356,34 @@ class ImageWidget extends StatelessWidget {
       final length = exists ? file.lengthSync() : -1;
       print(
           '[LOG] ImageWidget - local file exists=$exists length=$length path=$filePath');
-      imageChild = Image.file(
-        file,
-        fit: BoxFit.cover,
-        height: MediaQuery.sizeOf(context).height,
-        width: MediaQuery.sizeOf(context).width,
-        frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
-          if (frame == null) {
-            print('[LOG] ImageWidget - no frame decoded yet for $filePath');
-          }
-          return child;
-        },
-        errorBuilder: (_, error, ___) {
-          print('[ERROR] ImageWidget - failed to load $filePath: $error');
-          return const Center(
-            child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
-          );
-        },
-      );
+      final isValid = exists && _looksLikeValidImageFile(file);
+      if (exists && !isValid) {
+        print('[ERROR] ImageWidget - file failed integrity check, skipping '
+            'decode to avoid native crash: $filePath');
+        WidgetsBinding.instance.addPostFrameCallback((_) => onImageEnd());
+        imageChild = const Center(
+          child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
+        );
+      } else {
+        imageChild = Image.file(
+          file,
+          fit: BoxFit.cover,
+          height: MediaQuery.sizeOf(context).height,
+          width: MediaQuery.sizeOf(context).width,
+          frameBuilder: (context, child, frame, wasSynchronouslyLoaded) {
+            if (frame == null) {
+              print('[LOG] ImageWidget - no frame decoded yet for $filePath');
+            }
+            return child;
+          },
+          errorBuilder: (_, error, ___) {
+            print('[ERROR] ImageWidget - failed to load $filePath: $error');
+            return const Center(
+              child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
+            );
+          },
+        );
+      }
     }
 
     Widget imageWidget = SizedBox.expand(child: imageChild);
