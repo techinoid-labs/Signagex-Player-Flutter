@@ -285,8 +285,10 @@ class _CampaignViewState extends State<CampaignView> {
               '$red❌ CAMPAIGN: Restrictions FAILED → Campaign cannot play$reset');
         }
       } else {
-        print('$yellow⚠️  CAMPAIGN: No restrictions configured$reset');
-        campaignCanPlay = false;
+        // No restrictions configured means nothing blocks playback, so allow it.
+        campaignCanPlay = true;
+        print(
+            '$green✅ CAMPAIGN: No restrictions configured → Campaign can play$reset');
       }
     }
 
@@ -750,18 +752,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           print('$red❌ MEDIA: Restrictions FAILED → Media cannot play$reset');
         }
       } else {
+        // No restrictions configured means nothing blocks playback, so allow it
+        // (mirrors the "missing schedule = play" fallback above).
+        shouldPlay = true;
         print(
-            '$yellow⚠️  MEDIA: No restrictions configured and alwaysPlay = false$reset');
-        print('$red⏭️  MEDIA: Skipping media (no schedule configured)$reset');
-        print(
-            '$magenta═══════════════════════════════════════════════════════════$reset');
-        _sendAdProofOfPlay(
-          currentMedia,
-          status: 'failed',
-          errorMessage: 'no_schedule_configured',
-        );
-        _onMediaEnd();
-        return;
+            '$green✅ MEDIA: No restrictions configured → Media can play$reset');
       }
     }
 
