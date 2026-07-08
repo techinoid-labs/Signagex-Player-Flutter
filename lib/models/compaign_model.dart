@@ -1379,24 +1379,28 @@ bool mediaItemIsAdSlot(MediaItem media) {
   return media.isAd || idLooksLikeAdSlot(media.id);
 }
 
+/// Ad flight dates are compared against UTC "today" (see [evaluateAdSlotSchedule]),
+/// so parse as UTC midnight — a local-time DateTime here would shift the
+/// comparison by the device's UTC offset and can flip same-day windows to
+/// "outside_date_range" depending on time of day and timezone.
 DateTime? _parseScheduleDateOnly(String? raw) {
   if (raw == null || raw.trim().isEmpty) return null;
   final value = raw.trim();
   try {
     if (value.contains('T')) {
-      final parsed = DateTime.parse(value);
-      return DateTime(parsed.year, parsed.month, parsed.day);
+      final parsed = DateTime.parse(value).toUtc();
+      return DateTime.utc(parsed.year, parsed.month, parsed.day);
     }
     final parts = value.split('-');
     if (parts.length == 3) {
-      return DateTime(
+      return DateTime.utc(
         int.parse(parts[0]),
         int.parse(parts[1]),
         int.parse(parts[2]),
       );
     }
-    final parsed = DateTime.parse(value);
-    return DateTime(parsed.year, parsed.month, parsed.day);
+    final parsed = DateTime.parse(value).toUtc();
+    return DateTime.utc(parsed.year, parsed.month, parsed.day);
   } catch (_) {
     return null;
   }
