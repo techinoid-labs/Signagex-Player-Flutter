@@ -34,6 +34,83 @@ class DeviceSettingsViewModel with ChangeNotifier {
     }
   }
 
+  /// Remote-view cursor injection via xdotool (X11 only). Coordinates are
+  /// expected to already be in real screen-pixel space — the caller is
+  /// responsible for any scaling from CMS/image space.
+  Future<String> moveCursorAndClickForLinux(double x, double y) async {
+    try {
+      final ix = x.round();
+      final iy = y.round();
+      final result = await Process.run(
+        'xdotool',
+        ['mousemove', '$ix', '$iy', 'click', '1'],
+      );
+      if (result.exitCode != 0) {
+        print('MQTT_LOGS:: xdotool click failed: ${result.stderr}');
+        return 'Error: ${result.stderr}';
+      }
+      return 'Click executed at ($ix, $iy)';
+    } catch (e) {
+      print('MQTT_LOGS:: xdotool click exception: $e');
+      return 'Error: $e';
+    }
+  }
+
+  Future<String> moveCursorForLinux(double x, double y) async {
+    try {
+      final result = await Process.run(
+        'xdotool',
+        ['mousemove', '${x.round()}', '${y.round()}'],
+      );
+      if (result.exitCode != 0) {
+        print('MQTT_LOGS:: xdotool mousemove failed: ${result.stderr}');
+        return 'Error: ${result.stderr}';
+      }
+      return 'Cursor moved';
+    } catch (e) {
+      print('MQTT_LOGS:: xdotool mousemove exception: $e');
+      return 'Error: $e';
+    }
+  }
+
+  Future<String> dragForLinux(
+    double startX,
+    double startY,
+    double endX,
+    double endY,
+  ) async {
+    try {
+      final result = await Process.run('xdotool', [
+        'mousemove', '${startX.round()}', '${startY.round()}',
+        'mousedown', '1',
+        'mousemove', '${endX.round()}', '${endY.round()}',
+        'mouseup', '1',
+      ]);
+      if (result.exitCode != 0) {
+        print('MQTT_LOGS:: xdotool drag failed: ${result.stderr}');
+        return 'Error: ${result.stderr}';
+      }
+      return 'Drag executed';
+    } catch (e) {
+      print('MQTT_LOGS:: xdotool drag exception: $e');
+      return 'Error: $e';
+    }
+  }
+
+  Future<String> typeTextForLinux(String text) async {
+    try {
+      final result = await Process.run('xdotool', ['type', '--', text]);
+      if (result.exitCode != 0) {
+        print('MQTT_LOGS:: xdotool type failed: ${result.stderr}');
+        return 'Error: ${result.stderr}';
+      }
+      return 'Text typed';
+    } catch (e) {
+      print('MQTT_LOGS:: xdotool type exception: $e');
+      return 'Error: $e';
+    }
+  }
+
   Future<String> rebootDeviceForLinux() async {
     print("Attempting to restart the device...");
 

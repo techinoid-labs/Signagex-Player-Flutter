@@ -269,7 +269,13 @@ class MqttViewModel extends ChangeNotifier {
       if (renderObject is! RenderRepaintBoundary) return;
       if (renderObject.debugNeedsPaint) return;
 
-      final image = await renderObject.toImage(pixelRatio: 0.5);
+      // Full resolution (pixelRatio: 1) is intentional — click/cursor
+      // coordinates sent back by the CMS are expected to map 1:1 onto the
+      // pixels of the most recent frame it received, matching how the
+      // Android app streams native-resolution screencaps for the same
+      // reason. Downscaling here would require guessing the CMS's scale
+      // factor for cursor injection to land correctly.
+      final image = await renderObject.toImage(pixelRatio: 1.0);
       final byteData = await image.toByteData(format: ImageByteFormat.png);
       if (byteData == null) return;
       final imageBytes = byteData.buffer.asUint8List();
@@ -279,7 +285,7 @@ class MqttViewModel extends ChangeNotifier {
         compressedBytes = await _compressImage(imageBytes);
       } else {
         // flutter_image_compress has no Linux/Windows implementation —
-        // send the (already half-resolution) PNG bytes as-is.
+        // send the full-resolution PNG bytes as-is.
         compressedBytes = imageBytes;
       }
       final base64Image = base64Encode(compressedBytes);
@@ -1816,6 +1822,10 @@ class MqttViewModel extends ChangeNotifier {
       return;
     }
     _mqttClientService.subscribe(topic);
+    // Remote-view screenshots are published here and cursor/click commands
+    // from the CMS arrive here too — without this the player would stream
+    // screenshots out but never receive any input back.
+    _mqttClientService.subscribe('$topic/remote');
   }
 
   void publishMessage(String topic, String message) {
@@ -2061,6 +2071,45 @@ class MqttViewModel extends ChangeNotifier {
     } else if (jsonObj["action"] == "stop_remote_view") {
       print("MQTT_LOGS:: stop_remote_view received");
       _stopRemoteView();
+    } else if (jsonObj["action"] == "click") {
+      // Same field names as the Android app's InputAction.getClick — x/y in
+      // the pixel space of the most recent remote-view frame we published.
+      print("MQTT_LOGS:: click received: $jsonObj");
+      if (Platform.isLinux) {
+        final x = (jsonObj["x"] as num?)?.toDouble();
+        final y = (jsonObj["y"] as num?)?.toDouble();
+        if (x != null && y != null) {
+          deviceSettings.moveCursorAndClickForLinux(x, y);
+        }
+      }
+    } else if (jsonObj["action"] == "scroll") {
+      // Same shape as Android's InputAction.getScroll: hold/release objects
+      // each carrying an x/y pair, treated as a press-drag-release gesture.
+      print("MQTT_LOGS:: scroll received: $jsonObj");
+      if (Platform.isLinux) {
+        final hold = jsonObj["hold"];
+        final release = jsonObj["release"];
+        if (hold is Map && release is Map) {
+          final startX = (hold["x"] as num?)?.toDouble();
+          final startY = (hold["y"] as num?)?.toDouble();
+          final endX = (release["x"] as num?)?.toDouble();
+          final endY = (release["y"] as num?)?.toDouble();
+          if (startX != null &&
+              startY != null &&
+              endX != null &&
+              endY != null) {
+            deviceSettings.dragForLinux(startX, startY, endX, endY);
+          }
+        }
+      }
+    } else if (jsonObj["action"] == "send_text") {
+      print("MQTT_LOGS:: send_text received: $jsonObj");
+      if (Platform.isLinux) {
+        final text = jsonObj["message"]?.toString();
+        if (text != null && text.isNotEmpty) {
+          deviceSettings.typeTextForLinux(text);
+        }
+      }
     } else if (jsonObj["action"] == "publish_playlist") {
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
