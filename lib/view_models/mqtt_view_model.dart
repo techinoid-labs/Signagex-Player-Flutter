@@ -327,16 +327,36 @@ class MqttViewModel extends ChangeNotifier {
     try {
       final tempDir = await getTemporaryDirectory();
       final file = File('${tempDir.path}/signagex_remote_view_frame.png');
-      final result = await Process.run('scrot', ['-o', '-z', file.path]);
+      if (await file.exists()) {
+        await file.delete();
+      }
+
+      // --overwrite is the only flag we actually need; an unverified extra
+      // flag here previously caused scrot to fail on some invocations with
+      // no stderr output at all.
+      final result = await Process.run(
+        'scrot',
+        ['--overwrite', file.path],
+        environment: {'DISPLAY': Platform.environment['DISPLAY'] ?? ':0'},
+      );
       if (result.exitCode != 0) {
-        debugPrint('MQTT_LOGS:: scrot failed: ${result.stderr}');
+        debugPrint('MQTT_LOGS:: scrot failed (exit ${result.exitCode}): '
+            'stderr="${result.stderr}" stdout="${result.stdout}"');
         return null;
       }
       if (!await file.exists()) {
         debugPrint('MQTT_LOGS:: scrot reported success but output file is missing');
         return null;
       }
-      return await file.readAsBytes();
+      final bytes = await file.readAsBytes();
+      if (bytes.isEmpty) {
+        // scrot can report exit 0 while still writing an empty file (e.g.
+        // if it couldn't reach the X server) — never let this through as
+        // a "successful" capture, or we publish a blank image silently.
+        debugPrint('MQTT_LOGS:: scrot produced an empty file, treating as failure');
+        return null;
+      }
+      return bytes;
     } catch (e) {
       debugPrint('MQTT_LOGS:: scrot exception: $e');
       return null;
