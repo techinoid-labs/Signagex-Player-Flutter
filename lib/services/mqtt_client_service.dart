@@ -27,6 +27,14 @@ class MqttClientService {
   /// fresh one on top of it.
   Future<void>? _connectFuture;
 
+  /// _client.updates is only safe to read once a connection has actually
+  /// been established (it throws a null-check crash before that). We
+  /// cancel and re-listen on every successful connect so there's never
+  /// more than one active subscription, without ever touching .updates
+  /// before the client is ready for it.
+  StreamSubscription<List<MqttReceivedMessage<MqttMessage?>>?>?
+      _updatesSubscription;
+
   MqttClientService() {
     _initializeClient();
   }
@@ -56,14 +64,6 @@ class MqttClientService {
     _client.onSubscribed = _onSubscribed;
     _client.onAutoReconnect = _onAutoReconnect;
     _client.onAutoReconnected = _onAutoReconnected;
-
-    // Registered once for the lifetime of this client object — connect()
-    // and subscribe() used to each attach their own listener on top of
-    // this, so a single broker message could get handled N times over
-    // after N reconnects.
-    _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
-      _handleReceivedMessage(c);
-    });
   }
 
   // ────────────────────────────────
@@ -160,6 +160,11 @@ class MqttClientService {
         if (connectionState == MqttConnectionState.connected) {
           print('MQTT_LOGS:: Successfully connected!');
           print('MQTT_LOGS:: Connection status: ${_client.connectionStatus}');
+          await _updatesSubscription?.cancel();
+          _updatesSubscription = _client.updates
+              .listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
+            _handleReceivedMessage(c);
+          });
           return;
         } else if (connectionState == MqttConnectionState.faulted ||
             connectionState == MqttConnectionState.disconnected) {
@@ -206,9 +211,10 @@ class MqttClientService {
     }
     print('MQTT_LOGS:: Subscribing to the topic: $topic');
     _client.subscribe(topic, MqttQos.atMostOnce);
-    // Message handling is wired once in _initializeClient — no listener
-    // registration here, so repeated subscribe() calls (e.g. on every
-    // reconnect) don't pile up duplicate handlers for the same message.
+    // Message handling is wired up once per successful connect() (see
+    // _connectInternal) — no listener registration here, so repeated
+    // subscribe() calls don't pile up duplicate handlers for the same
+    // message.
   }
 
   void _handleReceivedMessage(
