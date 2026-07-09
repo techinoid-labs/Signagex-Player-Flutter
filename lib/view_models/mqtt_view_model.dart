@@ -2106,6 +2106,14 @@ class MqttViewModel extends ChangeNotifier {
     } else if (jsonObj["action"] == "stop_remote_view") {
       print("MQTT_LOGS:: stop_remote_view received");
       _stopRemoteView();
+    } else if (jsonObj["action"] == "low_res") {
+      // Observed from a real CMS session: the web remote-view page can
+      // send this without ever sending start_remote_view first. Treat it
+      // as an equivalent start trigger too — _startRemoteView() already
+      // no-ops if a capture loop is already running, so handling both
+      // costs nothing regardless of which one the CMS actually uses.
+      print("MQTT_LOGS:: low_res received — starting remote view");
+      _startRemoteView();
     } else if (jsonObj["action"] == "click") {
       // Same field names as the Android app's InputAction.getClick — x/y in
       // the pixel space of the most recent remote-view frame we published.
