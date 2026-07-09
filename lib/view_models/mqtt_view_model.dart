@@ -326,17 +326,24 @@ class MqttViewModel extends ChangeNotifier {
   Future<Uint8List?> _captureScreenshotForLinux() async {
     try {
       final tempDir = await getTemporaryDirectory();
-      final file = File('${tempDir.path}/signagex_remote_view_frame.png');
+      // .jpg extension — scrot picks its output format from the file
+      // extension (imlib2-backed), so this gets real JPEG compression for
+      // free instead of raw/lossless PNG. Matches the Android app sending
+      // JPEG quality 80 rather than PNG, and keeps each frame small enough
+      // not to strain the CMS's browser-side MQTT connection over
+      // WebSocket once a second.
+      final file = File('${tempDir.path}/signagex_remote_view_frame.jpg');
       if (await file.exists()) {
         await file.delete();
       }
 
       // --overwrite is the only flag we actually need; an unverified extra
       // flag here previously caused scrot to fail on some invocations with
-      // no stderr output at all.
+      // no stderr output at all. --quality controls JPEG compression
+      // (0-100, scrot default is 75).
       final result = await Process.run(
         'scrot',
-        ['--overwrite', file.path],
+        ['--overwrite', '--quality', '60', file.path],
         environment: {'DISPLAY': Platform.environment['DISPLAY'] ?? ':0'},
       );
       if (result.exitCode != 0) {
