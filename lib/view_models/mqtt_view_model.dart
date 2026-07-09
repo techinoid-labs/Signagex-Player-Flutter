@@ -88,6 +88,9 @@ class MqttViewModel extends ChangeNotifier {
   String get topic => _topic;
   String get playerCode => _topic;
 
+  Timer? _remoteViewTimer;
+  bool _remoteViewActive = false;
+
   PlayListModel? _playListModel;
 
   PlayListModel? get playListModel => _playListModel;
@@ -225,6 +228,77 @@ class MqttViewModel extends ChangeNotifier {
       }
     } catch (error) {
       debugPrint("Error capturing or sending screenshot: $error");
+    }
+  }
+
+  /// Starts periodic screenshot capture for remote view, matching the
+  /// Android app's protocol: publishes `{action:"image", img_url:<base64>}`
+  /// to `{playerCode}/remote` (non-retained) roughly once a second. The
+  /// CMS renders the received frames and draws its own cursor overlay —
+  /// the player only ever streams screenshots, it never receives or acts
+  /// on cursor/click positions itself.
+  void _startRemoteView() {
+    if (_remoteViewActive) {
+      debugPrint('MQTT_LOGS:: Remote view already active, ignoring duplicate start');
+      return;
+    }
+    _remoteViewActive = true;
+    debugPrint('MQTT_LOGS:: Remote view started');
+    _remoteViewTimer?.cancel();
+    _captureAndPublishRemoteViewFrame();
+    _remoteViewTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _captureAndPublishRemoteViewFrame();
+    });
+  }
+
+  void _stopRemoteView() {
+    _remoteViewActive = false;
+    _remoteViewTimer?.cancel();
+    _remoteViewTimer = null;
+    debugPrint('MQTT_LOGS:: Remote view stopped');
+  }
+
+  Future<void> _captureAndPublishRemoteViewFrame() async {
+    if (!_remoteViewActive) return;
+    if (_topic.isEmpty || !_mqttClientService.isConnected) return;
+
+    try {
+      final boundaryContext = boundaryKey.currentContext;
+      if (boundaryContext == null) return;
+      final renderObject = boundaryContext.findRenderObject();
+      if (renderObject is! RenderRepaintBoundary) return;
+      if (renderObject.debugNeedsPaint) return;
+
+      final image = await renderObject.toImage(pixelRatio: 0.5);
+      final byteData = await image.toByteData(format: ImageByteFormat.png);
+      if (byteData == null) return;
+      final imageBytes = byteData.buffer.asUint8List();
+
+      final Uint8List compressedBytes;
+      if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
+        compressedBytes = await _compressImage(imageBytes);
+      } else {
+        // flutter_image_compress has no Linux/Windows implementation —
+        // send the (already half-resolution) PNG bytes as-is.
+        compressedBytes = imageBytes;
+      }
+      final base64Image = base64Encode(compressedBytes);
+
+      final payload = jsonEncode({
+        'action': 'image',
+        'img_url': base64Image,
+        'sender': 'linux',
+      });
+
+      // publishMessage (not publish) — remote-view frames must never be
+      // retained, or the last frame would linger on the broker and get
+      // redelivered to the next viewer even after remote view stops.
+      _mqttClientService.publishMessage(
+        '$_topic/remote',
+        utf8.encode(payload),
+      );
+    } catch (e) {
+      debugPrint('MQTT_LOGS:: Failed to capture/publish remote view frame: $e');
     }
   }
 
@@ -1574,6 +1648,7 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> _resetLocalPlayerSession() async {
+    _stopRemoteView();
     _topic = '';
     globleTopic = '';
     storeState = null;
@@ -1980,6 +2055,12 @@ class MqttViewModel extends ChangeNotifier {
       publishMessage(globleTopic, jsonEncode(data));
     } else if (jsonObj["action"] == "action click") {
       print(" i am in action  click");
+    } else if (jsonObj["action"] == "start_remote_view") {
+      print("MQTT_LOGS:: start_remote_view received");
+      _startRemoteView();
+    } else if (jsonObj["action"] == "stop_remote_view") {
+      print("MQTT_LOGS:: stop_remote_view received");
+      _stopRemoteView();
     } else if (jsonObj["action"] == "publish_playlist") {
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
@@ -2524,6 +2605,7 @@ class MqttViewModel extends ChangeNotifier {
   void dispose() {
     _timerOfCampaign?.cancel();
     _timer?.cancel();
+    _remoteViewTimer?.cancel();
     super.dispose();
   }
 
