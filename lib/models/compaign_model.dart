@@ -541,15 +541,23 @@ class MediaItem {
           'viewBox="0 0 $w $h"><polygon points="$points" fill="$fill"$strokeAttr/></svg>';
     }
 
+    // SVG strokes are centered on the path, so a circle/ellipse whose
+    // radius exactly touches the canvas edge has its outer half-stroke
+    // clipped by the viewBox — visible as flat facets on the curve.
+    // Pad the viewBox by half the stroke width so the stroke has room.
+    final curvePad = strokeWidth > 0 ? strokeWidth / 2 : 0;
+
     switch (shapeType) {
       case 'circle':
         final r = (w < h ? w : h) / 2;
         return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
-            'viewBox="0 0 $w $h"><circle cx="${w / 2}" cy="${h / 2}" r="$r" '
+            'viewBox="${-curvePad} ${-curvePad} ${w + curvePad * 2} ${h + curvePad * 2}">'
+            '<circle cx="${w / 2}" cy="${h / 2}" r="$r" '
             'fill="$fill"$strokeAttr/></svg>';
       case 'ellipse':
         return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
-            'viewBox="0 0 $w $h"><ellipse cx="${w / 2}" cy="${h / 2}" '
+            'viewBox="${-curvePad} ${-curvePad} ${w + curvePad * 2} ${h + curvePad * 2}">'
+            '<ellipse cx="${w / 2}" cy="${h / 2}" '
             'rx="${w / 2}" ry="${h / 2}" fill="$fill"$strokeAttr/></svg>';
       case 'line':
         return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '

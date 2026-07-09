@@ -173,6 +173,67 @@ String _normalizeSvgForParser(String svg) {
   return s;
 }
 
+/// SVG strokes are centered on the path — a shape whose radius/edges touch
+/// the canvas boundary (common on server-authored circles/ellipses) has its
+/// outer half-stroke clipped by the viewBox, showing as flat facets on an
+/// otherwise round curve. Widen the viewBox by half the largest stroke-width
+/// found so nothing gets clipped, without touching the shape's own geometry.
+String _expandSvgViewBoxForStroke(String svg) {
+  try {
+    double maxStroke = 0;
+    for (final m in RegExp(r'stroke-width\s*=\s*"([0-9.]+)"').allMatches(svg)) {
+      final v = double.tryParse(m.group(1) ?? '');
+      if (v != null && v > maxStroke) maxStroke = v;
+    }
+    if (maxStroke <= 0) return svg;
+    final pad = maxStroke / 2;
+
+    final rootTagMatch = RegExp(r'<svg\b[^>]*>').firstMatch(svg);
+    if (rootTagMatch == null) return svg;
+    final rootTag = rootTagMatch.group(0)!;
+
+    double minX = 0, minY = 0, vbW = 0, vbH = 0;
+    final viewBoxMatch =
+        RegExp(r'viewBox\s*=\s*"([^"]+)"').firstMatch(rootTag);
+    if (viewBoxMatch != null) {
+      final parts = viewBoxMatch
+          .group(1)!
+          .trim()
+          .split(RegExp(r'[\s,]+'))
+          .map((p) => double.tryParse(p))
+          .toList();
+      if (parts.length == 4 && parts.every((p) => p != null)) {
+        minX = parts[0]!;
+        minY = parts[1]!;
+        vbW = parts[2]!;
+        vbH = parts[3]!;
+      } else {
+        return svg;
+      }
+    } else {
+      final widthMatch = RegExp(r'\bwidth\s*=\s*"([0-9.]+)"').firstMatch(rootTag);
+      final heightMatch =
+          RegExp(r'\bheight\s*=\s*"([0-9.]+)"').firstMatch(rootTag);
+      final w = double.tryParse(widthMatch?.group(1) ?? '');
+      final h = double.tryParse(heightMatch?.group(1) ?? '');
+      if (w == null || h == null) return svg;
+      vbW = w;
+      vbH = h;
+    }
+
+    final newViewBox =
+        '${minX - pad} ${minY - pad} ${vbW + pad * 2} ${vbH + pad * 2}';
+    final newRootTag = viewBoxMatch != null
+        ? rootTag.replaceFirst(
+            RegExp(r'viewBox\s*=\s*"[^"]+"'), 'viewBox="$newViewBox"')
+        : rootTag.replaceFirst('<svg', '<svg viewBox="$newViewBox"');
+
+    return svg.replaceFirst(rootTag, newRootTag);
+  } catch (_) {
+    return svg;
+  }
+}
+
 String _stripDataUrlImagesFromSvg(String svg) {
   String s = svg;
 
@@ -1372,12 +1433,12 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
         if (decoded != cleaned && isSvgContent(decoded)) {
           print("[LOG] SVG decoded from URL encoding");
-          return decoded;
+          return _expandSvgViewBoxForStroke(decoded);
         }
       }
 
       print("[LOG] SVG content ready, length: ${cleaned.length}");
-      return cleaned;
+      return _expandSvgViewBoxForStroke(cleaned);
     } catch (e) {
       print("[ERROR] SVG decode error: $e");
       return content;
