@@ -21,6 +21,12 @@ class MqttClientService {
 
   Function(String)? onMessageReceived;
 
+  /// Guards against overlapping connect() calls racing each other and
+  /// opening two live connections with two different client IDs — every
+  /// caller in-flight shares this single attempt instead of starting a
+  /// fresh one on top of it.
+  Future<void>? _connectFuture;
+
   MqttClientService() {
     _initializeClient();
   }
@@ -50,6 +56,14 @@ class MqttClientService {
     _client.onSubscribed = _onSubscribed;
     _client.onAutoReconnect = _onAutoReconnect;
     _client.onAutoReconnected = _onAutoReconnected;
+
+    // Registered once for the lifetime of this client object — connect()
+    // and subscribe() used to each attach their own listener on top of
+    // this, so a single broker message could get handled N times over
+    // after N reconnects.
+    _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
+      _handleReceivedMessage(c);
+    });
   }
 
   // ────────────────────────────────
@@ -83,7 +97,24 @@ class MqttClientService {
   // ────────────────────────────────
   // Connect - using wss://signagexai.com/mqtt
   // ────────────────────────────────
-  Future<void> connect() async {
+  Future<void> connect() {
+    final inFlight = _connectFuture;
+    if (inFlight != null) {
+      print('MQTT_LOGS:: connect() already in progress, awaiting it instead '
+          'of starting a second connection');
+      return inFlight;
+    }
+    final future = _connectInternal();
+    _connectFuture = future;
+    future.whenComplete(() {
+      if (identical(_connectFuture, future)) {
+        _connectFuture = null;
+      }
+    });
+    return future;
+  }
+
+  Future<void> _connectInternal() async {
     try {
       print(
           'MQTT_LOGS:: Connecting to wss://$mqttBroker:$mqttPort$mqttWebSocketPath');
@@ -129,11 +160,6 @@ class MqttClientService {
         if (connectionState == MqttConnectionState.connected) {
           print('MQTT_LOGS:: Successfully connected!');
           print('MQTT_LOGS:: Connection status: ${_client.connectionStatus}');
-
-          _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
-            _handleReceivedMessage(c);
-          });
-
           return;
         } else if (connectionState == MqttConnectionState.faulted ||
             connectionState == MqttConnectionState.disconnected) {
@@ -180,10 +206,9 @@ class MqttClientService {
     }
     print('MQTT_LOGS:: Subscribing to the topic: $topic');
     _client.subscribe(topic, MqttQos.atMostOnce);
-
-    _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
-      _handleReceivedMessage(c);
-    });
+    // Message handling is wired once in _initializeClient — no listener
+    // registration here, so repeated subscribe() calls (e.g. on every
+    // reconnect) don't pile up duplicate handlers for the same message.
   }
 
   void _handleReceivedMessage(
