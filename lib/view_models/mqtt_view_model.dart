@@ -263,22 +263,35 @@ class MqttViewModel extends ChangeNotifier {
     if (_topic.isEmpty || !_mqttClientService.isConnected) return;
 
     try {
-      final boundaryContext = boundaryKey.currentContext;
-      if (boundaryContext == null) return;
-      final renderObject = boundaryContext.findRenderObject();
-      if (renderObject is! RenderRepaintBoundary) return;
-      if (renderObject.debugNeedsPaint) return;
+      Uint8List? imageBytes;
 
-      // Full resolution (pixelRatio: 1) is intentional — click/cursor
-      // coordinates sent back by the CMS are expected to map 1:1 onto the
-      // pixels of the most recent frame it received, matching how the
-      // Android app streams native-resolution screencaps for the same
-      // reason. Downscaling here would require guessing the CMS's scale
-      // factor for cursor injection to land correctly.
-      final image = await renderObject.toImage(pixelRatio: 1.0);
-      final byteData = await image.toByteData(format: ImageByteFormat.png);
-      if (byteData == null) return;
-      final imageBytes = byteData.buffer.asUint8List();
+      if (Platform.isLinux) {
+        // This player embeds native platform-view surfaces (CEF webview,
+        // fvp/libmpv video) that are composited outside Flutter's own
+        // Skia canvas — RenderRepaintBoundary.toImage() can't rasterize
+        // them and throws inside the engine on this build ("LateInitiali-
+        // zationError: Local 'result' has not been initialized") on every
+        // attempt. Capture the real, fully-composited X11 desktop instead,
+        // same principle as the Android app shelling out to screencap
+        // instead of using a Flutter-level snapshot. This also keeps
+        // capture and xdotool cursor injection in the same coordinate
+        // space (raw X11 screen pixels), avoiding a separate DPI/pixel-
+        // ratio mismatch between the two.
+        imageBytes = await _captureScreenshotForLinux();
+      } else {
+        final boundaryContext = boundaryKey.currentContext;
+        if (boundaryContext == null) return;
+        final renderObject = boundaryContext.findRenderObject();
+        if (renderObject is! RenderRepaintBoundary) return;
+        if (renderObject.debugNeedsPaint) return;
+
+        final image = await renderObject.toImage(pixelRatio: 1.0);
+        final byteData = await image.toByteData(format: ImageByteFormat.png);
+        if (byteData == null) return;
+        imageBytes = byteData.buffer.asUint8List();
+      }
+
+      if (imageBytes == null) return;
 
       final Uint8List compressedBytes;
       if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
@@ -305,6 +318,28 @@ class MqttViewModel extends ChangeNotifier {
       );
     } catch (e) {
       debugPrint('MQTT_LOGS:: Failed to capture/publish remote view frame: $e');
+    }
+  }
+
+  /// OS-level X11 screenshot via scrot — requires `sudo apt install scrot`
+  /// and an X11 session (matches the xdotool cursor-injection requirement).
+  Future<Uint8List?> _captureScreenshotForLinux() async {
+    try {
+      final tempDir = await getTemporaryDirectory();
+      final file = File('${tempDir.path}/signagex_remote_view_frame.png');
+      final result = await Process.run('scrot', ['-o', '-z', file.path]);
+      if (result.exitCode != 0) {
+        debugPrint('MQTT_LOGS:: scrot failed: ${result.stderr}');
+        return null;
+      }
+      if (!await file.exists()) {
+        debugPrint('MQTT_LOGS:: scrot reported success but output file is missing');
+        return null;
+      }
+      return await file.readAsBytes();
+    } catch (e) {
+      debugPrint('MQTT_LOGS:: scrot exception: $e');
+      return null;
     }
   }
 
