@@ -343,7 +343,7 @@ class MqttViewModel extends ChangeNotifier {
       print("this is data $storedJsonObj");
 
       if (storedJsonObj["action"] == "publish_playlist") {
-        await _mqttClientService.connect();
+        await _mqttClientService.connect(playerCode: _topic);
 
         if (_topic.isNotEmpty) {
           subsibeMessage(_topic);
@@ -362,7 +362,7 @@ class MqttViewModel extends ChangeNotifier {
           }
         }
       } else if (storedJsonObj["action"] == "publish_campaign") {
-        await _mqttClientService.connect();
+        await _mqttClientService.connect(playerCode: _topic);
 
         if (_topic.isNotEmpty) {
           subsibeMessage(_topic);
@@ -1043,7 +1043,7 @@ class MqttViewModel extends ChangeNotifier {
         await _restoreSessionFromStorage();
         return;
       }
-      await _mqttClientService.connect();
+      await _mqttClientService.connect(playerCode: _topic);
       _state = MqttState.connectionScreen;
       notifyListeners();
       await _checkPairingStatus();
@@ -1754,7 +1754,7 @@ class MqttViewModel extends ChangeNotifier {
 
       // MQTT ops after state update — failures here don't block pairing state
       try {
-        await _mqttClientService.connect();
+        await _mqttClientService.connect(playerCode: _topic);
       } catch (e) {
         debugPrint('MQTT connect during pairing failed: $e');
       }

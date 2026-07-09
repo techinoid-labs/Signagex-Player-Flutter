@@ -97,14 +97,22 @@ class MqttClientService {
   // ────────────────────────────────
   // Connect - using wss://signagexai.com/mqtt
   // ────────────────────────────────
-  Future<void> connect() {
+  /// [playerCode] configures MQTT presence tracking, matching the Android
+  /// app: a retained Last Will of {"status":"offline"} on
+  /// `{playerCode}/player_status`, published automatically by the broker
+  /// if this client disconnects ungracefully, plus an explicit retained
+  /// {"status":"online"} publish to the same topic once connected. Without
+  /// this, the CMS's online/offline indicator never hears from the player
+  /// at all — the player_logs/heartbeat messages are a separate mechanism
+  /// the CMS's presence tracking doesn't watch.
+  Future<void> connect({String? playerCode}) {
     final inFlight = _connectFuture;
     if (inFlight != null) {
       print('MQTT_LOGS:: connect() already in progress, awaiting it instead '
           'of starting a second connection');
       return inFlight;
     }
-    final future = _connectInternal();
+    final future = _connectInternal(playerCode);
     _connectFuture = future;
     future.whenComplete(() {
       if (identical(_connectFuture, future)) {
@@ -114,7 +122,7 @@ class MqttClientService {
     return future;
   }
 
-  Future<void> _connectInternal() async {
+  Future<void> _connectInternal(String? playerCode) async {
     try {
       print(
           'MQTT_LOGS:: Connecting to wss://$mqttBroker:$mqttPort$mqttWebSocketPath');
@@ -132,6 +140,17 @@ class MqttClientService {
           .withClientIdentifier(
               'flutter_client_${DateTime.now().millisecondsSinceEpoch}')
           .startClean();
+
+      if (playerCode != null && playerCode.isNotEmpty) {
+        final willPayload = Uint8Buffer()
+          ..addAll(utf8.encode(jsonEncode({'status': 'offline'})));
+        connMessage
+            .will()
+            .withWillTopic('$playerCode/player_status')
+            .withWillQos(MqttQos.atLeastOnce)
+            .withWillRetain()
+            .withWillPayload(willPayload);
+      }
 
       _client.connectionMessage = connMessage;
 
@@ -165,6 +184,9 @@ class MqttClientService {
               .listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
             _handleReceivedMessage(c);
           });
+          if (playerCode != null && playerCode.isNotEmpty) {
+            _publishOnlineStatus(playerCode);
+          }
           return;
         } else if (connectionState == MqttConnectionState.faulted ||
             connectionState == MqttConnectionState.disconnected) {
@@ -194,6 +216,22 @@ class MqttClientService {
         _client.disconnect();
       } catch (_) {}
       rethrow;
+    }
+  }
+
+  void _publishOnlineStatus(String playerCode) {
+    try {
+      final buffer = Uint8Buffer()
+        ..addAll(utf8.encode(jsonEncode({'status': 'online'})));
+      _client.publishMessage(
+        '$playerCode/player_status',
+        MqttQos.atLeastOnce,
+        buffer,
+        retain: true,
+      );
+      print('MQTT_LOGS:: Published online status to $playerCode/player_status');
+    } catch (e) {
+      print('MQTT_LOGS:: Failed to publish online status: $e');
     }
   }
 
