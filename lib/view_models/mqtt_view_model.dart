@@ -104,6 +104,8 @@ class MqttViewModel extends ChangeNotifier {
   String get topic => _topic;
   String get playerCode => _topic;
 
+  Timer? _pairingRevalidationTimer;
+
   Timer? _remoteViewTimer;
   bool _remoteViewActive = false;
 
@@ -352,7 +354,17 @@ class MqttViewModel extends ChangeNotifier {
       final payload = jsonEncode({
         'action': 'image',
         'img_url': base64Image,
-        'sender': 'linux',
+        // DIAGNOSTIC: matching Android's exact sender value as a test.
+        // Android's remote view works against this same CMS; ours doesn't,
+        // despite an otherwise identical payload shape (action/img_url/
+        // sender — that's the whole message on both sides). If the CMS
+        // frontend has any logic keyed on sender == "android" (a render
+        // branch, a decode path), an unrecognized "linux" value could
+        // explain both the failed render and the crash-like reconnect
+        // loop. If this fixes it, the correct long-term fix is for the
+        // CMS to add a real "linux" case rather than leaving this here
+        // permanently.
+        'sender': 'android',
       });
 
       // publishMessage (not publish) — remote-view frames must never be
@@ -507,6 +519,24 @@ class MqttViewModel extends ChangeNotifier {
       await _handleConnectivityChange(
         status == InternetConnectionStatus.connected,
       );
+    });
+
+    // Safety net: once paired with a cached campaign, _checkPairingStatus
+    // never runs again on its own (it early-returns unless called with
+    // refresh:true, which itself is only reached when there's no cached
+    // campaign — i.e. almost never in practice). If the player/player
+    // group gets deleted on the CMS and the corresponding remove_campaign/
+    // action_delete MQTT message is missed (player offline at that
+    // moment, or the CMS's delete flow doesn't publish one at all for
+    // group deletion), there is otherwise no way for the player to ever
+    // find out — it just replays the last cached campaign forever.
+    // Periodically re-verify against the server independent of MQTT.
+    _pairingRevalidationTimer?.cancel();
+    _pairingRevalidationTimer =
+        Timer.periodic(const Duration(minutes: 5), (_) {
+      if (_topic.isNotEmpty) {
+        _checkPairingStatus(refresh: true);
+      }
     });
   }
 
@@ -1910,6 +1940,25 @@ class MqttViewModel extends ChangeNotifier {
         await prefs.setBool('storeState', false);
         _state = MqttState.pairedScreen;
         _startPairingPollingTimer();
+
+        // The server no longer considers this player paired — e.g. it (or
+        // its player group) was deleted from the CMS. Clear any cached
+        // campaign/playlist so stale content can't get reloaded from
+        // local storage on the next reconnect; without this the old
+        // content would keep playing indefinitely since nothing else
+        // clears it.
+        if (_campaignModel != null ||
+            _playListModel != null ||
+            storedJsonObj.isNotEmpty) {
+          debugPrint(
+              'MQTT_LOGS:: Player no longer paired — clearing cached content');
+          _campaignModel = null;
+          _playListModel = null;
+          _interactivityModel = null;
+          storedJsonObj = {};
+          await prefs.remove('jsonObj');
+          await prefs.remove('last_publish_campaign_payload');
+        }
       } else if (response["paired"] == true) {
         storeState = true;
         await prefs.setBool('storeState', true);
@@ -2845,6 +2894,7 @@ class MqttViewModel extends ChangeNotifier {
     _timerOfCampaign?.cancel();
     _timer?.cancel();
     _remoteViewTimer?.cancel();
+    _pairingRevalidationTimer?.cancel();
     super.dispose();
   }
 
