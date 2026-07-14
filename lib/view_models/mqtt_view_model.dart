@@ -8,6 +8,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 
 import 'package:battery_plus/battery_plus.dart';
+import 'package:image/image.dart' as img;
 import 'package:dio/dio.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_phoenix/flutter_phoenix.dart';
@@ -31,6 +32,21 @@ import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 import '../data/api_repository/api_repository.dart';
 import '../services/mqtt_client_service.dart';
 import '../utils/constants.dart';
+
+/// Result of shrinking a remote-view screenshot: the smaller encoded bytes,
+/// plus the ratio needed to scale a click received in this frame's pixel
+/// space back up to real screen coordinates (real = received * scale).
+class _RemoteViewFrame {
+  final Uint8List bytes;
+  final double scaleX;
+  final double scaleY;
+
+  _RemoteViewFrame({
+    required this.bytes,
+    required this.scaleX,
+    required this.scaleY,
+  });
+}
 
 // #region agent log
 void _mqttAgentDebugLog(
@@ -90,6 +106,14 @@ class MqttViewModel extends ChangeNotifier {
 
   Timer? _remoteViewTimer;
   bool _remoteViewActive = false;
+
+  // Ratio of real screen pixels to the (shrunk) pixels actually sent in the
+  // last remote-view frame — real = received * scale. Click/scroll
+  // coordinates from the CMS are in the space of whatever frame it last
+  // saw, so incoming positions must be scaled back up by this before
+  // being handed to xdotool.
+  double _remoteViewScaleX = 1.0;
+  double _remoteViewScaleY = 1.0;
 
   PlayListModel? _playListModel;
 
@@ -234,15 +258,17 @@ class MqttViewModel extends ChangeNotifier {
   /// Starts periodic screenshot capture for remote view, matching the
   /// Android app's protocol: publishes `{action:"image", img_url:<base64>}`
   /// to `{playerCode}/remote` (non-retained) roughly once a second. The
-  /// CMS renders the received frames and draws its own cursor overlay —
-  /// the player only ever streams screenshots, it never receives or acts
-  /// on cursor/click positions itself.
+  /// CMS renders the received frames; click/scroll/send_text commands sent
+  /// back on the same topic are handled in _handleIncomingMessage and
+  /// injected via xdotool.
   void _startRemoteView() {
     if (_remoteViewActive) {
       debugPrint('MQTT_LOGS:: Remote view already active, ignoring duplicate start');
       return;
     }
     _remoteViewActive = true;
+    _remoteViewScaleX = 1.0;
+    _remoteViewScaleY = 1.0;
     debugPrint('MQTT_LOGS:: Remote view started');
     _remoteViewTimer?.cancel();
     _captureAndPublishRemoteViewFrame();
@@ -296,10 +322,30 @@ class MqttViewModel extends ChangeNotifier {
       final Uint8List compressedBytes;
       if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
         compressedBytes = await _compressImage(imageBytes);
+        _remoteViewScaleX = 1.0;
+        _remoteViewScaleY = 1.0;
+      } else if (Platform.isLinux) {
+        // A full-resolution screenshot can still be hundreds of KB even at
+        // low JPEG quality — that's too large for the broker's/CMS's max
+        // message size and was getting silently dropped/truncated instead
+        // of reaching the CMS at all. Shrink actual pixel dimensions, not
+        // just quality, and remember the scale factor so incoming click
+        // coordinates (in the space of this smaller frame) can be mapped
+        // back to real screen pixels.
+        final resized = _resizeAndCompressForRemoteView(imageBytes);
+        if (resized != null) {
+          compressedBytes = resized.bytes;
+          _remoteViewScaleX = resized.scaleX;
+          _remoteViewScaleY = resized.scaleY;
+        } else {
+          compressedBytes = imageBytes;
+          _remoteViewScaleX = 1.0;
+          _remoteViewScaleY = 1.0;
+        }
       } else {
-        // flutter_image_compress has no Linux/Windows implementation —
-        // send the full-resolution PNG bytes as-is.
         compressedBytes = imageBytes;
+        _remoteViewScaleX = 1.0;
+        _remoteViewScaleY = 1.0;
       }
       final base64Image = base64Encode(compressedBytes);
 
@@ -366,6 +412,42 @@ class MqttViewModel extends ChangeNotifier {
       return bytes;
     } catch (e) {
       debugPrint('MQTT_LOGS:: scrot exception: $e');
+      return null;
+    }
+  }
+
+  /// Shrinks a captured frame's actual pixel dimensions (not just JPEG
+  /// quality) so the published payload reliably fits under whatever
+  /// max-message-size the broker/CMS enforces, and reports the scale
+  /// factor needed to map received click coordinates back to real screen
+  /// pixels. Runs synchronously (CPU-bound decode/resize/encode) — kept
+  /// to a modest target width to bound the cost of doing this once a
+  /// second.
+  _RemoteViewFrame? _resizeAndCompressForRemoteView(
+    Uint8List bytes, {
+    int maxWidth = 800,
+    int quality = 50,
+  }) {
+    try {
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) {
+        debugPrint('MQTT_LOGS:: Failed to decode remote view frame for resize');
+        return null;
+      }
+      if (decoded.width <= maxWidth) {
+        return _RemoteViewFrame(bytes: bytes, scaleX: 1.0, scaleY: 1.0);
+      }
+      final resized = img.copyResize(decoded, width: maxWidth);
+      final jpgBytes = Uint8List.fromList(
+        img.encodeJpg(resized, quality: quality),
+      );
+      return _RemoteViewFrame(
+        bytes: jpgBytes,
+        scaleX: decoded.width / resized.width,
+        scaleY: decoded.height / resized.height,
+      );
+    } catch (e) {
+      debugPrint('MQTT_LOGS:: Failed to resize/compress remote view frame: $e');
       return null;
     }
   }
@@ -2144,12 +2226,17 @@ class MqttViewModel extends ChangeNotifier {
     } else if (jsonObj["action"] == "click") {
       // Same field names as the Android app's InputAction.getClick — x/y in
       // the pixel space of the most recent remote-view frame we published.
+      // That frame is shrunk on Linux (see _resizeAndCompressForRemoteView),
+      // so scale back up to real screen pixels before injecting.
       print("MQTT_LOGS:: click received: $jsonObj");
       if (Platform.isLinux) {
         final x = (jsonObj["x"] as num?)?.toDouble();
         final y = (jsonObj["y"] as num?)?.toDouble();
         if (x != null && y != null) {
-          deviceSettings.moveCursorAndClickForLinux(x, y);
+          deviceSettings.moveCursorAndClickForLinux(
+            x * _remoteViewScaleX,
+            y * _remoteViewScaleY,
+          );
         }
       }
     } else if (jsonObj["action"] == "scroll") {
@@ -2168,7 +2255,12 @@ class MqttViewModel extends ChangeNotifier {
               startY != null &&
               endX != null &&
               endY != null) {
-            deviceSettings.dragForLinux(startX, startY, endX, endY);
+            deviceSettings.dragForLinux(
+              startX * _remoteViewScaleX,
+              startY * _remoteViewScaleY,
+              endX * _remoteViewScaleX,
+              endY * _remoteViewScaleY,
+            );
           }
         }
       }
