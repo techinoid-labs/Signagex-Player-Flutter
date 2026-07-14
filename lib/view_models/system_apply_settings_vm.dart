@@ -111,6 +111,25 @@ class DeviceSettingsViewModel with ChangeNotifier {
     }
   }
 
+  /// Matches Android's PRESS_HOME action (input keyevent 3 /
+  /// GLOBAL_ACTION_HOME): a raw OS-level key injection, not an app-level
+  /// state change. X11 has no single standardized "home" key, but the
+  /// Super key is the closest universal analog — every mainstream desktop
+  /// (GNOME, KDE, XFCE, etc.) binds it to Activities/show-desktop.
+  Future<String> pressHomeForLinux() async {
+    try {
+      final result = await Process.run('xdotool', ['key', 'super']);
+      if (result.exitCode != 0) {
+        print('MQTT_LOGS:: xdotool key super (home) failed: ${result.stderr}');
+        return 'Error: ${result.stderr}';
+      }
+      return 'Home key sent';
+    } catch (e) {
+      print('MQTT_LOGS:: xdotool key super (home) exception: $e');
+      return 'Error: $e';
+    }
+  }
+
   Future<String> rebootDeviceForLinux() async {
     print("Attempting to restart the device...");
 
