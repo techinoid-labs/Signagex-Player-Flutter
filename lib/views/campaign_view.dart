@@ -15,7 +15,6 @@ import 'package:video_player/video_player.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
-import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/utils/log_format.dart';
 
 import '../view_models/mqtt_view_model.dart';
@@ -2957,7 +2956,6 @@ class _LinuxWebViewWidget extends StatefulWidget {
 
 class _LinuxWebViewWidgetState extends State<_LinuxWebViewWidget> {
   late cef.WebViewController _controller;
-  final GlobalKey _ownBoundaryKey = GlobalKey();
 
   void _onReadyChanged() {
     print(
@@ -2968,7 +2966,6 @@ class _LinuxWebViewWidgetState extends State<_LinuxWebViewWidget> {
   void initState() {
     super.initState();
     print('[LOG] _LinuxWebViewWidget - initState url=${widget.url}');
-    linuxWebviewBoundaryKey = _ownBoundaryKey;
     _controller = cef.WebviewManager().createWebView(
       loading: const Center(child: CircularProgressIndicator()),
       injectUserScripts: cef.InjectUserScripts(),
@@ -2983,12 +2980,6 @@ class _LinuxWebViewWidgetState extends State<_LinuxWebViewWidget> {
 
   @override
   void dispose() {
-    // Only clear the shared pointer if we're still the current one — a new
-    // instance's initState may have already run and overwritten it before
-    // this dispose fires, depending on how the widget tree diffs.
-    if (identical(linuxWebviewBoundaryKey, _ownBoundaryKey)) {
-      linuxWebviewBoundaryKey = null;
-    }
     _controller.removeListener(_onReadyChanged);
     _controller.dispose();
     super.dispose();
@@ -2996,13 +2987,10 @@ class _LinuxWebViewWidgetState extends State<_LinuxWebViewWidget> {
 
   @override
   Widget build(BuildContext context) {
-    return RepaintBoundary(
-      key: _ownBoundaryKey,
-      child: ValueListenableBuilder<bool>(
-        valueListenable: _controller,
-        builder: (_, ready, __) =>
-            ready ? _controller.webviewWidget : _controller.loadingWidget,
-      ),
+    return ValueListenableBuilder<bool>(
+      valueListenable: _controller,
+      builder: (_, ready, __) =>
+          ready ? _controller.webviewWidget : _controller.loadingWidget,
     );
   }
 }

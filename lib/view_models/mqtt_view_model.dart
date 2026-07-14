@@ -318,17 +318,20 @@ class MqttViewModel extends ChangeNotifier {
         // space (raw X11 screen pixels), avoiding a separate DPI/pixel-
         // ratio mismatch between the two.
         //
-        // The CEF webview is the one exception: X11's XGetImage (what
-        // scrot reads) comes back black for that region even though it's
-        // genuinely visible on the real screen, because CEF renders it
-        // off-screen into a plain CPU RGBA buffer that Flutter uploads as
-        // a texture (webview_cef's FlPixelBufferTexture) — a texture
-        // that, unlike the whole-app boundary, Skia's toImage() CAN read
-        // back on its own. So patch that one region in separately below.
+        // The CEF webview region specifically still comes back black from
+        // scrot (X11's XGetImage) even though it's genuinely visible on
+        // the real screen. Tried rasterizing just the webview's own
+        // RepaintBoundary via toImage() to patch that region in — same
+        // LateInitializationError as the whole-app boundary. So this is
+        // an engine-level limitation (Skia can't snapshot a render tree
+        // containing ANY Linux-embedder-registered texture, not just
+        // platform views), not something fixable by isolating the
+        // texture in its own boundary. See MQTT_LOGS for the abandoned
+        // attempt; a real fix needs webview_cef's native plugin to expose
+        // its already-in-memory CEF pixel buffer directly (it has one —
+        // see WebviewTextureRenderer::onFrame in webview_cef_plugin.cc),
+        // which means forking that package.
         imageBytes = await _captureScreenshotForLinux();
-        if (imageBytes != null) {
-          imageBytes = await _patchLinuxWebviewIntoScreenshot(imageBytes);
-        }
       } else {
         final boundaryContext = boundaryKey.currentContext;
         if (boundaryContext == null) return;
@@ -459,61 +462,6 @@ class MqttViewModel extends ChangeNotifier {
     } catch (e) {
       debugPrint('MQTT_LOGS:: scrot exception: $e');
       return null;
-    }
-  }
-
-  /// Patches the CEF webview's own rendered frame into the scrot
-  /// screenshot at its on-screen position, replacing the black hole scrot
-  /// leaves there. `_LinuxWebViewWidget` (campaign_view.dart) publishes its
-  /// own RepaintBoundary key to [linuxWebviewBoundaryKey] while mounted; if
-  /// no webapp is currently showing (key null / no context / not painted
-  /// yet) or the readback fails for any reason, this returns the original
-  /// screenshot unchanged — never worse than before.
-  Future<Uint8List> _patchLinuxWebviewIntoScreenshot(
-    Uint8List screenshotBytes,
-  ) async {
-    final key = linuxWebviewBoundaryKey;
-    if (key == null) return screenshotBytes;
-    try {
-      final context = key.currentContext;
-      if (context == null) return screenshotBytes;
-      final renderObject = context.findRenderObject();
-      if (renderObject is! RenderRepaintBoundary) return screenshotBytes;
-      if (renderObject.debugNeedsPaint) return screenshotBytes;
-
-      // scrot captures at native/physical screen resolution; Flutter's
-      // RenderBox geometry is in logical pixels, so both the rasterized
-      // frame and its paste position need to be scaled by devicePixelRatio
-      // to land in the same pixel space as the screenshot.
-      final devicePixelRatio =
-          PlatformDispatcher.instance.views.first.devicePixelRatio;
-      final globalOffset = renderObject.localToGlobal(Offset.zero);
-
-      final webviewImage = await renderObject.toImage(
-        pixelRatio: devicePixelRatio,
-      );
-      final webviewByteData =
-          await webviewImage.toByteData(format: ImageByteFormat.png);
-      if (webviewByteData == null) return screenshotBytes;
-
-      final baseDecoded = img.decodeImage(screenshotBytes);
-      final webviewDecoded =
-          img.decodeImage(webviewByteData.buffer.asUint8List());
-      if (baseDecoded == null || webviewDecoded == null) {
-        return screenshotBytes;
-      }
-
-      img.compositeImage(
-        baseDecoded,
-        webviewDecoded,
-        dstX: (globalOffset.dx * devicePixelRatio).round(),
-        dstY: (globalOffset.dy * devicePixelRatio).round(),
-      );
-
-      return Uint8List.fromList(img.encodeJpg(baseDecoded, quality: 75));
-    } catch (e) {
-      debugPrint('MQTT_LOGS:: Failed to patch webview frame into screenshot: $e');
-      return screenshotBytes;
     }
   }
 
