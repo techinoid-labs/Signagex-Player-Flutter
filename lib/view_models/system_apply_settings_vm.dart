@@ -112,20 +112,26 @@ class DeviceSettingsViewModel with ChangeNotifier {
   }
 
   /// Matches Android's PRESS_HOME action (input keyevent 3 /
-  /// GLOBAL_ACTION_HOME): a raw OS-level key injection, not an app-level
-  /// state change. X11 has no single standardized "home" key, but the
-  /// Super key is the closest universal analog — every mainstream desktop
-  /// (GNOME, KDE, XFCE, etc.) binds it to Activities/show-desktop.
+  /// GLOBAL_ACTION_HOME) in intent — leave the foreground app — not in
+  /// literal mechanism. `xdotool key super` was tried first since it's a
+  /// raw key injection like Android's, but this kiosk runs Openbox (a bare
+  /// WM with no default keybindings, no panel, no desktop), so Super does
+  /// nothing visible there, and even a working "show desktop" would just
+  /// reveal an empty X11 root window — there's no real home screen to
+  /// return to. Minimizing the active window is the one action guaranteed
+  /// to have an observable effect on any X11 WM (a standard ICCCM/EWMH
+  /// window operation, not a WM-specific keybinding).
   Future<String> pressHomeForLinux() async {
     try {
-      final result = await Process.run('xdotool', ['key', 'super']);
+      final result = await Process.run(
+          'xdotool', ['getactivewindow', 'windowminimize']);
       if (result.exitCode != 0) {
-        print('MQTT_LOGS:: xdotool key super (home) failed: ${result.stderr}');
+        print('MQTT_LOGS:: xdotool windowminimize (home) failed: ${result.stderr}');
         return 'Error: ${result.stderr}';
       }
-      return 'Home key sent';
+      return 'Window minimized';
     } catch (e) {
-      print('MQTT_LOGS:: xdotool key super (home) exception: $e');
+      print('MQTT_LOGS:: xdotool windowminimize (home) exception: $e');
       return 'Error: $e';
     }
   }
