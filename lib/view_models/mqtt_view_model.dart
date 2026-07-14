@@ -286,9 +286,21 @@ class MqttViewModel extends ChangeNotifier {
     debugPrint('MQTT_LOGS:: Remote view stopped');
   }
 
+  // Matches the Android app cancelling its capture coroutine Job and
+  // nulling its screenshot callback on stop (ScreenCaptureManager.stop()):
+  // an in-flight capture that finishes just after stop_remote_view arrives
+  // must not still publish a stray frame. Also prevents captures from
+  // stacking up if scrot + resize/encode ever takes longer than the 1s
+  // timer interval — the CMS toggling start/stop rapidly (to avoid the
+  // base64 stream "loading infinitely") means overlapping captures are a
+  // real scenario, not just a theoretical one.
+  bool _remoteViewCaptureInFlight = false;
+
   Future<void> _captureAndPublishRemoteViewFrame() async {
     if (!_remoteViewActive) return;
     if (_topic.isEmpty || !_mqttClientService.isConnected) return;
+    if (_remoteViewCaptureInFlight) return;
+    _remoteViewCaptureInFlight = true;
 
     try {
       Uint8List? imageBytes;
@@ -367,6 +379,15 @@ class MqttViewModel extends ChangeNotifier {
         'sender': 'android',
       });
 
+      // Re-check after all the async/CPU-bound capture+encode work above —
+      // stop_remote_view may have arrived while this was in flight, in
+      // which case this frame is stale and must be discarded, not
+      // published.
+      if (!_remoteViewActive) {
+        debugPrint('MQTT_LOGS:: Remote view stopped mid-capture, discarding frame');
+        return;
+      }
+
       // publishMessage (not publish) — remote-view frames must never be
       // retained, or the last frame would linger on the broker and get
       // redelivered to the next viewer even after remote view stops.
@@ -376,6 +397,8 @@ class MqttViewModel extends ChangeNotifier {
       );
     } catch (e) {
       debugPrint('MQTT_LOGS:: Failed to capture/publish remote view frame: $e');
+    } finally {
+      _remoteViewCaptureInFlight = false;
     }
   }
 
