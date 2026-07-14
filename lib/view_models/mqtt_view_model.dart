@@ -556,7 +556,7 @@ class MqttViewModel extends ChangeNotifier {
     // Periodically re-verify against the server independent of MQTT.
     _pairingRevalidationTimer?.cancel();
     _pairingRevalidationTimer =
-        Timer.periodic(const Duration(minutes: 5), (_) {
+        Timer.periodic(const Duration(seconds: 30), (_) {
       if (_topic.isNotEmpty) {
         _checkPairingStatus(refresh: true);
       }
