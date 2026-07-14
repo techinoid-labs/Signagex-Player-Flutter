@@ -420,31 +420,59 @@ class MqttViewModel extends ChangeNotifier {
   /// quality) so the published payload reliably fits under whatever
   /// max-message-size the broker/CMS enforces, and reports the scale
   /// factor needed to map received click coordinates back to real screen
-  /// pixels. Runs synchronously (CPU-bound decode/resize/encode) — kept
-  /// to a modest target width to bound the cost of doing this once a
-  /// second.
+  /// pixels. The exact limit isn't known, so this tries progressively
+  /// smaller tiers until the encoded size is comfortably under
+  /// [maxBytes], instead of guessing one fixed size up front.
   _RemoteViewFrame? _resizeAndCompressForRemoteView(
     Uint8List bytes, {
-    int maxWidth = 800,
-    int quality = 50,
+    int maxBytes = 15 * 1024,
   }) {
+    const tiers = [
+      (width: 640, quality: 45),
+      (width: 480, quality: 40),
+      (width: 320, quality: 35),
+      (width: 240, quality: 30),
+    ];
     try {
       final decoded = img.decodeImage(bytes);
       if (decoded == null) {
         debugPrint('MQTT_LOGS:: Failed to decode remote view frame for resize');
         return null;
       }
-      if (decoded.width <= maxWidth) {
-        return _RemoteViewFrame(bytes: bytes, scaleX: 1.0, scaleY: 1.0);
+
+      Uint8List? smallestSoFar;
+      double smallestScaleX = 1.0;
+      double smallestScaleY = 1.0;
+
+      for (final tier in tiers) {
+        if (decoded.width <= tier.width && smallestSoFar == null) {
+          // Already smaller than this tier — encode once at native size
+          // and quality matching the tier, no resize needed.
+          final jpgBytes =
+              Uint8List.fromList(img.encodeJpg(decoded, quality: tier.quality));
+          smallestSoFar = jpgBytes;
+          smallestScaleX = 1.0;
+          smallestScaleY = 1.0;
+          if (jpgBytes.length <= maxBytes) break;
+          continue;
+        }
+        final resized = img.copyResize(decoded, width: tier.width);
+        final jpgBytes = Uint8List.fromList(
+          img.encodeJpg(resized, quality: tier.quality),
+        );
+        smallestSoFar = jpgBytes;
+        smallestScaleX = decoded.width / resized.width;
+        smallestScaleY = decoded.height / resized.height;
+        debugPrint('MQTT_LOGS:: remote view frame tier width=${tier.width} '
+            'quality=${tier.quality} -> ${jpgBytes.length} bytes');
+        if (jpgBytes.length <= maxBytes) break;
       }
-      final resized = img.copyResize(decoded, width: maxWidth);
-      final jpgBytes = Uint8List.fromList(
-        img.encodeJpg(resized, quality: quality),
-      );
+
+      if (smallestSoFar == null) return null;
       return _RemoteViewFrame(
-        bytes: jpgBytes,
-        scaleX: decoded.width / resized.width,
-        scaleY: decoded.height / resized.height,
+        bytes: smallestSoFar,
+        scaleX: smallestScaleX,
+        scaleY: smallestScaleY,
       );
     } catch (e) {
       debugPrint('MQTT_LOGS:: Failed to resize/compress remote view frame: $e');
