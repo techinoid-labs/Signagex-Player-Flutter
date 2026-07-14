@@ -2318,6 +2318,21 @@ class MqttViewModel extends ChangeNotifier {
           var res = jsonObj["settings"]["brightness"];
           deviceSettings.changeBrightnessForLinux(res);
         }
+      } else if (jsonObj["settings"] != null &&
+          jsonObj["settings"]["screen_rotation"] != null) {
+        Map<String, dynamic> sendLog = {
+          "action": "player_logs",
+          "log": "Screen Rotation",
+          "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+          "type": "info",
+          "date_time": DateTime.now().toIso8601String(),
+        };
+
+        _mqttClientService.publish(topic, jsonEncode(sendLog));
+        if (Platform.isLinux) {
+          final rotation = jsonObj["settings"]["screen_rotation"].toString();
+          deviceSettings.applyScreenRotationForLinux(rotation);
+        }
       }
       var data = {"success": true};
       publishMessage(globleTopic, jsonEncode(data));

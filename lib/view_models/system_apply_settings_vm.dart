@@ -233,6 +233,42 @@ class DeviceSettingsViewModel with ChangeNotifier {
     return 'Brightness changed to $brightnessLevel on $displayOutput';
   }
 
+  /// Matches Android's PlayerSettings.rotateView, which is driven by the
+  /// same `settings.screen_rotation` field pushed from CMS (0/90/180/270,
+  /// or "landscape" meaning 0). Android rotates just its content View with
+  /// a transform; on Linux it's simpler and more correct to rotate the
+  /// whole X11 output via xrandr instead — that way scrot capture and
+  /// xdotool click coordinates automatically stay consistent with what's
+  /// on screen, with no separate Flutter-side transform/coordinate-mapping
+  /// layer needed.
+  Future<String> applyScreenRotationForLinux(String rotation) async {
+    final normalized = rotation == 'landscape' ? '0' : rotation;
+    final direction = switch (normalized) {
+      '90' => 'right',
+      '180' => 'inverted',
+      '270' => 'left',
+      _ => 'normal',
+    };
+
+    String displayOutput = await getActiveOutputForLinux();
+    if (displayOutput.isEmpty) {
+      return 'No connected display found.';
+    }
+
+    final result = await Process.run(
+        'bash', ['-c', 'xrandr --output $displayOutput --rotate $direction']);
+
+    print('Command: xrandr --output $displayOutput --rotate $direction');
+    print('stdout: ${result.stdout}');
+    print('stderr: ${result.stderr}');
+
+    if (result.exitCode != 0) {
+      return 'Error: ${result.stderr}';
+    }
+
+    return 'Screen rotated to $direction on $displayOutput';
+  }
+
   Future<void> restartNetworkAdapterForWindows() async {
     try {
       // PowerShell command to list all network adapters and get their names and descriptions
