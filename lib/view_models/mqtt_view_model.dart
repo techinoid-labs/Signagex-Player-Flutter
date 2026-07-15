@@ -2245,7 +2245,15 @@ class MqttViewModel extends ChangeNotifier {
         } else if (Platform.isLinux) {
           deviceSettings.muteVolumeForLinux();
         }
-      } else if (jsonObj["settings"] != null &&
+      }
+      // Independent `if`s below (not `else if`) — CMS resends the whole
+      // current settings object on any single change (e.g. rotating also
+      // re-sends mute_audio/brightness/volume as they currently stand), so
+      // an else-if chain here meant only the first truthy field in the
+      // payload ever got applied and every other setting silently no-oped
+      // whenever it arrived alongside an earlier one, which is why
+      // rotation looked broken.
+      if (jsonObj["settings"] != null &&
           jsonObj["settings"]["mute_audio"] == false) {
         Map<String, dynamic> sendLog = {
           "action": "player_logs",
@@ -2266,7 +2274,8 @@ class MqttViewModel extends ChangeNotifier {
         } else if (Platform.isLinux) {
           deviceSettings.unmuteVolumeForLinux();
         }
-      } else if (jsonObj["settings"] != null &&
+      }
+      if (jsonObj["settings"] != null &&
           jsonObj["settings"]["brightness"] != null &&
           jsonObj["settings"]["brightness"]['value'] != null) {
         Map<String, dynamic> sendLog = {
@@ -2292,7 +2301,8 @@ class MqttViewModel extends ChangeNotifier {
           var res = jsonObj["settings"]["brightness"]['value'];
           deviceSettings.changeBrightnessForLinux(res);
         }
-      } else if (jsonObj["settings"] != null &&
+      }
+      if (jsonObj["settings"] != null &&
           jsonObj["settings"]["volume"] != null) {
         Map<String, dynamic> sendLog = {
           "action": "player_logs",
@@ -2318,7 +2328,8 @@ class MqttViewModel extends ChangeNotifier {
           var res = jsonObj["settings"]["brightness"];
           deviceSettings.changeBrightnessForLinux(res);
         }
-      } else if (jsonObj["settings"] != null &&
+      }
+      if (jsonObj["settings"] != null &&
           jsonObj["settings"]["screen_rotation"] != null) {
         Map<String, dynamic> sendLog = {
           "action": "player_logs",
