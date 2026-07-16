@@ -21,6 +21,10 @@ class MqttClientService {
 
   Function(String)? onMessageReceived;
 
+  Future<void>? _connectFuture;
+  StreamSubscription<List<MqttReceivedMessage<MqttMessage?>>?>?
+      _updatesSubscription;
+
   MqttClientService() {
     _initializeClient();
   }
@@ -83,7 +87,26 @@ class MqttClientService {
   // ────────────────────────────────
   // Connect - using wss://signagexai.com/mqtt
   // ────────────────────────────────
-  Future<void> connect() async {
+  // Overlapping calls share one in-flight attempt instead of racing a
+  // second connection (which previously caused duplicate listeners/crashes).
+  Future<void> connect({String? playerCode}) {
+    final inFlight = _connectFuture;
+    if (inFlight != null) {
+      print('MQTT_LOGS:: connect() already in progress, awaiting it instead '
+          'of starting a second connection');
+      return inFlight;
+    }
+    final future = _connectInternal(playerCode);
+    _connectFuture = future;
+    future.whenComplete(() {
+      if (identical(_connectFuture, future)) {
+        _connectFuture = null;
+      }
+    });
+    return future;
+  }
+
+  Future<void> _connectInternal(String? playerCode) async {
     try {
       print(
           'MQTT_LOGS:: Connecting to wss://$mqttBroker:$mqttPort$mqttWebSocketPath');
@@ -101,6 +124,17 @@ class MqttClientService {
           .withClientIdentifier(
               'flutter_client_${DateTime.now().millisecondsSinceEpoch}')
           .startClean();
+
+      if (playerCode != null && playerCode.isNotEmpty) {
+        final willPayload = Uint8Buffer()
+          ..addAll(utf8.encode(jsonEncode({'status': 'offline'})));
+        connMessage
+            .will()
+            .withWillTopic('$playerCode/player_status')
+            .withWillQos(MqttQos.atLeastOnce)
+            .withWillRetain()
+            .withWillPayload(willPayload);
+      }
 
       _client.connectionMessage = connMessage;
 
@@ -130,9 +164,15 @@ class MqttClientService {
           print('MQTT_LOGS:: Successfully connected!');
           print('MQTT_LOGS:: Connection status: ${_client.connectionStatus}');
 
-          _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
+          await _updatesSubscription?.cancel();
+          _updatesSubscription = _client.updates
+              .listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
             _handleReceivedMessage(c);
           });
+
+          if (playerCode != null && playerCode.isNotEmpty) {
+            _publishOnlineStatus(playerCode);
+          }
 
           return;
         } else if (connectionState == MqttConnectionState.faulted ||
@@ -166,6 +206,22 @@ class MqttClientService {
     }
   }
 
+  void _publishOnlineStatus(String playerCode) {
+    try {
+      final buffer = Uint8Buffer()
+        ..addAll(utf8.encode(jsonEncode({'status': 'online'})));
+      _client.publishMessage(
+        '$playerCode/player_status',
+        MqttQos.atLeastOnce,
+        buffer,
+        retain: true,
+      );
+      print('MQTT_LOGS:: Published online status to $playerCode/player_status');
+    } catch (e) {
+      print('MQTT_LOGS:: Failed to publish online status: $e');
+    }
+  }
+
   void disconnect() {
     if (_client.connectionStatus?.state == MqttConnectionState.connected) {
       _client.disconnect();
@@ -180,10 +236,9 @@ class MqttClientService {
     }
     print('MQTT_LOGS:: Subscribing to the topic: $topic');
     _client.subscribe(topic, MqttQos.atMostOnce);
-
-    _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
-      _handleReceivedMessage(c);
-    });
+    // Message listener is registered once in connect()/_connectInternal(),
+    // not here — registering it again on every subscribe() call created
+    // duplicate listeners that each delivered every incoming message once.
   }
 
   void _handleReceivedMessage(

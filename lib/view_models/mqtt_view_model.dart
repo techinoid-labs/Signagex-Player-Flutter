@@ -12,6 +12,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_phoenix/flutter_phoenix.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:image/image.dart' as img;
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -32,6 +33,13 @@ import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 import '../data/api_repository/api_repository.dart';
 import '../services/mqtt_client_service.dart';
 import '../utils/constants.dart';
+
+class _RemoteViewFrame {
+  final Uint8List bytes;
+  final double scaleX;
+  final double scaleY;
+  _RemoteViewFrame({required this.bytes, required this.scaleX, required this.scaleY});
+}
 
 enum MqttState {
   initial,
@@ -72,6 +80,15 @@ class MqttViewModel extends ChangeNotifier {
   CampaignModel? _campaignModel;
 
   CampaignModel? get campaignModel => _campaignModel;
+
+  Timer? _pairingRevalidationTimer;
+
+  Timer? _remoteViewTimer;
+  bool _remoteViewActive = false;
+  bool _remoteViewCaptureInFlight = false;
+  double _remoteViewScaleX = 1.0;
+  double _remoteViewScaleY = 1.0;
+  static const _remoteViewChannel = MethodChannel('com.example/remoteView');
 
   bool get isAdCampaignUpdate {
     if (isAdCampaignUpdateMessage(_campaignModel?.data?.message)) return true;
@@ -227,6 +244,14 @@ class MqttViewModel extends ChangeNotifier {
     await getStoredState();
     await retrieveStoredResponse();
     await loadDeviceInfoFromSharedPreferences();
+
+    _pairingRevalidationTimer?.cancel();
+    _pairingRevalidationTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (_topic.isNotEmpty) {
+        _checkPairingStatus();
+      }
+    });
+
     InternetConnectionChecker().onStatusChange.listen((status) async {
       final hasConnection = status == InternetConnectionStatus.connected;
 
@@ -234,7 +259,7 @@ class MqttViewModel extends ChangeNotifier {
         print("this is data $storedJsonObj");
 
         if (storedJsonObj["action"] == "publish_playlist") {
-          await _mqttClientService.connect();
+          await _mqttClientService.connect(playerCode: _topic);
 
           if (_topic.isNotEmpty) {
             subsibeMessage(_topic);
@@ -256,7 +281,7 @@ class MqttViewModel extends ChangeNotifier {
             }
           }
         } else if (storedJsonObj["action"] == "publish_campaign") {
-          await _mqttClientService.connect();
+          await _mqttClientService.connect(playerCode: _topic);
 
           if (_topic.isNotEmpty) {
             subsibeMessage(_topic);
@@ -915,7 +940,7 @@ EOF
   Future<void> _mqttConnection() async {
     try {
       debugPrint("Attempting to reconnect to MQTT.");
-      await _mqttClientService.connect();
+      await _mqttClientService.connect(playerCode: _topic);
       _state = MqttState.connectionScreen;
       notifyListeners();
       if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
@@ -1563,13 +1588,33 @@ EOF
         await prefs.setBool('storeState', response["paired"]);
 
         _state = MqttState.pairedScreen;
+
+        if (_campaignModel != null ||
+            _playListModel != null ||
+            storedJsonObj.isNotEmpty) {
+          debugPrint(
+              'MQTT_LOGS:: Player no longer paired — clearing cached content');
+          _campaignModel = null;
+          _playListModel = null;
+          _interactivityModel = null;
+          storedJsonObj = {};
+          await prefs.clear();
+        }
       } else if (response["paired"] == true) {
         // Start capturing screenshots every second
         // Timer.periodic(Duration(seconds: 1), (timer) async {
         //   await captureAndSendScreenshot(globleTopic);
         // });
 
-        _state = MqttState.noContent;
+        // Periodic re-validation (see _pairingRevalidationTimer) calls this
+        // same method every 30s — don't let it clobber active playback
+        // state back to "no content" while a campaign/playlist is actually
+        // showing or downloading.
+        if (_state != MqttState.downloading &&
+            _state != MqttState.campaignScreen &&
+            _state != MqttState.playlistScreen) {
+          _state = MqttState.noContent;
+        }
       } else {
         _state = MqttState.failure;
       }
@@ -1629,6 +1674,147 @@ EOF
       return;
     }
     _mqttClientService.subscribe(topic);
+    _mqttClientService.subscribe('$topic/remote');
+  }
+
+  /// Starts periodic screenshot capture for remote view: publishes
+  /// `{action:"image", img_url:<base64>, sender:"macos"}` to
+  /// `{playerCode}/remote` roughly once a second while active. CMS sends
+  /// click/scroll/send_text/press_home commands back on the same topic,
+  /// handled in the action dispatch below and injected via the native
+  /// com.example/remoteView channel (CGEvent-based on macOS).
+  void _startRemoteView() {
+    if (_remoteViewActive) {
+      debugPrint('MQTT_LOGS:: Remote view already active, ignoring duplicate start');
+      return;
+    }
+    _remoteViewActive = true;
+    _remoteViewScaleX = 1.0;
+    _remoteViewScaleY = 1.0;
+    debugPrint('MQTT_LOGS:: Remote view started');
+    _remoteViewTimer?.cancel();
+    _captureAndPublishRemoteViewFrame();
+    _remoteViewTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      _captureAndPublishRemoteViewFrame();
+    });
+  }
+
+  void _stopRemoteView() {
+    _remoteViewActive = false;
+    _remoteViewTimer?.cancel();
+    _remoteViewTimer = null;
+    debugPrint('MQTT_LOGS:: Remote view stopped');
+  }
+
+  Future<void> _captureAndPublishRemoteViewFrame() async {
+    if (!_remoteViewActive) return;
+    if (_topic.isEmpty || !_mqttClientService.isConnected) return;
+    // CMS toggles start/stop rapidly (to avoid unbounded base64 streaming),
+    // so an in-flight capture finishing just after stop_remote_view arrives
+    // must not still publish a stray frame.
+    if (_remoteViewCaptureInFlight) return;
+    _remoteViewCaptureInFlight = true;
+
+    try {
+      Uint8List? imageBytes;
+      if (Platform.isMacOS) {
+        imageBytes = await _captureScreenshotForMac();
+      } else {
+        return;
+      }
+      if (imageBytes == null) return;
+
+      // Self-window captures on Retina displays come back at
+      // backingScaleFactor-multiplied pixel dimensions, so this needs the
+      // same shrink-to-budget treatment as Linux (for a different reason —
+      // DPI multiplier instead of raw screen resolution). Routing through
+      // _compressImage/FlutterImageCompress instead would hardcode
+      // scale=1.0 even while resizing, silently breaking click coordinate
+      // mapping the moment the image actually shrinks.
+      final Uint8List compressedBytes;
+      final resized = _resizeAndCompressForRemoteView(imageBytes);
+      if (resized != null) {
+        compressedBytes = resized.bytes;
+        _remoteViewScaleX = resized.scaleX;
+        _remoteViewScaleY = resized.scaleY;
+      } else {
+        compressedBytes = imageBytes;
+        _remoteViewScaleX = 1.0;
+        _remoteViewScaleY = 1.0;
+      }
+      final base64Image = base64Encode(compressedBytes);
+
+      final payload = jsonEncode({
+        'action': 'image',
+        'img_url': base64Image,
+        'sender': 'macos',
+      });
+
+      if (!_remoteViewActive) {
+        debugPrint('MQTT_LOGS:: Remote view stopped mid-capture, discarding frame');
+        return;
+      }
+
+      _mqttClientService.publishMessage('$_topic/remote', utf8.encode(payload));
+    } catch (e) {
+      debugPrint('MQTT_LOGS:: Failed to capture/publish remote view frame: $e');
+    } finally {
+      _remoteViewCaptureInFlight = false;
+    }
+  }
+
+  Future<Uint8List?> _captureScreenshotForMac() async {
+    try {
+      final result = await _remoteViewChannel.invokeMethod('captureScreenshot');
+      if (result is Uint8List) return result;
+      return null;
+    } on PlatformException catch (e) {
+      debugPrint('MQTT_LOGS:: macOS screenshot capture failed: ${e.message}');
+      return null;
+    }
+  }
+
+  /// Shrinks a captured frame's actual pixel dimensions (not just JPEG
+  /// quality) so the published payload reliably fits under whatever
+  /// max-message-size the broker/CMS enforces, and reports the scale
+  /// factor needed to map received click coordinates back to real screen
+  /// pixels.
+  _RemoteViewFrame? _resizeAndCompressForRemoteView(
+    Uint8List bytes, {
+    int maxBytes = 15 * 1024,
+  }) {
+    const tiers = [
+      (width: 640, quality: 45),
+      (width: 480, quality: 40),
+      (width: 320, quality: 35),
+      (width: 240, quality: 30),
+    ];
+    try {
+      final decoded = img.decodeImage(bytes);
+      if (decoded == null) return null;
+      Uint8List? smallestSoFar;
+      double smallestScaleX = 1.0, smallestScaleY = 1.0;
+      for (final tier in tiers) {
+        if (decoded.width <= tier.width && smallestSoFar == null) {
+          final jpgBytes = Uint8List.fromList(img.encodeJpg(decoded, quality: tier.quality));
+          smallestSoFar = jpgBytes;
+          smallestScaleX = 1.0;
+          smallestScaleY = 1.0;
+          if (jpgBytes.length <= maxBytes) break;
+          continue;
+        }
+        final resized = img.copyResize(decoded, width: tier.width);
+        final jpgBytes = Uint8List.fromList(img.encodeJpg(resized, quality: tier.quality));
+        smallestSoFar = jpgBytes;
+        smallestScaleX = decoded.width / resized.width;
+        smallestScaleY = decoded.height / resized.height;
+        if (jpgBytes.length <= maxBytes) break;
+      }
+      if (smallestSoFar == null) return null;
+      return _RemoteViewFrame(bytes: smallestSoFar, scaleX: smallestScaleX, scaleY: smallestScaleY);
+    } catch (e) {
+      return null;
+    }
   }
 
   void publishMessage(String topic, String message) {
@@ -1773,7 +1959,13 @@ EOF
         } else if (Platform.isLinux) {
           deviceSettings.muteVolumeForLinux();
         }
-      } else if (jsonObj["settings"] != null &&
+      }
+      // Independent `if`s below (not `else if`) — CMS resends the whole
+      // current settings object on any single change, so an else-if chain
+      // here meant only the first truthy field in the payload ever got
+      // applied and every other setting silently no-oped whenever it
+      // arrived alongside an earlier one.
+      if (jsonObj["settings"] != null &&
           jsonObj["settings"]["mute_audio"] == false) {
         // Map<String, dynamic> sendLog = {
         //   "action": "player_logs",
@@ -1794,7 +1986,8 @@ EOF
         } else if (Platform.isLinux) {
           deviceSettings.unmuteVolumeForLinux();
         }
-      } else if (jsonObj["settings"] != null &&
+      }
+      if (jsonObj["settings"] != null &&
           jsonObj["settings"]["brightness"] != null &&
           jsonObj["settings"]["brightness"]['value'] != null) {
         // Map<String, dynamic> sendLog = {
@@ -1807,8 +2000,8 @@ EOF
 
         // _mqttClientService.publish(topic, jsonEncode(sendLog));
         if (Platform.isMacOS) {
-          print("No brightness For Mac");
-          deviceSettings.unmuteVolumeForMac();
+          var value = jsonObj["settings"]["brightness"]['value'];
+          deviceSettings.setBrightnessForMac((value as num).toDouble());
         } else if (Platform.isAndroid) {
           print("i am here for andorind");
           var value = jsonObj["settings"]["brightness"]['value'];
@@ -1820,7 +2013,8 @@ EOF
           var res = jsonObj["settings"]["brightness"]['value'];
           deviceSettings.changeBrightnessForLinux(res);
         }
-      } else if (jsonObj["settings"] != null &&
+      }
+      if (jsonObj["settings"] != null &&
           jsonObj["settings"]["volume"] != null) {
         // Map<String, dynamic> sendLog = {
         //   "action": "player_logs",
@@ -1847,10 +2041,63 @@ EOF
           deviceSettings.changeBrightnessForLinux(res);
         }
       }
+      if (jsonObj["settings"] != null &&
+          jsonObj["settings"]["screen_rotation"] != null) {
+        if (Platform.isMacOS) {
+          final rotation = jsonObj["settings"]["screen_rotation"].toString();
+          deviceSettings.applyScreenRotationForMac(rotation);
+        }
+      }
       var data = {"success": true};
       publishMessage(globleTopic, jsonEncode(data));
     } else if (jsonObj["action"] == "action click") {
       print(" i am in action  click");
+    } else if (jsonObj["action"] == "start_remote_view") {
+      debugPrint("MQTT_LOGS:: start_remote_view received");
+      _startRemoteView();
+    } else if (jsonObj["action"] == "stop_remote_view") {
+      debugPrint("MQTT_LOGS:: stop_remote_view received");
+      _stopRemoteView();
+    } else if (jsonObj["action"] == "low_res") {
+      // Observed on the Linux branch: CMS can send this without ever
+      // sending start_remote_view first — treat it as an equivalent
+      // start trigger.
+      _startRemoteView();
+    } else if (jsonObj["action"] == "click") {
+      final x = (jsonObj["x"] as num?)?.toDouble();
+      final y = (jsonObj["y"] as num?)?.toDouble();
+      if (x != null && y != null && Platform.isMacOS) {
+        deviceSettings.moveCursorAndClickForMac(
+          x * _remoteViewScaleX,
+          y * _remoteViewScaleY,
+        );
+      }
+    } else if (jsonObj["action"] == "scroll") {
+      final hold = jsonObj["hold"];
+      final release = jsonObj["release"];
+      if (hold is Map && release is Map && Platform.isMacOS) {
+        final startX = (hold["x"] as num?)?.toDouble();
+        final startY = (hold["y"] as num?)?.toDouble();
+        final endX = (release["x"] as num?)?.toDouble();
+        final endY = (release["y"] as num?)?.toDouble();
+        if (startX != null && startY != null && endX != null && endY != null) {
+          deviceSettings.dragForMac(
+            startX * _remoteViewScaleX,
+            startY * _remoteViewScaleY,
+            endX * _remoteViewScaleX,
+            endY * _remoteViewScaleY,
+          );
+        }
+      }
+    } else if (jsonObj["action"] == "send_text") {
+      final text = jsonObj["message"]?.toString();
+      if (text != null && text.isNotEmpty && Platform.isMacOS) {
+        deviceSettings.typeTextForMac(text);
+      }
+    } else if (jsonObj["action"] == "press_home") {
+      if (Platform.isMacOS) {
+        deviceSettings.pressHomeForMac();
+      }
     } else if (jsonObj["action"] == "publish_playlist") {
       // Map<String, dynamic> sendLog = {
       //   "action": "player_logs",
@@ -2420,6 +2667,8 @@ EOF
   void dispose() {
     _timerOfCampaign?.cancel();
     _timer?.cancel();
+    _pairingRevalidationTimer?.cancel();
+    _remoteViewTimer?.cancel();
     super.dispose();
   }
 

@@ -433,4 +433,68 @@ class DeviceSettingsViewModel with ChangeNotifier {
       print("Failed to restart Wi-Fi: '${e.message}'.");
     }
   }
+
+  /// Wires into the existing (previously unused) brightnessChannel/
+  /// setBrightnessLevel IOKit code already present in AppDelegate.swift.
+  Future<void> setBrightnessForMac(double value) async {
+    const platform = MethodChannel('com.example/brightnessControl');
+    try {
+      await platform.invokeMethod('setBrightness', {'brightness': value});
+    } on PlatformException catch (e) {
+      print("Failed to set brightness: '${e.message}'.");
+    }
+  }
+
+  /// No stable public macOS API rotates an arbitrary display's output the
+  /// way xrandr does on Linux X11 — private APIs are undocumented and have
+  /// broken across OS versions. Explicit no-op rather than a silent one.
+  Future<String> applyScreenRotationForMac(String rotation) async {
+    print('MQTT_LOGS:: screen_rotation not supported on macOS, ignoring: $rotation');
+    return 'Screen rotation not supported on macOS';
+  }
+
+  static const _remoteViewChannel = MethodChannel('com.example/remoteView');
+
+  Future<void> moveCursorAndClickForMac(double x, double y) async {
+    try {
+      await _remoteViewChannel
+          .invokeMethod('moveCursorAndClick', {'x': x, 'y': y});
+    } on PlatformException catch (e) {
+      print('MQTT_LOGS:: moveCursorAndClickForMac failed: ${e.message}');
+    }
+  }
+
+  Future<void> dragForMac(
+    double startX,
+    double startY,
+    double endX,
+    double endY,
+  ) async {
+    try {
+      await _remoteViewChannel.invokeMethod('drag', {
+        'startX': startX,
+        'startY': startY,
+        'endX': endX,
+        'endY': endY,
+      });
+    } on PlatformException catch (e) {
+      print('MQTT_LOGS:: dragForMac failed: ${e.message}');
+    }
+  }
+
+  Future<void> typeTextForMac(String text) async {
+    try {
+      await _remoteViewChannel.invokeMethod('typeText', {'text': text});
+    } on PlatformException catch (e) {
+      print('MQTT_LOGS:: typeTextForMac failed: ${e.message}');
+    }
+  }
+
+  Future<void> pressHomeForMac() async {
+    try {
+      await _remoteViewChannel.invokeMethod('pressHome');
+    } on PlatformException catch (e) {
+      print('MQTT_LOGS:: pressHomeForMac failed: ${e.message}');
+    }
+  }
 }

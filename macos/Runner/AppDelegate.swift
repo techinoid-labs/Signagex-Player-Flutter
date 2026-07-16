@@ -2,6 +2,8 @@ import Cocoa
 import FlutterMacOS
 import IOKit
 import SystemConfiguration
+import CoreGraphics
+import ApplicationServices
 
 @main
 class AppDelegate: FlutterAppDelegate {
@@ -87,6 +89,55 @@ class AppDelegate: FlutterAppDelegate {
                 result(FlutterMethodNotImplemented)
             }
         }
+
+    // Remote View Channel — screenshot capture + cursor/keyboard injection
+    // for CMS remote view. In-process only (CGWindowListCreateImage/CGEvent),
+    // no subprocesses, since the app runs under App Sandbox.
+    let remoteViewChannel = FlutterMethodChannel(name: "com.example/remoteView", binaryMessenger: controller.engine.binaryMessenger)
+    remoteViewChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
+        switch call.method {
+        case "captureScreenshot":
+            if let data = self.captureOwnWindowJPEG(quality: 0.6) {
+                result(FlutterStandardTypedData(bytes: data))
+            } else {
+                result(FlutterError(code: "CAPTURE_FAILED", message: "Screenshot capture returned nil", details: nil))
+            }
+        case "moveCursorAndClick":
+            if let args = call.arguments as? [String: Any],
+               let x = args["x"] as? Double, let y = args["y"] as? Double {
+                self.moveCursorAndClick(x: x, y: y)
+                result("OK")
+            } else {
+                result(FlutterError(code: "BAD_ARGS", message: "x/y required", details: nil))
+            }
+        case "drag":
+            if let args = call.arguments as? [String: Any],
+               let startX = args["startX"] as? Double, let startY = args["startY"] as? Double,
+               let endX = args["endX"] as? Double, let endY = args["endY"] as? Double {
+                self.dragCursor(startX: startX, startY: startY, endX: endX, endY: endY)
+                result("OK")
+            } else {
+                result(FlutterError(code: "BAD_ARGS", message: "startX/startY/endX/endY required", details: nil))
+            }
+        case "typeText":
+            if let args = call.arguments as? [String: Any], let text = args["text"] as? String {
+                self.typeText(text)
+                result("OK")
+            } else {
+                result(FlutterError(code: "BAD_ARGS", message: "text required", details: nil))
+            }
+        case "pressHome":
+            self.pressHome()
+            result("OK")
+        case "isAccessibilityTrusted":
+            result(self.isAccessibilityTrusted())
+        case "requestAccessibilityPermission":
+            self.requestAccessibilityPermission()
+            result("OK")
+        default:
+            result(FlutterMethodNotImplemented)
+        }
+    }
     }
 
   
@@ -187,6 +238,84 @@ func reloadApp() {
         }
     }
 
+    // ────────────────────────────────
+    // Remote View — screenshot capture + cursor/keyboard injection
+    // ────────────────────────────────
+
+    // Captures only this app's own window (not the whole screen or other
+    // apps' windows) via CGWindowListCreateImage. In-process, no
+    // subprocess — historically this doesn't require Screen Recording TCC
+    // permission the way capturing other processes' windows does.
+    func captureOwnWindowJPEG(quality: CGFloat) -> Data? {
+        guard let window = self.mainFlutterWindow else { return nil }
+        let windowID = CGWindowID(window.windowNumber)
+        guard let cgImage = CGWindowListCreateImage(
+            .null,
+            .optionIncludingWindow,
+            windowID,
+            [.boundsIgnoreFraming, .nominalResolution]
+        ) else { return nil }
+        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+        return bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: quality])
+    }
+
+    // Moves the real OS cursor and clicks, mirroring xdotool's
+    // mousemove+click semantics on Linux. Requires Accessibility trust
+    // (see isAccessibilityTrusted) — posts silently do nothing otherwise.
+    func moveCursorAndClick(x: Double, y: Double) {
+        let point = CGPoint(x: x, y: y)
+        let source = CGEventSource(stateID: .hidSystemState)
+        CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: point, mouseButton: .left)?.post(tap: .cghidEventTap)
+    }
+
+    func dragCursor(startX: Double, startY: Double, endX: Double, endY: Double) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let start = CGPoint(x: startX, y: startY)
+        let end = CGPoint(x: endX, y: endY)
+        CGEvent(mouseEventSource: source, mouseType: .mouseMoved, mouseCursorPosition: start, mouseButton: .left)?.post(tap: .cghidEventTap)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseDown, mouseCursorPosition: start, mouseButton: .left)?.post(tap: .cghidEventTap)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseDragged, mouseCursorPosition: end, mouseButton: .left)?.post(tap: .cghidEventTap)
+        CGEvent(mouseEventSource: source, mouseType: .leftMouseUp, mouseCursorPosition: end, mouseButton: .left)?.post(tap: .cghidEventTap)
+    }
+
+    // Posting a keycode-based CGEvent can't reliably express arbitrary
+    // Unicode text (virtual keycodes are keyboard-layout-dependent).
+    // Attaching the text via keyboardSetUnicodeString on a keyDown/keyUp
+    // pair is the standard way around that, and the functional analog of
+    // `xdotool type -- <text>`.
+    func typeText(_ text: String) {
+        let source = CGEventSource(stateID: .hidSystemState)
+        let utf16 = Array(text.utf16)
+        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
+              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return }
+        keyDown.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+        keyUp.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
+        keyDown.post(tap: .cghidEventTap)
+        keyUp.post(tap: .cghidEventTap)
+    }
+
+    // No real "home screen" exists to return to on a kiosk running just
+    // this app — minimizing is the same WM-agnostic choice made on the
+    // Linux branch for the same reason.
+    func pressHome() {
+        self.mainFlutterWindow?.miniaturize(nil)
+    }
+
+    // CGEvent posts to the global HID event stream silently no-op (not an
+    // error) unless this app is trusted for Accessibility in System
+    // Settings — that trust cannot be granted programmatically. Exposed so
+    // the Dart side can surface a clear one-time setup message instead of
+    // clicks just doing nothing with no explanation.
+    func isAccessibilityTrusted() -> Bool {
+        return AXIsProcessTrusted()
+    }
+
+    func requestAccessibilityPermission() {
+        let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
+        _ = AXIsProcessTrustedWithOptions(options)
+    }
 
     private func getSystemInformation() -> [String: Any] {
         var systemInfo = [String: Any]()
