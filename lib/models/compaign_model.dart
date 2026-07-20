@@ -2050,11 +2050,8 @@ CampaignResponse normalizeCampaignResponse(
   // Get original campaigns from model
   final originalCampaigns = model.data?.playerCampaigns ?? const <Campaign>[];
 
-  // Check if we have regular (non-composition) campaigns
-  final hasRegularCampaigns =
-      originalCampaigns.any((c) => !c.isCompositionLayout);
-
-  // Register all compositions (extracted + original) for linking
+  // Register all compositions (extracted + original) for linking into any
+  // zone elsewhere that references them via compositionCampaignId/contentId.
   final allCompositions = <Campaign>[
     ...extracted,
     ...originalCampaigns.where((c) => c.isCompositionLayout),
@@ -2062,11 +2059,16 @@ CampaignResponse normalizeCampaignResponse(
   final dedupedCompositions = _dedupeCampaignsById(allCompositions);
   setGlobalCompositionCampaigns(dedupedCompositions);
 
-  // If we have regular campaigns, don't add extracted compositions as top-level
-  // They will be rendered inside their zones via linking
-  final campaignsToUse = hasRegularCampaigns
-      ? originalCampaigns.where((c) => !c.isCompositionLayout).toList()
-      : (originalCampaigns.isEmpty ? extracted : originalCampaigns);
+  // Compositions play in rotation alongside regular campaigns, same as any
+  // other campaign. Previously they were dropped from top-level display
+  // entirely whenever any regular campaign was also published, on the
+  // assumption they'd always be embedded via a zone link elsewhere — but
+  // that link isn't guaranteed (nothing may actually reference a given
+  // composition), which silently lost it with nowhere to render. Always
+  // include them here; if something also links to one via a zone
+  // placeholder, it additionally renders nested there too.
+  final campaignsToUse =
+      originalCampaigns.isNotEmpty ? originalCampaigns : extracted;
 
   final deduped = _dedupeCampaignsById(campaignsToUse);
 

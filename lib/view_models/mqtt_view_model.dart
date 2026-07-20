@@ -2417,30 +2417,12 @@ EOF
     final campaigns = _campaignModel?.data?.playerCampaigns;
     if (campaigns == null || campaigns.isEmpty) return;
 
-    // Check if there are regular (non-composition) campaigns
-    final regularCampaigns =
-        campaigns.where((c) => !c.isCompositionLayout).toList();
-
-    // If we have regular campaigns, prefer them (compositions are embedded)
-    if (regularCampaigns.isNotEmpty) {
-      final regularIdx = campaigns.indexOf(regularCampaigns.first);
-      if (regularIdx >= 0 && regularIdx != _currentIndexOfCapmaign) {
-        _currentIndexOfCapmaign = regularIdx;
-        print('[Campaign] Selected regular campaign index $regularIdx '
-            '(${campaigns[regularIdx].campaignName}, '
-            '${campaigns[regularIdx].zones?.length ?? 0} zones)');
-      }
-      return;
-    }
-
-    // Only auto-select composition if it's the ONLY campaign (standalone publish)
-    final compositionIdx = campaigns.indexWhere((c) => c.isCompositionLayout);
-    if (compositionIdx >= 0) {
-      _currentIndexOfCapmaign = compositionIdx;
-      print(
-          '[Composition] Selected standalone composition index $compositionIdx '
-          '(${campaigns[compositionIdx].campaignName}, '
-          '${campaigns[compositionIdx].zones?.length ?? 0} zones)');
+    // Compositions rotate in the same list as any other campaign now (see
+    // normalizeCampaignResponse) — no longer skipped in favor of "regular"
+    // campaigns just because both were published together. Just keep the
+    // current index in bounds.
+    if (_currentIndexOfCapmaign >= campaigns.length) {
+      _currentIndexOfCapmaign = 0;
     }
   }
 
@@ -2543,24 +2525,11 @@ EOF
       return;
     }
 
-    // Get regular (non-composition) campaigns for rotation
-    final regularCampaigns =
-        campaigns!.where((c) => !c.isCompositionLayout).toList();
-
-    // If only compositions exist, stay on current (standalone composition mode)
-    if (regularCampaigns.isEmpty) {
-      notifyListeners();
-      startPlaylistTimerForCampaign();
-      return;
-    }
-
-    // Rotate only among regular campaigns (skip embedded compositions)
-    final currentRegularIdx = regularCampaigns.indexOf(
-      campaigns[_currentIndexOfCapmaign],
-    );
-    final nextRegularIdx = (currentRegularIdx + 1) % regularCampaigns.length;
-    final nextCampaign = regularCampaigns[nextRegularIdx];
-    _currentIndexOfCapmaign = campaigns.indexOf(nextCampaign);
+    // Rotate through all campaigns, including compositions — they play in
+    // rotation the same as any other campaign now (see
+    // normalizeCampaignResponse), rather than being skipped whenever a
+    // "regular" campaign was also published alongside them.
+    _currentIndexOfCapmaign = (_currentIndexOfCapmaign + 1) % count;
     // Map<String, dynamic> sendLog = {
     //   "action": "player_logs",
     //   "log": "Current Campaign",
