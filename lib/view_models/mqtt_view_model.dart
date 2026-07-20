@@ -83,6 +83,14 @@ class MqttViewModel extends ChangeNotifier {
 
   Timer? _pairingRevalidationTimer;
 
+  // The very first connect() (app startup) fires before pairing has
+  // discovered a player code, so it can't set LWT/publish online status
+  // (both need the topic). Once _checkPairingStatus() learns the topic,
+  // reconnect exactly once so those get set up correctly — guarded so the
+  // 30s periodic re-validation timer doesn't tear down and rebuild the
+  // MQTT connection on every check afterward.
+  bool _connectedWithPlayerCode = false;
+
   Timer? _remoteViewTimer;
   bool _remoteViewActive = false;
   bool _remoteViewCaptureInFlight = false;
@@ -909,6 +917,14 @@ EOF
         devicesinfo["cpu_information"] = systemInfo["cpu_information"];
         devicesinfo["memory_information"] = systemInfo["memory_information"];
         devicesinfo["storage_info"] = systemInfo["storage_info"];
+        devicesinfo["device_model"] = systemInfo["device_model"];
+        // hardware_details.brand/model are what CMS actually displays as
+        // Manufacturer/Model — getSystemInformation() on the native side
+        // already returns device_model (e.g. "MacBookPro15,1"), this was
+        // just never mapped into hardware_details the way Android does.
+        devicesinfo["hardware_details"]["brand"] = "Apple";
+        devicesinfo["hardware_details"]["model"] = systemInfo["device_model"];
+        devicesinfo["hardware_details"]["device_id"] = systemInfo["uuid"];
 
         _fetchCurrentLocation();
         return Map<String, dynamic>.from(systemInfo);
@@ -1575,6 +1591,10 @@ EOF
       }
 
       globleTopic = _topic;
+      if (!_connectedWithPlayerCode) {
+        await _mqttClientService.connect(playerCode: _topic);
+        _connectedWithPlayerCode = true;
+      }
       subsibeMessage(_topic);
       await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
