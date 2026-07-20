@@ -170,9 +170,24 @@ class MqttViewModel extends ChangeNotifier {
   Future<void> loadDeviceInfoFromSharedPreferences() async {
     SharedPreferences prefs = await SharedPreferences.getInstance();
     String? jsonString = prefs.getString('deviceInfoMap');
-    prefs.clear();
+    // Was prefs.clear() — wiped the ENTIRE SharedPreferences store (pairing
+    // state, apiResponse, storeState, everything) on every single app
+    // launch just for reading this one key, which is why the player never
+    // remembered its pairing across restarts. Only remove the key actually
+    // being consumed here.
+    await prefs.remove('deviceInfoMap');
     if (jsonString != null) {
-      deviceInfoMap = Map<String, dynamic>.from(jsonDecode(jsonString));
+      // Was `deviceInfoMap = Map<String, dynamic>.from(...)`, which
+      // reassigns the global to a brand-new object. `devicesinfo` (used
+      // everywhere else, including all the platform-specific device-info
+      // population code) is bound to the ORIGINAL object at field-init
+      // time — reassigning here silently breaks that alias forever, so
+      // nothing written via devicesinfo[...] afterward ever reaches what
+      // actually gets published. Mutate the existing map in place instead
+      // so the alias stays intact.
+      deviceInfoMap
+        ..clear()
+        ..addAll(Map<String, dynamic>.from(jsonDecode(jsonString)));
       print('Loaded device info from SharedPreferences: $deviceInfoMap');
     } else {
       print('No device info found in SharedPreferences.');
