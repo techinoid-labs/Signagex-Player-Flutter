@@ -1211,7 +1211,13 @@ EOF
       _state = MqttState.downloading;
       notifyListeners();
     } else {
-      _state = MqttState.noContent;
+      // Zero downloadable files doesn't mean there's no content — webapp/
+      // text/shape media types are deliberately excluded from
+      // _collectCampaignMediaItemsForDownload above (nothing to download,
+      // they load their URL directly in-app). A campaign made entirely of
+      // those types legitimately has zero files to fetch and is already
+      // ready to display, same as after the download loop below finishes.
+      _state = MqttState.campaignScreen;
       notifyListeners();
       return;
     }
