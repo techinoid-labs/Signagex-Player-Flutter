@@ -451,16 +451,19 @@ class DeviceSettingsViewModel with ChangeNotifier {
   /// IOKit technique first, then falls back to the displayplacer CLI tool
   /// if that doesn't report success.
   Future<String> applyScreenRotationForMac(String rotation) async {
+    print('MQTT_LOGS:: applyScreenRotationForMac called with rotation="$rotation"');
     final normalized = rotation == 'landscape' ? '0' : rotation;
     final degrees = int.tryParse(normalized);
     if (degrees == null) {
       print('MQTT_LOGS:: applyScreenRotationForMac: unrecognized rotation value "$rotation"');
       return 'Error: unrecognized rotation value "$rotation"';
     }
+    print('MQTT_LOGS:: applyScreenRotationForMac: invoking native rotateDisplay with degrees=$degrees');
     try {
       final success = await _remoteViewChannel
           .invokeMethod<bool>('rotateDisplay', {'rotation': degrees});
       if (success == true) {
+        print('MQTT_LOGS:: applyScreenRotationForMac: native rotation succeeded (${degrees}°)');
         return 'Screen rotated to ${degrees}°';
       }
       print('MQTT_LOGS:: applyScreenRotationForMac: native rotation reported failure');

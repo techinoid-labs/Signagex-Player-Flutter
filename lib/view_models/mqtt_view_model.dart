@@ -2111,10 +2111,13 @@ EOF
       }
       if (jsonObj["settings"] != null &&
           jsonObj["settings"]["screen_rotation"] != null) {
+        debugPrint('MQTT_LOGS:: screen_rotation field found: ${jsonObj["settings"]["screen_rotation"]}');
         if (Platform.isMacOS) {
           final rotation = jsonObj["settings"]["screen_rotation"].toString();
           deviceSettings.applyScreenRotationForMac(rotation);
         }
+      } else {
+        debugPrint('MQTT_LOGS:: action_setup_player received — screen_rotation field: ${jsonObj["settings"]?["screen_rotation"]}');
       }
       var data = {"success": true};
       publishMessage(globleTopic, jsonEncode(data));
