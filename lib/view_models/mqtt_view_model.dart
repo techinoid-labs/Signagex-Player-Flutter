@@ -902,6 +902,13 @@ EOF
     ]);
   }
 
+  /// Matches Android's storage_info format exactly (e.g. "23361.00 MB"),
+  /// since CMS's GraphQL schema requires these fields as strings.
+  String _formatBytesAsMb(dynamic bytes) {
+    final value = (bytes as num?)?.toDouble() ?? 0.0;
+    return '${(value / (1024 * 1024)).toStringAsFixed(2)} MB';
+  }
+
   Future<Map<String, dynamic>?> getDeviceIdentifiersForMac() async {
     try {
       const channel = MethodChannel('com.example/systemInfo');
@@ -931,7 +938,17 @@ EOF
         devicesinfo["time_zone"] = systemInfo["time_zone"];
         devicesinfo["cpu_information"] = systemInfo["cpu_information"];
         devicesinfo["memory_information"] = systemInfo["memory_information"];
-        devicesinfo["storage_info"] = systemInfo["storage_info"];
+        // CMS's GraphQL schema requires storage_info values as strings
+        // (confirmed via a real "String cannot represent a non string
+        // value" 500 error) — the native side returns raw byte integers,
+        // and Android's own convention is a formatted "X.XX MB" string, so
+        // match that instead of just stringifying the raw byte count.
+        final rawStorage = systemInfo["storage_info"] as Map?;
+        devicesinfo["storage_info"] = {
+          "total_storage": _formatBytesAsMb(rawStorage?["total_storage"]),
+          "available_storage":
+              _formatBytesAsMb(rawStorage?["available_storage"]),
+        };
         devicesinfo["device_model"] = systemInfo["device_model"];
         // hardware_details.brand/model are what CMS actually displays as
         // Manufacturer/Model — getSystemInformation() on the native side
