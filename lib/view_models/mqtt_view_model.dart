@@ -1788,7 +1788,13 @@ EOF
       final payload = jsonEncode({
         'action': 'image',
         'img_url': base64Image,
-        'sender': 'macos',
+        // CMS's frontend has sender-keyed rendering logic that expects the
+        // literal value "mac" for this platform, not "macos" — confirmed
+        // against the CMS frontend source. Everything else about the
+        // payload/pipe was already correct (verified: image decodes to
+        // exactly what's on screen, CMS receives it on the right topic);
+        // this was the one remaining mismatch.
+        'sender': 'mac',
       });
 
       if (!_remoteViewActive) {
