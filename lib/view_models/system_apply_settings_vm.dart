@@ -445,12 +445,30 @@ class DeviceSettingsViewModel with ChangeNotifier {
     }
   }
 
-  /// No stable public macOS API rotates an arbitrary display's output the
-  /// way xrandr does on Linux X11 — private APIs are undocumented and have
-  /// broken across OS versions. Explicit no-op rather than a silent one.
+  /// macOS has no stable, documented public API for this the way xrandr
+  /// exists on Linux X11. Delegates to the native rotateDisplay method
+  /// (AppDelegate.swift), which tries an undocumented-but-widely-used
+  /// IOKit technique first, then falls back to the displayplacer CLI tool
+  /// if that doesn't report success.
   Future<String> applyScreenRotationForMac(String rotation) async {
-    print('MQTT_LOGS:: screen_rotation not supported on macOS, ignoring: $rotation');
-    return 'Screen rotation not supported on macOS';
+    final normalized = rotation == 'landscape' ? '0' : rotation;
+    final degrees = int.tryParse(normalized);
+    if (degrees == null) {
+      print('MQTT_LOGS:: applyScreenRotationForMac: unrecognized rotation value "$rotation"');
+      return 'Error: unrecognized rotation value "$rotation"';
+    }
+    try {
+      final success = await _remoteViewChannel
+          .invokeMethod<bool>('rotateDisplay', {'rotation': degrees});
+      if (success == true) {
+        return 'Screen rotated to ${degrees}°';
+      }
+      print('MQTT_LOGS:: applyScreenRotationForMac: native rotation reported failure');
+      return 'Error: rotation failed (see native logs — IOKit and displayplacer both unsuccessful)';
+    } on PlatformException catch (e) {
+      print('MQTT_LOGS:: applyScreenRotationForMac failed: ${e.message}');
+      return 'Error: ${e.message}';
+    }
   }
 
   static const _remoteViewChannel = MethodChannel('com.example/remoteView');

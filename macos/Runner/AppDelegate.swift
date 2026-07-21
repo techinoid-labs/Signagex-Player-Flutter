@@ -134,6 +134,13 @@ class AppDelegate: FlutterAppDelegate {
         case "requestAccessibilityPermission":
             self.requestAccessibilityPermission()
             result("OK")
+        case "rotateDisplay":
+            if let args = call.arguments as? [String: Any], let rotation = args["rotation"] as? Int {
+                let success = self.rotateDisplay(rotation: rotation)
+                result(success)
+            } else {
+                result(FlutterError(code: "BAD_ARGS", message: "rotation (Int degrees) required", details: nil))
+            }
         default:
             result(FlutterMethodNotImplemented)
         }
@@ -285,22 +292,20 @@ func reloadApp() {
     // Attaching the text via keyboardSetUnicodeString on a keyDown/keyUp
     // pair is the standard way around that, and the functional analog of
     // `xdotool type -- <text>`.
+    // Places the text on the system clipboard rather than typing it as
+    // keystrokes into whatever's focused — this is what "send text" is
+    // meant to do on macOS.
     func typeText(_ text: String) {
-        let source = CGEventSource(stateID: .hidSystemState)
-        let utf16 = Array(text.utf16)
-        guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true),
-              let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else { return }
-        keyDown.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-        keyUp.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: utf16)
-        keyDown.post(tap: .cghidEventTap)
-        keyUp.post(tap: .cghidEventTap)
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(text, forType: .string)
     }
 
-    // No real "home screen" exists to return to on a kiosk running just
-    // this app — minimizing is the same WM-agnostic choice made on the
-    // Linux branch for the same reason.
     func pressHome() {
-        self.mainFlutterWindow?.miniaturize(nil)
+        // Hides the whole app (every window), revealing the desktop
+        // underneath — the actual macOS equivalent of "going home", not
+        // just minimizing one window.
+        NSApp.hide(nil)
     }
 
     // CGEvent posts to the global HID event stream silently no-op (not an
@@ -315,6 +320,100 @@ func reloadApp() {
     func requestAccessibilityPermission() {
         let options: NSDictionary = [kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String: true]
         _ = AXIsProcessTrustedWithOptions(options)
+    }
+
+    // ────────────────────────────────
+    // Screen rotation — macOS has no stable, documented public API for
+    // this (unlike Linux's xrandr). Two approaches, tried in order:
+    // ────────────────────────────────
+
+    /// Undocumented but widely-used IOKit technique (several real rotation
+    /// utilities rely on this exact call). Public framework, no extra
+    /// install, but behavior isn't guaranteed by Apple and can vary by
+    /// display/GPU.
+    func rotateDisplayIOKit(rotation: Int) -> Bool {
+        let normalized = ((rotation % 360) + 360) % 360
+        guard normalized % 90 == 0 else { return false }
+        let angleCode = UInt32(normalized / 90)
+        let kIOFBSetTransform: UInt32 = 0x00000400
+        let options = kIOFBSetTransform | (angleCode << 16)
+
+        var iterator: io_iterator_t = 0
+        guard IOServiceGetMatchingServices(kIOMasterPortDefault, IOServiceMatching("IOFramebuffer"), &iterator) == KERN_SUCCESS else {
+            return false
+        }
+        var succeeded = false
+        var service = IOIteratorNext(iterator)
+        while service != 0 {
+            if IOServiceRequestProbe(service, options) == KERN_SUCCESS {
+                succeeded = true
+            }
+            IOObjectRelease(service)
+            service = IOIteratorNext(iterator)
+        }
+        IOObjectRelease(iterator)
+        return succeeded
+    }
+
+    /// Falls back to the `displayplacer` CLI tool (brew install
+    /// displayplacer) if the IOKit approach didn't work. More reliable in
+    /// practice, but requires that tool to be installed on this machine.
+    /// May also be blocked entirely by App Sandbox, since this shells out
+    /// to an external process — untested on a real sandboxed build.
+    func rotateDisplayplacer(rotation: Int) -> Bool {
+        let normalized = ((rotation % 360) + 360) % 360
+        let candidatePaths = ["/opt/homebrew/bin/displayplacer", "/usr/local/bin/displayplacer"]
+        guard let path = candidatePaths.first(where: { FileManager.default.fileExists(atPath: $0) }) else {
+            print("MQTT_LOGS:: displayplacer not found at any known path — install via 'brew install displayplacer'")
+            return false
+        }
+
+        let listTask = Process()
+        listTask.executableURL = URL(fileURLWithPath: path)
+        listTask.arguments = ["list"]
+        let listPipe = Pipe()
+        listTask.standardOutput = listPipe
+        do {
+            try listTask.run()
+            listTask.waitUntilExit()
+        } catch {
+            print("MQTT_LOGS:: displayplacer list failed: \(error)")
+            return false
+        }
+        let listData = listPipe.fileHandleForReading.readDataToEndOfFile()
+        guard let listOutput = String(data: listData, encoding: .utf8),
+              let idRange = listOutput.range(of: "Persistent screen id: ") else {
+            print("MQTT_LOGS:: displayplacer list output missing screen id")
+            return false
+        }
+        let afterId = listOutput[idRange.upperBound...]
+        let screenId = String(afterId.prefix(while: { $0 != "\n" })).trimmingCharacters(in: .whitespaces)
+
+        let rotateTask = Process()
+        rotateTask.executableURL = URL(fileURLWithPath: path)
+        rotateTask.arguments = ["id:\(screenId) degree:\(normalized)"]
+        do {
+            try rotateTask.run()
+            rotateTask.waitUntilExit()
+            return rotateTask.terminationStatus == 0
+        } catch {
+            print("MQTT_LOGS:: displayplacer rotate failed: \(error)")
+            return false
+        }
+    }
+
+    func rotateDisplay(rotation: Int) -> Bool {
+        if rotateDisplayIOKit(rotation: rotation) {
+            print("MQTT_LOGS:: Rotated display via IOKit")
+            return true
+        }
+        print("MQTT_LOGS:: IOKit rotation didn't report success, trying displayplacer")
+        if rotateDisplayplacer(rotation: rotation) {
+            print("MQTT_LOGS:: Rotated display via displayplacer")
+            return true
+        }
+        print("MQTT_LOGS:: Both rotation methods failed")
+        return false
     }
 
     private func getSystemInformation() -> [String: Any] {

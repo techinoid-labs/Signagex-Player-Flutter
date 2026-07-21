@@ -1828,13 +1828,17 @@ EOF
   /// pixels.
   _RemoteViewFrame? _resizeAndCompressForRemoteView(
     Uint8List bytes, {
-    int maxBytes = 15 * 1024,
+    // Was 15KB — an untested, very conservative guess from the Linux work
+    // about MQTT/broker message-size limits. Now confirmed the pipe
+    // handles real payloads fine, so raise the budget substantially;
+    // 15KB at 240-640px/quality 30-45 was producing visibly blocky frames.
+    int maxBytes = 120 * 1024,
   }) {
     const tiers = [
-      (width: 640, quality: 45),
-      (width: 480, quality: 40),
-      (width: 320, quality: 35),
-      (width: 240, quality: 30),
+      (width: 1280, quality: 75),
+      (width: 960, quality: 65),
+      (width: 720, quality: 55),
+      (width: 480, quality: 45),
     ];
     try {
       final decoded = img.decodeImage(bytes);
