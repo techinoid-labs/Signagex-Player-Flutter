@@ -2163,6 +2163,7 @@ EOF
         deviceSettings.typeTextForMac(text);
       }
     } else if (jsonObj["action"] == "press_home") {
+      debugPrint("MQTT_LOGS:: press_home received, Platform.isMacOS=${Platform.isMacOS}");
       if (Platform.isMacOS) {
         deviceSettings.pressHomeForMac();
       }

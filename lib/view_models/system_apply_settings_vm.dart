@@ -510,7 +510,8 @@ class DeviceSettingsViewModel with ChangeNotifier {
 
   Future<void> pressHomeForMac() async {
     try {
-      await _remoteViewChannel.invokeMethod('pressHome');
+      final result = await _remoteViewChannel.invokeMethod('pressHome');
+      print('MQTT_LOGS:: pressHomeForMac native call returned: $result');
     } on PlatformException catch (e) {
       print('MQTT_LOGS:: pressHomeForMac failed: ${e.message}');
     }

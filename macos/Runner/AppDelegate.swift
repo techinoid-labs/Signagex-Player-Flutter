@@ -302,10 +302,42 @@ func reloadApp() {
     }
 
     func pressHome() {
-        // Hides the whole app (every window), revealing the desktop
-        // underneath — the actual macOS equivalent of "going home", not
-        // just minimizing one window.
-        NSApp.hide(nil)
+        print("MQTT_LOGS:: pressHome native call entered")
+
+        // Activates Finder (desktop) using the non-deprecated API.
+        // NSWorkspace.shared.launchApplication is deprecated on macOS 10.15+.
+        let activateFinder = {
+            if let finder = NSRunningApplication
+                .runningApplications(withBundleIdentifier: "com.apple.finder").first {
+                finder.activate(options: .activateIgnoringOtherApps)
+                print("MQTT_LOGS:: pressHome: Finder activated via NSRunningApplication")
+            } else {
+                // Finder not yet running (rare) — open it
+                if let finderURL = NSWorkspace.shared.urlForApplication(
+                    withBundleIdentifier: "com.apple.finder") {
+                    NSWorkspace.shared.open(finderURL)
+                }
+                print("MQTT_LOGS:: pressHome: Finder opened via NSWorkspace.open")
+            }
+        }
+
+        if let window = self.mainFlutterWindow, window.styleMask.contains(.fullScreen) {
+            // toggleFullScreen is asynchronous — the animation takes ~0.8 s.
+            // Calling NSApp.hide immediately after does nothing useful because
+            // the window is still in its fullscreen Space during the animation.
+            // Wait for the exit to finish before hiding.
+            print("MQTT_LOGS:: pressHome: window is fullscreen, scheduling hide after exit")
+            window.toggleFullScreen(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.9) {
+                NSApp.hide(nil)
+                activateFinder()
+                print("MQTT_LOGS:: pressHome: post-fullscreen hide done, isHidden=\(NSApp.isHidden)")
+            }
+        } else {
+            NSApp.hide(nil)
+            activateFinder()
+            print("MQTT_LOGS:: pressHome: NSApp.hide called, isHidden=\(NSApp.isHidden)")
+        }
     }
 
     // CGEvent posts to the global HID event stream silently no-op (not an
