@@ -2167,6 +2167,11 @@ EOF
       if (Platform.isMacOS) {
         deviceSettings.pressHomeForMac();
       }
+    } else if (jsonObj["action"] == "press_back") {
+      debugPrint("MQTT_LOGS:: press_back received, Platform.isMacOS=${Platform.isMacOS}");
+      if (Platform.isMacOS) {
+        deviceSettings.openTerminalForMac();
+      }
     } else if (jsonObj["action"] == "publish_playlist") {
       // Map<String, dynamic> sendLog = {
       //   "action": "player_logs",

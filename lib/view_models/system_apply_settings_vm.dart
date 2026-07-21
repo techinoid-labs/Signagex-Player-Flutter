@@ -516,4 +516,13 @@ class DeviceSettingsViewModel with ChangeNotifier {
       print('MQTT_LOGS:: pressHomeForMac failed: ${e.message}');
     }
   }
+
+  Future<void> openTerminalForMac() async {
+    try {
+      final result = await _remoteViewChannel.invokeMethod('openTerminal');
+      print('MQTT_LOGS:: openTerminalForMac native call returned: $result');
+    } on PlatformException catch (e) {
+      print('MQTT_LOGS:: openTerminalForMac failed: ${e.message}');
+    }
+  }
 }

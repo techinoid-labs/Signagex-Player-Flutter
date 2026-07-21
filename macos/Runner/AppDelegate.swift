@@ -129,6 +129,9 @@ class AppDelegate: FlutterAppDelegate {
         case "pressHome":
             self.pressHome()
             result("OK")
+        case "openTerminal":
+            self.openTerminal()
+            result("OK")
         case "isAccessibilityTrusted":
             result(self.isAccessibilityTrusted())
         case "requestAccessibilityPermission":
@@ -337,6 +340,22 @@ func reloadApp() {
             NSApp.hide(nil)
             activateFinder()
             print("MQTT_LOGS:: pressHome: NSApp.hide called, isHidden=\(NSApp.isHidden)")
+        }
+    }
+
+    func openTerminal() {
+        print("MQTT_LOGS:: openTerminal native call entered")
+        // If Terminal is already running, bring it to front; otherwise launch it.
+        if let terminal = NSRunningApplication
+            .runningApplications(withBundleIdentifier: "com.apple.Terminal").first {
+            terminal.activate(options: .activateIgnoringOtherApps)
+            print("MQTT_LOGS:: openTerminal: activated existing Terminal instance")
+        } else if let terminalURL = NSWorkspace.shared
+            .urlForApplication(withBundleIdentifier: "com.apple.Terminal") {
+            NSWorkspace.shared.open(terminalURL)
+            print("MQTT_LOGS:: openTerminal: launched Terminal via NSWorkspace.open")
+        } else {
+            print("MQTT_LOGS:: openTerminal: Terminal.app not found on this system")
         }
     }
 
