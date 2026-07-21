@@ -1499,24 +1499,36 @@ bool isAdCampaignUpdateMessage(String? message) {
   return (message ?? '').toLowerCase().contains('ad campaign update');
 }
 
+// Must return UTC DateTimes — evaluateAdSlotSchedule compares these
+// against todayUtc (DateTime.utc(...)). The local-timezone DateTime(...)
+// constructor previously used here made `2026-07-21` mean local midnight,
+// which on a UTC+5 machine is actually 2026-07-20T19:00:00Z — nearly a
+// full day earlier than intended, so a same-day flight window (e.g.
+// start_date == end_date == today) could already read as "outside range"
+// well before the day was over.
 DateTime? _parseScheduleDateOnly(String? raw) {
   if (raw == null || raw.trim().isEmpty) return null;
   final value = raw.trim();
   try {
     if (value.contains('T')) {
+      // Take the calendar date exactly as written (e.g. the "2026-07-21"
+      // portion of "2026-07-21T00:00:00") — do NOT convert timezones here,
+      // that would shift the date itself across a day boundary depending
+      // on the local offset. This field represents a calendar date, not a
+      // precise instant.
       final parsed = DateTime.parse(value);
-      return DateTime(parsed.year, parsed.month, parsed.day);
+      return DateTime.utc(parsed.year, parsed.month, parsed.day);
     }
     final parts = value.split('-');
     if (parts.length == 3) {
-      return DateTime(
+      return DateTime.utc(
         int.parse(parts[0]),
         int.parse(parts[1]),
         int.parse(parts[2]),
       );
     }
     final parsed = DateTime.parse(value);
-    return DateTime(parsed.year, parsed.month, parsed.day);
+    return DateTime.utc(parsed.year, parsed.month, parsed.day);
   } catch (_) {
     return null;
   }
