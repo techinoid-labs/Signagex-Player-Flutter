@@ -2135,10 +2135,23 @@ EOF
       final x = (jsonObj["x"] as num?)?.toDouble();
       final y = (jsonObj["y"] as num?)?.toDouble();
       if (x != null && y != null && Platform.isMacOS) {
+        // Coordinate-based click — move cursor and click at that position (macOS only)
         deviceSettings.moveCursorAndClickForMac(
           x * _remoteViewScaleX,
           y * _remoteViewScaleY,
         );
+      } else if (x == null || y == null) {
+        // No coordinates — advance the content queue.
+        // Matches Android's behaviour: a coordinate-less click skips to the
+        // next item rather than doing a cursor click at some position.
+        debugPrint('MQTT_LOGS:: click (null coords) — advancing content queue, state=$_state');
+        if (_state == MqttState.campaignScreen) {
+          _timerOfCampaign?.cancel();
+          _updateIndexForCampain();
+        } else if (_state == MqttState.playlistScreen) {
+          _timer?.cancel();
+          _updateIndex();
+        }
       }
     } else if (jsonObj["action"] == "scroll") {
       final hold = jsonObj["hold"];
