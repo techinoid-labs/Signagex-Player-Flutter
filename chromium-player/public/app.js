@@ -198,13 +198,27 @@
     if (remoteViewActive) return;
     remoteViewActive = true;
     console.log('[remote-view] started');
-    captureAndPublishFrame();
-    remoteViewTimer = setInterval(captureAndPublishFrame, 1000);
+    scheduleNextFrame(0);
+  }
+
+  // Self-scheduling instead of setInterval: captureAndPublishFrame is async
+  // and html2canvas can easily take >1s on a real signage layout (video,
+  // images, multiple zones). setInterval doesn't wait for the previous call
+  // to finish, so overlapping captures can finish/publish out of order --
+  // the CMS then renders whichever frame's MQTT publish lands last, which
+  // can be an older capture than one already shown ("not synced"). Chaining
+  // via setTimeout guarantees only one capture is ever in flight and frames
+  // publish in the order they were captured.
+  function scheduleNextFrame(delayMs) {
+    remoteViewTimer = setTimeout(async () => {
+      await captureAndPublishFrame();
+      if (remoteViewActive) scheduleNextFrame(1000);
+    }, delayMs);
   }
 
   function stopRemoteView() {
     remoteViewActive = false;
-    clearInterval(remoteViewTimer);
+    clearTimeout(remoteViewTimer);
     remoteViewTimer = null;
     console.log('[remote-view] stopped');
   }
