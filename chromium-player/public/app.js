@@ -424,11 +424,17 @@
 
     const resW = Number(campaign.resolution && campaign.resolution.width) || window.innerWidth;
     const resH = Number(campaign.resolution && campaign.resolution.height) || window.innerHeight;
-    const scale = Math.min(window.innerWidth / resW, window.innerHeight / resH);
-    const left = (window.innerWidth - resW * scale) / 2;
-    const top = (window.innerHeight - resH * scale) / 2;
+
+    // Cover scaling: use Math.max so the stage always fills the full viewport.
+    // The stage is larger than the screen if aspect ratios differ — overflow is
+    // clipped by #content-root (overflow:hidden). This removes letterbox bars
+    // and gives a proper full-screen kiosk appearance.
+    const scale = Math.max(window.innerWidth / resW, window.innerHeight / resH);
+    const left = (window.innerWidth  - resW * scale) / 2;
+    const top  = (window.innerHeight - resH * scale) / 2;
 
     const stage = document.createElement('div');
+    stage.className = 'campaign-stage'; // triggers fade-in CSS animation
     stage.style.position = 'absolute';
     stage.style.width = `${resW}px`;
     stage.style.height = `${resH}px`;
