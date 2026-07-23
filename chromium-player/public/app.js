@@ -236,7 +236,14 @@
         sender: 'mac',
       });
       console.log('[remote-view] publishing frame', payload.length, 'bytes');
+      // Published to both /remote and /remote2: the CMS's own console log
+      // showed it unsubscribing from `<code>/remote` right after sending the
+      // start command and resubscribing to `<code>/remote2` -- i.e. it may
+      // actually be listening for the returned frame on /remote2, not
+      // /remote (which the Flutter app only publishes to). Sending to both
+      // is a no-cost hedge until that's confirmed against CMS source.
       mqttClient.publish(`${mqttTopic}/remote`, payload);
+      mqttClient.publish(`${mqttTopic}/remote2`, payload);
     } catch (e) {
       console.error('[remote-view] capture failed', e);
     }
