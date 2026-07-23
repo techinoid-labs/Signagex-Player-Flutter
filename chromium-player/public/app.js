@@ -160,11 +160,16 @@
     }
     try {
       const canvas = await html2canvas(document.body, {
+        // useCORS: true lets html2canvas attempt CORS-safe image loads;
+        // cross-origin images that fail CORS are simply omitted rather than
+        // tainting the canvas. Do NOT set allowTaint:true — it marks the
+        // canvas as tainted, making canvas.toBlob() throw a SecurityError
+        // which silently suppresses every frame and causes 'waiting for screen'.
         useCORS: true,
-        allowTaint: true,
         scale: 0.25,
         logging: false,
         backgroundColor: '#000000',
+        imageTimeout: 5000,
       });
       canvas.toBlob((blob) => {
         if (!blob || !remoteViewActive) return;
@@ -287,9 +292,21 @@
         console.error('[mqtt] payload was not JSON', err);
         return;
       }
-      // Route by topic: /remote sub-topic carries CMS remote-view commands;
-      // everything else is a content/campaign message.
-      if (recvTopic === `${topic}/remote`) {
+      // Route by topic AND by action name — mirrors the Flutter dispatcher
+      // which handles remote-view actions on any subscribed topic.
+      const action = data.action || '';
+      const isRemoteViewAction = (
+        recvTopic === `${topic}/remote` ||
+        action === 'start_remote_view' ||
+        action === 'stop_remote_view' ||
+        action === 'low_res' ||
+        action === 'click' ||
+        action === 'scroll' ||
+        action === 'send_text' ||
+        action === 'press_home' ||
+        action === 'press_back'
+      );
+      if (isRemoteViewAction) {
         handleRemoteViewMessage(data);
       } else {
         handleContentMessage(data);
@@ -423,14 +440,19 @@
     // ── sticker ────────────────────────────────────────────────────────────
     // Stickers can be: HTML snippets (settings.html), inline SVG, remote SVG
     // or raster image URLs. Mirrors the Flutter _buildStickerWidget priority.
-    if (mediaType === 'sticker' || MediaItem_looksLikeSticker(item)) {
+    if (mediaType === 'sticker' || mediaType === 'image/svg+xml' || MediaItem_looksLikeSticker(item)) {
       // Priority 1: HTML sticker
       if (settings.html) {
         container.innerHTML = settings.html;
         styleFill(container);
         return;
       }
-      const stickerUrl = (settings.remoteSrc || url || '').trim();
+      // remoteSrc can come under several key names in the raw MQTT JSON
+      const stickerUrl = (
+        settings.remoteSrc || settings.remote_src ||
+        settings.download_url || settings.downloadUrl ||
+        url || ''
+      ).trim();
       // Priority 2: inline SVG (may contain embedded base64 images)
       if (isSvgContent(stickerUrl)) {
         const img = document.createElement('img');
@@ -487,10 +509,23 @@
   }
 
   // True for items that should use sticker rendering even if mediaType differs
-  // (mirrors Flutter's MediaItem.looksLikeSticker heuristic).
+  // (mirrors Flutter's MediaItem.looksLikeSticker and normalizeMediaType).
+  // Key: CMS sends SVG stickers with mediaType='image/svg+xml' (not 'sticker');
+  // Flutter normalises that → 'sticker' internally, we must replicate here.
   function MediaItem_looksLikeSticker(item) {
+    const mt = (item.mediaType || '').toLowerCase();
+    // Flutter normalises 'image/svg+xml' → 'sticker'
+    if (mt === 'image/svg+xml') return true;
     const settings = item.settings || {};
-    return !!(settings.remoteSrc || settings.html);
+    // remoteSrc can be any of these keys in the raw JSON
+    const remoteSrc = (
+      settings.remoteSrc || settings.remote_src ||
+      settings.download_url || settings.downloadUrl || ''
+    ).toLowerCase();
+    if (remoteSrc.endsWith('.svg')) return true;
+    const kind = (settings.kind || '').toLowerCase();
+    if (kind.includes('sticker')) return true;
+    return false;
   }
 
   function styleFill(el) {
