@@ -1,0 +1,80 @@
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  width: 100%;
+  height: 100%;
+  background: #000;
+  color: #fff;
+  font-family: -apple-system, Segoe UI, Roboto, Helvetica, Arial, sans-serif;
+  overflow: hidden;
+}
+
+.screen {
+  width: 100vw;
+  height: 100vh;
+}
+
+.hidden {
+  display: none !important;
+}
+
+#pairing-screen {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(circle at center, #1b1f2a 0%, #05060a 100%);
+}
+
+.pairing-card {
+  text-align: center;
+  padding: 2rem 3rem;
+}
+
+.pairing-card h1 {
+  font-size: 1.75rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+.pairing-card p {
+  color: #9aa3b2;
+  margin-top: 0;
+}
+
+.pairing-code {
+  font-size: 5rem;
+  font-weight: 700;
+  letter-spacing: 0.2em;
+  margin: 1.5rem 0;
+  color: #4dd0e1;
+}
+
+.status {
+  font-size: 1rem;
+  color: #6b7280;
+}
+
+#player-screen {
+  background: #000;
+}
+
+#content-root {
+  width: 100%;
+  height: 100%;
+  position: relative;
+}
+
+#content-root img,
+#content-root video,
+#content-root iframe {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  border: none;
+  position: absolute;
+  top: 0;
+  left: 0;
+  background: #000;
+}

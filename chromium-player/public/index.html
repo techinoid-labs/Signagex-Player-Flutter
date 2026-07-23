@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>SignageX Player</title>
+<link rel="stylesheet" href="/style.css" />
+</head>
+<body>
+  <div id="pairing-screen" class="screen">
+    <div class="pairing-card">
+      <h1>Pair this screen</h1>
+      <p>Enter this code in the SignageX dashboard to pair it.</p>
+      <div id="pairing-code" class="pairing-code">------</div>
+      <p class="status" id="pairing-status">Contacting server&hellip;</p>
+    </div>
+  </div>
+
+  <div id="player-screen" class="screen hidden">
+    <div id="content-root"></div>
+  </div>
+
+  <script src="/vendor/mqtt/mqtt.min.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>
