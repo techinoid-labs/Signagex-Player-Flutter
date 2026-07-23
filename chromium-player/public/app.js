@@ -19,6 +19,13 @@
   let advanceTimer = null;
   let remoteViewActive = false;
   let remoteViewTimer = null;
+  // Gates remote-view captures so we never publish a frame mid-render:
+  // true only once everything renderCampaign kicked off (image decode,
+  // sticker fetch, iframe load) has settled *and* the fade-in animation has
+  // finished. renderToken invalidates a still-pending readiness check from a
+  // campaign that got replaced before it finished loading.
+  let contentReady = true;
+  let renderToken = 0;
 
   async function pollPairStatus() {
     try {
@@ -225,6 +232,14 @@
 
   async function captureAndPublishFrame() {
     if (!remoteViewActive || !mqttClient || !mqttTopic) return;
+    if (!contentReady) {
+      // A campaign just started rendering and its images/stickers/iframe
+      // haven't finished loading (or the fade-in animation is still
+      // running) -- skip this tick rather than publish a half-loaded frame.
+      // The next scheduled capture will pick it up once contentReady flips.
+      console.log('[remote-view] content not ready yet, skipping frame');
+      return;
+    }
     if (typeof html2canvas === 'undefined') {
       console.warn('[remote-view] html2canvas not loaded');
       return;
@@ -406,6 +421,8 @@
       clearTimeout(advanceTimer);
       contentRoot.innerHTML = '';
       noContentEl.classList.remove('hidden');
+      renderToken++; // invalidate any still-pending readiness check
+      contentReady = true; // blank state has nothing to wait on
       return;
     }
 
@@ -433,6 +450,10 @@
 
   function renderCampaign(campaign) {
     contentRoot.innerHTML = '';
+
+    const token = ++renderToken;
+    contentReady = false;
+    const loadPromises = [];
 
     const resW = Number(campaign.resolution && campaign.resolution.width) || window.innerWidth;
     const resH = Number(campaign.resolution && campaign.resolution.height) || window.innerHeight;
@@ -468,15 +489,40 @@
       zoneEl.style.overflow = 'hidden';
 
       const item = (zone.mediaItems || []).find((mi) => !(mi.ad_slot && mi.ad_slot.skip_playback));
-      if (item) renderZoneItem(zoneEl, item);
+      if (item) renderZoneItem(zoneEl, item, loadPromises);
 
       stage.appendChild(zoneEl);
     });
 
     contentRoot.appendChild(stage);
+
+    // Fade-in animation (.campaign-stage, stageFadeIn) takes 0.45s. Content
+    // is only considered ready to screenshot once every async element this
+    // render kicked off has settled AND that animation has finished --
+    // otherwise remote view captures a half-opacity/half-loaded transition.
+    const fadeInDone = new Promise((resolve) => setTimeout(resolve, 500));
+    Promise.all([...loadPromises, fadeInDone]).then(() => {
+      if (token === renderToken) contentReady = true;
+    });
   }
 
-  function renderZoneItem(container, item) {
+  // Resolves once `el` fires `eventName` (or `error`), with a hard timeout
+  // so one broken/slow asset can't block remote-view captures forever.
+  function waitForLoad(el, eventName, timeoutMs) {
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = () => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      el.addEventListener(eventName, finish, { once: true });
+      el.addEventListener('error', finish, { once: true });
+      setTimeout(finish, timeoutMs);
+    });
+  }
+
+  function renderZoneItem(container, item, loadPromises) {
     const settings = item.settings || {};
     let mediaType = (item.mediaType || '').toLowerCase();
     let url = item.mediaUrl || '';
@@ -540,7 +586,7 @@
       // Priority 3: remote URL — proxy through the local server so the browser
       // always gets image/svg+xml with no CORS issues
       if (stickerUrl) {
-        renderRemoteStickerUrl(container, stickerUrl);
+        loadPromises.push(renderRemoteStickerUrl(container, stickerUrl));
         return;
       }
       console.warn('[content] sticker had no renderable content', item);
@@ -550,30 +596,36 @@
     // ── video ──────────────────────────────────────────────────────────────
     if (mediaType.includes('video')) {
       const el = document.createElement('video');
-      el.src = url;
       el.autoplay = true;
       el.muted = true;
       el.loop = !!settings.loop;
       styleFill(el);
+      loadPromises.push(waitForLoad(el, 'loadeddata', 4000));
       container.appendChild(el);
+      el.src = url; // set after listeners are attached so 'error' can't fire unheard
       return;
     }
 
     // ── iframe ─────────────────────────────────────────────────────────────
     if (mediaType === 'iframe') {
       const el = document.createElement('iframe');
-      el.src = url;
       styleFill(el);
+      // Web-app iframes (Next.js apps, external URLs) can take a while to
+      // paint anything -- longer timeout than images/video so remote view
+      // doesn't publish a white frame while it's still loading.
+      loadPromises.push(waitForLoad(el, 'load', 6000));
       container.appendChild(el);
+      el.src = url;
       return;
     }
 
     // ── image / fallback ───────────────────────────────────────────────────
     if (url) {
       const el = document.createElement('img');
-      el.src = url;
       styleFill(el);
+      loadPromises.push(waitForLoad(el, 'load', 4000));
       container.appendChild(el);
+      el.src = url;
       return;
     }
 
