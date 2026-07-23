@@ -217,35 +217,26 @@
     }
     try {
       const canvas = await html2canvas(document.body, {
-        // useCORS: true lets html2canvas attempt CORS-safe image loads;
-        // cross-origin images that fail CORS are simply omitted rather than
-        // tainting the canvas. Do NOT set allowTaint:true — it marks the
-        // canvas as tainted, making canvas.toBlob() throw a SecurityError
-        // which silently suppresses every frame and causes 'waiting for screen'.
         useCORS: true,
         scale: 0.25,
         logging: false,
         backgroundColor: '#000000',
         imageTimeout: 5000,
       });
-      canvas.toBlob((blob) => {
-        if (!blob || !remoteViewActive) return;
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          const base64 = reader.result.split(',')[1];
-          const payload = JSON.stringify({
-            action: 'image',
-            img_url: base64,
-            // CMS frontend expects the literal value 'mac' (not 'macos')
-            // to route the frame to the correct renderer.
-            sender: 'mac',
-          });
-          if (remoteViewActive && mqttClient) {
-            mqttClient.publish(`${mqttTopic}/remote`, payload);
-          }
-        };
-        reader.readAsDataURL(blob);
-      }, 'image/jpeg', 0.3);
+      // Use toDataURL (synchronous) instead of toBlob+FileReader to avoid
+      // async callback chains that can silently drop frames.
+      const dataUrl = canvas.toDataURL('image/jpeg', 0.3);
+      const base64 = dataUrl.split(',')[1];
+      if (!base64 || !remoteViewActive || !mqttClient) return;
+      const payload = JSON.stringify({
+        action: 'image',
+        img_url: base64,
+        // CMS frontend expects the literal value 'mac' (not 'macos')
+        // to route the frame to the correct renderer.
+        sender: 'mac',
+      });
+      console.log('[remote-view] publishing frame', payload.length, 'bytes');
+      mqttClient.publish(`${mqttTopic}/remote`, payload);
     } catch (e) {
       console.error('[remote-view] capture failed', e);
     }
@@ -425,11 +416,10 @@
     const resW = Number(campaign.resolution && campaign.resolution.width) || window.innerWidth;
     const resH = Number(campaign.resolution && campaign.resolution.height) || window.innerHeight;
 
-    // Cover scaling: use Math.max so the stage always fills the full viewport.
-    // The stage is larger than the screen if aspect ratios differ — overflow is
-    // clipped by #content-root (overflow:hidden). This removes letterbox bars
-    // and gives a proper full-screen kiosk appearance.
-    const scale = Math.max(window.innerWidth / resW, window.innerHeight / resH);
+    // Fit scaling: Math.min so the entire stage is always visible inside the
+    // viewport (no clipping). Black letterbox areas on the body give the
+    // "simulator screen" look — content sits as a framed panel on black.
+    const scale = Math.min(window.innerWidth / resW, window.innerHeight / resH);
     const left = (window.innerWidth  - resW * scale) / 2;
     const top  = (window.innerHeight - resH * scale) / 2;
 
