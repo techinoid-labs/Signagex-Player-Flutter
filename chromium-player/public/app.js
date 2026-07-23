@@ -11,34 +11,41 @@
 
   let paired = false;
   let mqttClient = null;
+  let mqttTopic = null;
   let playlist = [];
   let playIndex = 0;
   let advanceTimer = null;
 
   async function pollPairStatus() {
-    if (paired) return;
     try {
       const res = await fetch('/api/pair-status');
       const data = await res.json();
 
       if (data.playerCode) {
         pairingCodeEl.textContent = data.playerCode;
+
+        // Match the Flutter app: connect + subscribe + publish device info
+        // as soon as we have a player_code, *before* pairing is confirmed.
+        // The CMS/MQTT view only sees a device once it has published
+        // something on its topic -- waiting for `paired` first meant we
+        // never showed up as reachable.
+        if (!mqttClient || mqttTopic !== data.playerCode) {
+          connectMqtt(data.playerCode);
+        }
       }
 
-      if (data.paired) {
+      if (data.paired && !paired) {
         pairingStatusEl.textContent = 'Paired! Starting player…';
         paired = true;
         showPlayerScreen();
-        connectMqtt(data.playerCode);
-        return;
+      } else if (!data.paired) {
+        pairingStatusEl.textContent = 'Waiting for pairing…';
       }
-
-      pairingStatusEl.textContent = 'Waiting for pairing…';
     } catch (err) {
       console.error('[pair-status] failed', err);
       pairingStatusEl.textContent = 'Could not reach server, retrying…';
     } finally {
-      if (!paired) setTimeout(pollPairStatus, PAIR_POLL_MS);
+      setTimeout(pollPairStatus, PAIR_POLL_MS);
     }
   }
 
@@ -47,11 +54,36 @@
     playerScreen.classList.remove('hidden');
   }
 
+  function buildDeviceInfo(topic) {
+    let timeZone = '';
+    try {
+      timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone || '';
+    } catch (_) {}
+
+    return {
+      platform: 'windows',
+      uuid: topic,
+      sender: 'chromium_web',
+      last_seen: new Date().toISOString(),
+      device_model: navigator.userAgent,
+      time_zone: timeZone,
+      device_resolution: {
+        resolution: `${window.screen.width}x${window.screen.height}`,
+        density: window.devicePixelRatio || 1,
+      },
+    };
+  }
+
   function connectMqtt(topic) {
     if (!topic) {
       console.error('No player code to subscribe with, cannot connect MQTT');
       return;
     }
+
+    if (mqttClient) {
+      mqttClient.end(true);
+    }
+    mqttTopic = topic;
 
     mqttClient = mqtt.connect(MQTT_URL, {
       reconnectPeriod: 3000,
@@ -61,7 +93,12 @@
     mqttClient.on('connect', () => {
       console.log('[mqtt] connected, subscribing to', topic);
       mqttClient.subscribe(topic, (err) => {
-        if (err) console.error('[mqtt] subscribe failed', err);
+        if (err) {
+          console.error('[mqtt] subscribe failed', err);
+          return;
+        }
+        console.log('[mqtt] subscribed, publishing device info to register presence');
+        mqttClient.publish(topic, JSON.stringify(buildDeviceInfo(topic)));
       });
     });
 
@@ -83,91 +120,156 @@
     mqttClient.on('close', () => console.log('[mqtt] connection closed'));
   }
 
-  // Best-effort normalizer: the exact payload shape hasn't been confirmed
-  // against a live MQTT message yet, so this accepts a few common shapes
-  // and logs anything it can't recognize instead of throwing.
+  // Real shape, confirmed from a live payload:
+  // {action:"publish_campaign", sender:"signagex_web", data:{playerCampaigns:[
+  //   {playback_type, campaign_id, campaign_name, is_paused, resolution:{width,height},
+  //    campaign_settings:{transition,duration,loop}, zones:[{id,x,y,width,height,
+  //    mediaItems:[{id, mediaType, mediaUrl, content_media_type, settings, schedule, ad_slot}]}]}
+  // ]}}, or {action:"stop_remote_view", ...}.
   function handleContentMessage(data) {
-    let items = null;
-
-    if (Array.isArray(data)) {
-      items = data;
-    } else if (Array.isArray(data.items)) {
-      items = data.items;
-    } else if (Array.isArray(data.playlist)) {
-      items = data.playlist;
-    } else if (data.url || data.mediaUrl || data.content_url || data.src) {
-      items = [data];
-    }
-
-    if (!items || items.length === 0) {
-      console.warn('[content] message did not contain a recognizable playlist/item', data);
+    if (data.action === 'stop_remote_view') {
+      console.log('[content] stop_remote_view received (no-op, remote view not implemented)');
       return;
     }
 
-    playlist = items;
+    if (data.action !== 'publish_campaign' || !data.data || !Array.isArray(data.data.playerCampaigns)) {
+      console.warn('[content] unrecognized message shape', data);
+      return;
+    }
+
+    const campaigns = data.data.playerCampaigns.filter((c) => !c.is_paused);
+    if (campaigns.length === 0) {
+      console.warn('[content] no active (non-paused) campaigns in payload', data);
+      return;
+    }
+
+    playlist = campaigns;
     playIndex = 0;
-    playCurrentItem();
+    playCurrentCampaign();
   }
 
-  function playCurrentItem() {
+  function playCurrentCampaign() {
     clearTimeout(advanceTimer);
     if (playlist.length === 0) return;
 
-    const item = playlist[playIndex];
-    renderItem(item);
+    const campaign = playlist[playIndex];
+    renderCampaign(campaign);
 
-    const durationMs = Number(item.duration_ms || (item.duration ? item.duration * 1000 : 0)) || DEFAULT_ITEM_DURATION_MS;
+    const durationMs = Number(campaign.campaign_settings && campaign.campaign_settings.duration) * 1000 || DEFAULT_ITEM_DURATION_MS;
     advanceTimer = setTimeout(() => {
       playIndex = (playIndex + 1) % playlist.length;
-      playCurrentItem();
+      playCurrentCampaign();
     }, durationMs);
 
-    maybeSendProofOfPlay(item);
+    sendProofOfPlayForCampaign(campaign);
   }
 
-  function renderItem(item) {
-    const url = item.url || item.mediaUrl || item.content_url || item.src;
-    const type = (item.type || item.contentType || item.mimeType || guessTypeFromUrl(url) || 'image').toLowerCase();
-
+  function renderCampaign(campaign) {
     contentRoot.innerHTML = '';
-    if (!url) {
-      console.warn('[content] item had no url', item);
-      return;
+
+    const resW = Number(campaign.resolution && campaign.resolution.width) || window.innerWidth;
+    const resH = Number(campaign.resolution && campaign.resolution.height) || window.innerHeight;
+    const scale = Math.min(window.innerWidth / resW, window.innerHeight / resH);
+    const left = (window.innerWidth - resW * scale) / 2;
+    const top = (window.innerHeight - resH * scale) / 2;
+
+    const stage = document.createElement('div');
+    stage.style.position = 'absolute';
+    stage.style.width = `${resW}px`;
+    stage.style.height = `${resH}px`;
+    stage.style.left = `${left}px`;
+    stage.style.top = `${top}px`;
+    stage.style.transform = `scale(${scale})`;
+    stage.style.transformOrigin = 'top left';
+    stage.style.background = '#000';
+
+    (campaign.zones || []).forEach((zone) => {
+      const zoneEl = document.createElement('div');
+      zoneEl.style.position = 'absolute';
+      zoneEl.style.left = `${Number(zone.x) || 0}px`;
+      zoneEl.style.top = `${Number(zone.y) || 0}px`;
+      zoneEl.style.width = `${Number(zone.width) || 0}px`;
+      zoneEl.style.height = `${Number(zone.height) || 0}px`;
+      zoneEl.style.overflow = 'hidden';
+
+      const item = (zone.mediaItems || []).find((mi) => !(mi.ad_slot && mi.ad_slot.skip_playback));
+      if (item) renderZoneItem(zoneEl, item);
+
+      stage.appendChild(zoneEl);
+    });
+
+    contentRoot.appendChild(stage);
+  }
+
+  function renderZoneItem(container, item) {
+    const settings = item.settings || {};
+    let mediaType = (item.mediaType || '').toLowerCase();
+    let url = item.mediaUrl;
+
+    if (mediaType === 'ad_slot') {
+      mediaType = (item.content_media_type || '').toLowerCase();
+    } else if (mediaType === 'sticker') {
+      url = settings.remoteSrc || item.mediaUrl;
+      mediaType = 'image';
+    } else if (mediaType === 'web_app_instance' || settings.kind === 'web-app-iframe') {
+      url = settings.iframeSrc || item.mediaUrl;
+      mediaType = 'iframe';
     }
 
     let el;
-    if (type.includes('video')) {
+    if (mediaType === 'shape') {
+      container.innerHTML = item.mediaUrl || ''; // raw inline <svg>…</svg>
+      styleFill(container);
+      return;
+    } else if (mediaType === 'text') {
+      container.innerHTML = settings.html || `<p>${settings.text || ''}</p>`;
+      styleFill(container);
+      return;
+    } else if (mediaType.includes('video')) {
       el = document.createElement('video');
       el.src = url;
       el.autoplay = true;
       el.muted = true;
-      el.loop = false;
-    } else if (type.includes('web') || type.includes('html') || type.includes('iframe')) {
+      el.loop = !!settings.loop;
+    } else if (mediaType === 'iframe') {
       el = document.createElement('iframe');
       el.src = url;
-    } else {
+    } else if (url) {
       el = document.createElement('img');
       el.src = url;
+    } else {
+      console.warn('[content] zone item had no renderable url', item);
+      return;
     }
-    contentRoot.appendChild(el);
+
+    styleFill(el);
+    container.appendChild(el);
   }
 
-  function guessTypeFromUrl(url) {
-    if (!url) return null;
-    if (/\.(mp4|webm|mov)$/i.test(url)) return 'video';
-    if (/\.(jpg|jpeg|png|gif|webp)$/i.test(url)) return 'image';
-    if (/^https?:\/\//i.test(url)) return 'webpage';
-    return null;
+  function styleFill(el) {
+    el.style.width = '100%';
+    el.style.height = '100%';
+    el.style.border = 'none';
+    el.style.display = 'block';
   }
 
-  function maybeSendProofOfPlay(item) {
-    if (!item.creative_url && !item.ad_campaign_id) return; // not an ad item
-    fetch('/api/proof-of-play', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(item),
-    }).catch((err) => console.error('[proof-of-play] failed', err));
+  function sendProofOfPlayForCampaign(campaign) {
+    (campaign.zones || []).forEach((zone) => {
+      (zone.mediaItems || []).forEach((item) => {
+        if (item.mediaType === 'ad_slot' && item.ad_slot && !item.ad_slot.skip_playback) {
+          fetch('/api/proof-of-play', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(item),
+          }).catch((err) => console.error('[proof-of-play] failed', err));
+        }
+      });
+    });
   }
+
+  window.addEventListener('resize', () => {
+    if (playlist.length > 0) renderCampaign(playlist[playIndex]);
+  });
 
   pollPairStatus();
 })();
