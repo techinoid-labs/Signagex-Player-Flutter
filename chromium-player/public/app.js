@@ -8,6 +8,7 @@
   const pairingCodeEl = document.getElementById('pairing-code');
   const pairingStatusEl = document.getElementById('pairing-status');
   const contentRoot = document.getElementById('content-root');
+  const noContentEl = document.getElementById('no-content');
 
   let paired = false;
   let mqttClient = null;
@@ -52,6 +53,7 @@
   function showPlayerScreen() {
     pairingScreen.classList.add('hidden');
     playerScreen.classList.remove('hidden');
+    if (playlist.length === 0) noContentEl.classList.remove('hidden');
   }
 
   function buildDeviceInfo(topic) {
@@ -140,6 +142,10 @@
     const campaigns = data.data.playerCampaigns.filter((c) => !c.is_paused);
     if (campaigns.length === 0) {
       console.warn('[content] no active (non-paused) campaigns in payload', data);
+      playlist = [];
+      clearTimeout(advanceTimer);
+      contentRoot.innerHTML = '';
+      noContentEl.classList.remove('hidden');
       return;
     }
 
@@ -152,6 +158,7 @@
     clearTimeout(advanceTimer);
     if (playlist.length === 0) return;
 
+    noContentEl.classList.add('hidden');
     const campaign = playlist[playIndex];
     renderCampaign(campaign);
 
