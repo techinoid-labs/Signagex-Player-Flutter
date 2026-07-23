@@ -37,6 +37,9 @@ app.use(express.json());
 // frontend can talk to the MQTT-over-WSS broker directly.
 app.use('/vendor/mqtt', express.static(path.join(__dirname, 'node_modules/mqtt/dist')));
 
+// Serve html2canvas for DOM screenshot capture (used by remote view).
+app.use('/vendor/html2canvas', express.static(path.join(__dirname, 'node_modules/html2canvas/dist')));
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // Proxied so the pairing call happens server-side (no CORS, no exposed

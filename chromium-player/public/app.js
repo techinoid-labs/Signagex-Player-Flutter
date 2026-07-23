@@ -17,6 +17,8 @@
   let playlist = [];
   let playIndex = 0;
   let advanceTimer = null;
+  let remoteViewActive = false;
+  let remoteViewTimer = null;
 
   async function pollPairStatus() {
     try {
@@ -79,6 +81,155 @@
     };
   }
 
+  // ─── SVG / Shape helpers ────────────────────────────────────────────────
+
+  function isSvgContent(str) {
+    if (!str) return false;
+    const t = str.trim();
+    return t.startsWith('<svg') || (t.includes('<svg') && t.includes('</svg>'));
+  }
+
+  // Port of Flutter's MediaItem.svgFromShapeProperties — constructs an inline
+  // SVG for editor shapes (rect, circle, etc.) when no SVG url is present.
+  function svgFromShapeProperties(settings) {
+    const w = 100, h = 100; // coordinate space; CSS stretches it via width/height 100%
+    const fill   = settings.fill   || '#cccccc';
+    const stroke = settings.stroke || settings.strokeColor || '';
+    const strokeWidth = parseInt(settings.strokeWidth || settings.stroke_width, 10) || 0;
+    const path   = settings.path   || settings.d      || '';
+    const points = settings.points || '';
+    const shapeType = (
+      settings.kind || settings.shapeType || settings.shape ||
+      settings.type || 'rect'
+    ).toLowerCase();
+
+    const strokeAttr = (stroke && stroke !== 'transparent')
+      ? ` stroke="${stroke}" stroke-width="${strokeWidth}"`
+      : (strokeWidth > 0 ? ` stroke-width="${strokeWidth}"` : '');
+
+    const ns = 'xmlns="http://www.w3.org/2000/svg"';
+    const vb = `viewBox="0 0 ${w} ${h}"`;
+    const hdr = `<svg ${ns} width="100%" height="100%" ${vb} preserveAspectRatio="none">`;
+
+    if (path)   return `${hdr}<path d="${path}" fill="${fill}"${strokeAttr}/></svg>`;
+    if (points) return `${hdr}<polygon points="${points}" fill="${fill}"${strokeAttr}/></svg>`;
+
+    switch (shapeType) {
+      case 'circle': {
+        const r = Math.min(w, h) / 2;
+        return `${hdr}<circle cx="${w/2}" cy="${h/2}" r="${r}" fill="${fill}"${strokeAttr}/></svg>`;
+      }
+      case 'ellipse':
+        return `${hdr}<ellipse cx="${w/2}" cy="${h/2}" rx="${w/2}" ry="${h/2}" fill="${fill}"${strokeAttr}/></svg>`;
+      case 'line':
+        return `${hdr}<line x1="0" y1="0" x2="${w}" y2="${h}" stroke="${
+          stroke || fill}" stroke-width="${strokeWidth > 0 ? strokeWidth : 2}"/></svg>`;
+      case 'triangle': {
+        const p = `0,${h} ${w/2},0 ${w},${h}`;
+        return `${hdr}<polygon points="${p}" fill="${fill}"${strokeAttr}/></svg>`;
+      }
+      case 'rect':
+      case 'rectangle':
+      default:
+        return `${hdr}<rect width="${w}" height="${h}" fill="${fill}"${strokeAttr}/></svg>`;
+    }
+  }
+
+  // ─── Remote view ────────────────────────────────────────────────────────
+
+  function startRemoteView() {
+    if (remoteViewActive) return;
+    remoteViewActive = true;
+    console.log('[remote-view] started');
+    captureAndPublishFrame();
+    remoteViewTimer = setInterval(captureAndPublishFrame, 1000);
+  }
+
+  function stopRemoteView() {
+    remoteViewActive = false;
+    clearInterval(remoteViewTimer);
+    remoteViewTimer = null;
+    console.log('[remote-view] stopped');
+  }
+
+  async function captureAndPublishFrame() {
+    if (!remoteViewActive || !mqttClient || !mqttTopic) return;
+    if (typeof html2canvas === 'undefined') {
+      console.warn('[remote-view] html2canvas not loaded');
+      return;
+    }
+    try {
+      const canvas = await html2canvas(document.body, {
+        useCORS: true,
+        allowTaint: true,
+        scale: 0.25,
+        logging: false,
+        backgroundColor: '#000000',
+      });
+      canvas.toBlob((blob) => {
+        if (!blob || !remoteViewActive) return;
+        const reader = new FileReader();
+        reader.onloadend = () => {
+          const base64 = reader.result.split(',')[1];
+          const payload = JSON.stringify({
+            action: 'image',
+            img_url: base64,
+            // CMS frontend expects the literal value 'mac' (not 'macos')
+            // to route the frame to the correct renderer.
+            sender: 'mac',
+          });
+          if (remoteViewActive && mqttClient) {
+            mqttClient.publish(`${mqttTopic}/remote`, payload);
+          }
+        };
+        reader.readAsDataURL(blob);
+      }, 'image/jpeg', 0.3);
+    } catch (e) {
+      console.error('[remote-view] capture failed', e);
+    }
+  }
+
+  // Handles MQTT messages received on <playerCode>/remote.
+  // These are CMS commands (start/stop remote view, click, scroll, etc.).
+  function handleRemoteViewMessage(data) {
+    switch (data.action) {
+      case 'start_remote_view':
+      case 'low_res':
+        startRemoteView();
+        break;
+      case 'stop_remote_view':
+        stopRemoteView();
+        break;
+      case 'click': {
+        const x = Number(data.x);
+        const y = Number(data.y);
+        if (!isNaN(x) && !isNaN(y)) {
+          const el = document.elementFromPoint(x, y);
+          if (el) {
+            el.dispatchEvent(new MouseEvent('click', {
+              bubbles: true, cancelable: true, clientX: x, clientY: y,
+            }));
+            console.log('[remote-view] click at', x, y);
+          }
+        }
+        break;
+      }
+      case 'scroll': {
+        const hold    = data.hold    || {};
+        const release = data.release || {};
+        const dx = (Number(release.x) || 0) - (Number(hold.x) || 0);
+        const dy = (Number(release.y) || 0) - (Number(hold.y) || 0);
+        window.scrollBy(dx, dy);
+        console.log('[remote-view] scroll', dx, dy);
+        break;
+      }
+      default:
+        console.log('[remote-view] unhandled command', data.action);
+    }
+  }
+
+  // ────────────────────────────────────────────────────────────────────────
+
   function connectMqtt(topic) {
     if (!topic) {
       console.error('No player code to subscribe with, cannot connect MQTT');
@@ -128,7 +279,7 @@
 
     mqttClient.on('message', (recvTopic, payload) => {
       const raw = payload.toString();
-      console.log('[mqtt] message on', recvTopic, raw);
+      console.log('[mqtt] message on', recvTopic, raw.substring(0, 200));
       let data;
       try {
         data = JSON.parse(raw);
@@ -136,7 +287,13 @@
         console.error('[mqtt] payload was not JSON', err);
         return;
       }
-      handleContentMessage(data);
+      // Route by topic: /remote sub-topic carries CMS remote-view commands;
+      // everything else is a content/campaign message.
+      if (recvTopic === `${topic}/remote`) {
+        handleRemoteViewMessage(data);
+      } else {
+        handleContentMessage(data);
+      }
     });
 
     mqttClient.on('error', (err) => console.error('[mqtt] error', err));
@@ -149,13 +306,8 @@
   //   {playback_type, campaign_id, campaign_name, is_paused, resolution:{width,height},
   //    campaign_settings:{transition,duration,loop}, zones:[{id,x,y,width,height,
   //    mediaItems:[{id, mediaType, mediaUrl, content_media_type, settings, schedule, ad_slot}]}]}
-  // ]}}, or {action:"stop_remote_view", ...}.
+  // ]}}.
   function handleContentMessage(data) {
-    if (data.action === 'stop_remote_view') {
-      console.log('[content] stop_remote_view received (no-op, remote view not implemented)');
-      return;
-    }
-
     if (data.action !== 'publish_campaign' || !data.data || !Array.isArray(data.data.playerCampaigns)) {
       console.warn('[content] unrecognized message shape', data);
       return;
@@ -233,46 +385,112 @@
   function renderZoneItem(container, item) {
     const settings = item.settings || {};
     let mediaType = (item.mediaType || '').toLowerCase();
-    let url = item.mediaUrl;
+    let url = item.mediaUrl || '';
 
     if (mediaType === 'ad_slot') {
       mediaType = (item.content_media_type || '').toLowerCase();
-    } else if (mediaType === 'sticker') {
-      url = settings.remoteSrc || item.mediaUrl;
-      mediaType = 'image';
     } else if (mediaType === 'web_app_instance' || settings.kind === 'web-app-iframe') {
-      url = settings.iframeSrc || item.mediaUrl;
+      url = settings.iframeSrc || item.mediaUrl || '';
       mediaType = 'iframe';
     }
 
-    let el;
+    // ── shape ──────────────────────────────────────────────────────────────
     if (mediaType === 'shape') {
-      container.innerHTML = item.mediaUrl || ''; // raw inline <svg>…</svg>
-      styleFill(container);
+      let svgContent = isSvgContent(url) ? url : '';
+      if (!svgContent) {
+        // No inline SVG in mediaUrl — build one from fill/kind/stroke props.
+        svgContent = svgFromShapeProperties(settings);
+      }
+      container.innerHTML = svgContent;
+      container.style.overflow = 'hidden';
+      // Make the generated/injected SVG fill its zone container.
+      const svgEl = container.querySelector('svg');
+      if (svgEl) {
+        svgEl.style.width  = '100%';
+        svgEl.style.height = '100%';
+        svgEl.style.display = 'block';
+      }
       return;
-    } else if (mediaType === 'text') {
+    }
+
+    // ── text ───────────────────────────────────────────────────────────────
+    if (mediaType === 'text') {
       container.innerHTML = settings.html || `<p>${settings.text || ''}</p>`;
       styleFill(container);
       return;
-    } else if (mediaType.includes('video')) {
-      el = document.createElement('video');
+    }
+
+    // ── sticker ────────────────────────────────────────────────────────────
+    // Stickers can be: HTML snippets (settings.html), inline SVG, remote SVG
+    // or raster image URLs. Mirrors the Flutter _buildStickerWidget priority.
+    if (mediaType === 'sticker' || MediaItem_looksLikeSticker(item)) {
+      // Priority 1: HTML sticker
+      if (settings.html) {
+        container.innerHTML = settings.html;
+        styleFill(container);
+        return;
+      }
+      const stickerUrl = (settings.remoteSrc || url || '').trim();
+      // Priority 2: inline SVG (may contain embedded base64 images)
+      if (isSvgContent(stickerUrl)) {
+        const img = document.createElement('img');
+        img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(stickerUrl)}`;
+        img.style.objectFit = 'contain';
+        styleFill(img);
+        container.appendChild(img);
+        return;
+      }
+      // Priority 3: remote or local URL (PNG, JPEG, SVG file link)
+      if (stickerUrl) {
+        const img = document.createElement('img');
+        img.src = stickerUrl;
+        img.style.objectFit = 'contain';
+        styleFill(img);
+        container.appendChild(img);
+        return;
+      }
+      console.warn('[content] sticker had no renderable content', item);
+      return;
+    }
+
+    // ── video ──────────────────────────────────────────────────────────────
+    if (mediaType.includes('video')) {
+      const el = document.createElement('video');
       el.src = url;
       el.autoplay = true;
       el.muted = true;
       el.loop = !!settings.loop;
-    } else if (mediaType === 'iframe') {
-      el = document.createElement('iframe');
-      el.src = url;
-    } else if (url) {
-      el = document.createElement('img');
-      el.src = url;
-    } else {
-      console.warn('[content] zone item had no renderable url', item);
+      styleFill(el);
+      container.appendChild(el);
       return;
     }
 
-    styleFill(el);
-    container.appendChild(el);
+    // ── iframe ─────────────────────────────────────────────────────────────
+    if (mediaType === 'iframe') {
+      const el = document.createElement('iframe');
+      el.src = url;
+      styleFill(el);
+      container.appendChild(el);
+      return;
+    }
+
+    // ── image / fallback ───────────────────────────────────────────────────
+    if (url) {
+      const el = document.createElement('img');
+      el.src = url;
+      styleFill(el);
+      container.appendChild(el);
+      return;
+    }
+
+    console.warn('[content] zone item had no renderable url', item);
+  }
+
+  // True for items that should use sticker rendering even if mediaType differs
+  // (mirrors Flutter's MediaItem.looksLikeSticker heuristic).
+  function MediaItem_looksLikeSticker(item) {
+    const settings = item.settings || {};
+    return !!(settings.remoteSrc || settings.html);
   }
 
   function styleFill(el) {
