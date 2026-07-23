@@ -100,31 +100,45 @@
     return url;
   }
 
-  // Render inline SVG using a Blob URL (more reliable than data URIs for
-  // large or complex SVG markup because it avoids URL-length limits and
-  // lets the browser parse the content correctly).
+  // Render inline SVG by injecting it directly into the DOM — this avoids
+  // the white-background artefact that appears when SVG is loaded via <img>,
+  // and mirrors Flutter's SvgPicture.string() which renders inline too.
   function renderInlineSvg(container, svgContent) {
-    const blob = new Blob([svgContent], { type: 'image/svg+xml' });
-    const blobUrl = URL.createObjectURL(blob);
-    const img = document.createElement('img');
-    img.style.objectFit = 'contain';
-    styleFill(img);
-    img.onload = () => URL.revokeObjectURL(blobUrl);
-    img.onerror = () => URL.revokeObjectURL(blobUrl);
-    img.src = blobUrl;
-    container.appendChild(img);
+    container.innerHTML = svgContent;
+    const svgEl = container.querySelector('svg');
+    if (svgEl) {
+      svgEl.style.width = '100%';
+      svgEl.style.height = '100%';
+      svgEl.style.display = 'block';
+    }
   }
 
-  // Render a remote sticker URL through the local svg-proxy so the server
-  // fetches it (no CORS), normalises relative paths, and forces
-  // Content-Type: image/svg+xml. This mirrors StickerHtmlWidget which calls
-  // http.read() server-side before rendering inline.
-  function renderRemoteStickerUrl(container, url) {
+  // Render a remote sticker URL. Fetches SVG text via the local proxy (server
+  // handles CORS + forces correct Content-Type) then injects it inline so
+  // there is no white-background artefact. Mirrors Flutter's StickerHtmlWidget
+  // which calls http.read() then renders with SvgPicture.string() (inline).
+  async function renderRemoteStickerUrl(container, url) {
     const normalised = normalizeStickerUrl(url);
-    // Proxy remote URLs; keep relative localhost paths as-is
     const src = (normalised.startsWith('http://') || normalised.startsWith('https://'))
       ? `/api/svg-proxy?url=${encodeURIComponent(normalised)}`
       : normalised;
+    try {
+      const res = await fetch(src);
+      const text = await res.text();
+      if (isSvgContent(text)) {
+        container.innerHTML = text;
+        const svgEl = container.querySelector('svg');
+        if (svgEl) {
+          svgEl.style.width = '100%';
+          svgEl.style.height = '100%';
+          svgEl.style.display = 'block';
+        }
+        return;
+      }
+    } catch (e) {
+      console.warn('[content] SVG proxy fetch failed, using img fallback', e);
+    }
+    // Fallback for non-SVG assets or fetch errors
     const img = document.createElement('img');
     img.src = src;
     img.style.objectFit = 'contain';
@@ -422,7 +436,10 @@
     stage.style.top = `${top}px`;
     stage.style.transform = `scale(${scale})`;
     stage.style.transformOrigin = 'top left';
-    stage.style.background = '#000';
+    // White background matches Flutter's Scaffold backgroundColor: Colors.white.
+    // CMS campaign content is authored against a white stage — using black here
+    // makes black text / shapes invisible.
+    stage.style.background = '#fff';
 
     (campaign.zones || []).forEach((zone) => {
       const zoneEl = document.createElement('div');
