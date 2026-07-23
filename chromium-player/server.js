@@ -94,6 +94,42 @@ app.post('/api/proof-of-play', async (req, res) => {
   }
 });
 
+// Proxies remote SVG/sticker assets through the server so the browser gets
+// a clean image/svg+xml response without CORS issues. Also normalises
+// relative Next.js paths (/_next/…, /static/…) to the full CMS origin —
+// mirrors the logic in Flutter's StickerHtmlWidget._resolveSource().
+app.get('/api/svg-proxy', async (req, res) => {
+  let url = (req.query.url || '').trim();
+  if (!url) return res.status(400).json({ error: 'missing url parameter' });
+
+  // Normalise relative Next.js / static paths
+  if ((url.startsWith('/_next') || url.startsWith('/static')) && !url.startsWith('http')) {
+    url = `https://signagexai.com${url}`;
+  }
+
+  // SSRF guard: only allow http/https
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    return res.status(400).json({ error: 'invalid url scheme' });
+  }
+
+  try {
+    const upstream = await fetch(url, {
+      headers: { 'User-Agent': 'SignageX-ChromiumPlayer/1.0' },
+    });
+    if (!upstream.ok) {
+      console.warn('[svg-proxy] upstream', upstream.status, url);
+      return res.status(502).json({ error: 'upstream_error', status: upstream.status });
+    }
+    const content = await upstream.text();
+    res.set('Content-Type', 'image/svg+xml; charset=utf-8');
+    res.set('Cache-Control', 'public, max-age=3600');
+    res.send(content);
+  } catch (err) {
+    console.error('[svg-proxy] fetch failed', url, err.message);
+    res.status(502).json({ error: 'fetch_failed', message: String(err) });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`SignageX chromium-player server running at http://localhost:${PORT}`);
   console.log(`Device id: ${deviceId}`);

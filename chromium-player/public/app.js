@@ -89,6 +89,49 @@
     return t.startsWith('<svg') || (t.includes('<svg') && t.includes('</svg>'));
   }
 
+  // Mirrors Flutter's StickerHtmlWidget._resolveSource():
+  // relative /_next/… and /static/… paths are Next.js CMS routes that must
+  // be resolved against the CMS origin before fetching.
+  function normalizeStickerUrl(url) {
+    if (!url) return '';
+    if ((url.startsWith('/_next') || url.startsWith('/static')) && !url.startsWith('http')) {
+      return `https://signagexai.com${url}`;
+    }
+    return url;
+  }
+
+  // Render inline SVG using a Blob URL (more reliable than data URIs for
+  // large or complex SVG markup because it avoids URL-length limits and
+  // lets the browser parse the content correctly).
+  function renderInlineSvg(container, svgContent) {
+    const blob = new Blob([svgContent], { type: 'image/svg+xml' });
+    const blobUrl = URL.createObjectURL(blob);
+    const img = document.createElement('img');
+    img.style.objectFit = 'contain';
+    styleFill(img);
+    img.onload = () => URL.revokeObjectURL(blobUrl);
+    img.onerror = () => URL.revokeObjectURL(blobUrl);
+    img.src = blobUrl;
+    container.appendChild(img);
+  }
+
+  // Render a remote sticker URL through the local svg-proxy so the server
+  // fetches it (no CORS), normalises relative paths, and forces
+  // Content-Type: image/svg+xml. This mirrors StickerHtmlWidget which calls
+  // http.read() server-side before rendering inline.
+  function renderRemoteStickerUrl(container, url) {
+    const normalised = normalizeStickerUrl(url);
+    // Proxy remote URLs; keep relative localhost paths as-is
+    const src = (normalised.startsWith('http://') || normalised.startsWith('https://'))
+      ? `/api/svg-proxy?url=${encodeURIComponent(normalised)}`
+      : normalised;
+    const img = document.createElement('img');
+    img.src = src;
+    img.style.objectFit = 'contain';
+    styleFill(img);
+    container.appendChild(img);
+  }
+
   // Port of Flutter's MediaItem.svgFromShapeProperties — constructs an inline
   // SVG for editor shapes (rect, circle, etc.) when no SVG url is present.
   function svgFromShapeProperties(settings) {
@@ -448,27 +491,22 @@
         return;
       }
       // remoteSrc can come under several key names in the raw MQTT JSON
-      const stickerUrl = (
+      const rawStickerUrl = (
         settings.remoteSrc || settings.remote_src ||
         settings.download_url || settings.downloadUrl ||
         url || ''
       ).trim();
-      // Priority 2: inline SVG (may contain embedded base64 images)
+      const stickerUrl = normalizeStickerUrl(rawStickerUrl);
+      // Priority 2: inline SVG — render via Blob URL (handles embedded images,
+      // avoids data-URI length limits, and doesn't require CORS)
       if (isSvgContent(stickerUrl)) {
-        const img = document.createElement('img');
-        img.src = `data:image/svg+xml;charset=utf-8,${encodeURIComponent(stickerUrl)}`;
-        img.style.objectFit = 'contain';
-        styleFill(img);
-        container.appendChild(img);
+        renderInlineSvg(container, stickerUrl);
         return;
       }
-      // Priority 3: remote or local URL (PNG, JPEG, SVG file link)
+      // Priority 3: remote URL — proxy through the local server so the browser
+      // always gets image/svg+xml with no CORS issues
       if (stickerUrl) {
-        const img = document.createElement('img');
-        img.src = stickerUrl;
-        img.style.objectFit = 'contain';
-        styleFill(img);
-        container.appendChild(img);
+        renderRemoteStickerUrl(container, stickerUrl);
         return;
       }
       console.warn('[content] sticker had no renderable content', item);
