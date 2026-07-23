@@ -13,6 +13,7 @@
   let paired = false;
   let mqttClient = null;
   let mqttTopic = null;
+  let deviceUuid = null;
   let playlist = [];
   let playIndex = 0;
   let advanceTimer = null;
@@ -21,6 +22,8 @@
     try {
       const res = await fetch('/api/pair-status');
       const data = await res.json();
+
+      if (data.deviceId) deviceUuid = data.deviceId;
 
       if (data.playerCode) {
         pairingCodeEl.textContent = data.playerCode;
@@ -64,7 +67,7 @@
 
     return {
       platform: 'windows',
-      uuid: topic,
+      uuid: deviceUuid || topic,
       sender: 'chromium_web',
       last_seen: new Date().toISOString(),
       device_model: navigator.userAgent,
@@ -90,16 +93,35 @@
     mqttClient = mqtt.connect(MQTT_URL, {
       reconnectPeriod: 3000,
       connectTimeout: 15000,
+      // Last Will: marks the player offline if the connection drops unexpectedly.
+      // Mirrors the Flutter app's LWT so the CMS can detect disconnects.
+      will: {
+        topic: `${topic}/player_status`,
+        payload: JSON.stringify({ status: 'offline' }),
+        qos: 1,
+        retain: true,
+      },
     });
 
     mqttClient.on('connect', () => {
       console.log('[mqtt] connected, subscribing to', topic);
-      mqttClient.subscribe(topic, (err) => {
+      // Subscribe to the player-code topic (campaign pushes) and the /remote
+      // sub-topic (remote-view commands), matching the Flutter app's pattern.
+      mqttClient.subscribe([topic, `${topic}/remote`], { qos: 0 }, (err) => {
         if (err) {
           console.error('[mqtt] subscribe failed', err);
           return;
         }
-        console.log('[mqtt] subscribed, publishing device info to register presence');
+        console.log('[mqtt] subscribed, publishing online status and device info');
+        // Publish retained online status to <playerCode>/player_status so the
+        // CMS knows this player is reachable and triggers a campaign push.
+        // This mirrors exactly what the Flutter app does.
+        mqttClient.publish(
+          `${topic}/player_status`,
+          JSON.stringify({ status: 'online' }),
+          { retain: true, qos: 1 },
+        );
+        // Also publish device info for CMS registration/identification.
         mqttClient.publish(topic, JSON.stringify(buildDeviceInfo(topic)));
       });
     });

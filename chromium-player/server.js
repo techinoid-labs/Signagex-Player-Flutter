@@ -51,11 +51,23 @@ app.get('/api/pair-status', async (req, res) => {
     const data = await response.json();
     if (!response.ok) {
       console.error('[pair-status] backend error', response.status, data);
+      // Some backends return 4xx (e.g. 409 "player already exists") but still
+      // include player_code and paired in the body — pass those through so the
+      // UI can still display the pairing code and detect pairing state.
+      if (data.player_code) {
+        return res.json({
+          playerCode: data.player_code,
+          paired: data.paired ?? false,
+          deviceId,
+          raw: data,
+        });
+      }
       return res.status(502).json({ error: 'backend_error', status: response.status, data });
     }
     res.json({
       playerCode: data.player_code ?? null,
       paired: data.paired ?? false,
+      deviceId,
       raw: data,
     });
   } catch (err) {
