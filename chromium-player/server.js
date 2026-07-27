@@ -177,9 +177,19 @@ function getBrowser() {
 // same screenshot instead of re-rendering. This is a testing tool, not
 // long-running production infra, so pages are never evicted -- fine for the
 // handful of concurrent web-app zones a single screen actually shows.
-const screenshotPages = new Map(); // url -> Page
+const screenshotPages = new Map(); // url -> { page, lastNavigated }
 const screenshotCache = new Map(); // url -> { buffer, ts }
 const SCREENSHOT_TTL_MS = 2000;
+// Extra wait after networkidle2 before the *first* screenshot of a page --
+// networkidle2 only means requests have quieted down, not that CSS fade-ins
+// or post-load client-side rendering have finished. Capturing too early
+// froze that half-loaded state, and since the page was never re-visited
+// this settle delay never got a chance to matter.
+const SCREENSHOT_SETTLE_MS = 1500;
+// Re-navigate periodically instead of never, so a transient load failure
+// (e.g. a boot script briefly 500ing) gets a chance to recover instead of
+// being stuck forever on whatever the very first capture saw.
+const SCREENSHOT_RENAV_MS = 60000;
 
 app.get('/api/webapp-screenshot', async (req, res) => {
   const url = (req.query.url || '').trim();
@@ -196,17 +206,22 @@ app.get('/api/webapp-screenshot', async (req, res) => {
     }
 
     const browser = await getBrowser();
-    let page = screenshotPages.get(url);
-    if (!page) {
-      page = await browser.newPage();
+    let entry = screenshotPages.get(url);
+    if (!entry) {
+      const page = await browser.newPage();
       await page.setViewport({ width: 800, height: 600 });
-      await page.goto(url, { waitUntil: 'networkidle2', timeout: 10000 }).catch((err) => {
-        console.warn('[webapp-screenshot] initial navigation issue', url, err.message);
+      entry = { page, lastNavigated: 0 };
+      screenshotPages.set(url, entry);
+    }
+    if (Date.now() - entry.lastNavigated > SCREENSHOT_RENAV_MS) {
+      await entry.page.goto(url, { waitUntil: 'networkidle2', timeout: 10000 }).catch((err) => {
+        console.warn('[webapp-screenshot] navigation issue', url, err.message);
       });
-      screenshotPages.set(url, page);
+      await new Promise((resolve) => setTimeout(resolve, SCREENSHOT_SETTLE_MS));
+      entry.lastNavigated = Date.now();
     }
 
-    const buffer = await page.screenshot({ type: 'png' });
+    const buffer = await entry.page.screenshot({ type: 'png' });
     screenshotCache.set(url, { buffer, ts: Date.now() });
     res.set('Content-Type', 'image/png');
     res.set('Cache-Control', 'no-store');
