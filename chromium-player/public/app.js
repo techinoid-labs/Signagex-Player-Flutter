@@ -546,14 +546,15 @@
         console.error('[mqtt] payload was not JSON', err);
         return;
       }
-      // We're subscribed to the same topics we publish remote-view frames
-      // to, so the broker loops our own publishes straight back to us
-      // (confirmed in logs: every "publishing frame" is immediately
-      // followed by receiving that same {action:"image",...} message).
-      // `sender: 'mac'` is a value only this player's own frames set --
-      // drop them here instead of letting them reach the dispatcher as
-      // meaningless "unhandled command image" noise.
-      if (data.sender === 'mac') return;
+      // We're subscribed to the same topics we publish to, so the broker
+      // loops our own publishes straight back to us: remote-view frames
+      // (sender:'mac', confirmed in logs -- every "publishing frame" is
+      // immediately followed by receiving that same message) and device-info
+      // (sender:'chromium_web', published to the main topic on connect).
+      // Both are our own echoes, not real CMS messages -- drop them here
+      // instead of letting them reach the dispatcher as noise
+      // ("unhandled command image" / "[content] unrecognized message shape").
+      if (data.sender === 'mac' || data.sender === 'chromium_web') return;
       // Route by topic AND by action name — mirrors the Flutter dispatcher
       // which handles remote-view actions on any subscribed topic.
       const action = data.action || '';
