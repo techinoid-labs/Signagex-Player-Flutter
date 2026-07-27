@@ -8,7 +8,7 @@
   // (480px/45%). That's why frames looked blocky/muddy. Mirrors Flutter's
   // _resizeAndCompressForRemoteView: try decreasing width/quality tiers
   // until the frame fits under the byte budget.
-  const REMOTE_VIEW_CAPTURE_SCALE = 0.5;
+  const REMOTE_VIEW_CAPTURE_SCALE = 1.0;
   const REMOTE_VIEW_MAX_BYTES = 120 * 1024;
   const REMOTE_VIEW_TIERS = [
     { width: 1280, quality: 0.75 },
@@ -545,11 +545,12 @@
       console.log('[settings] volume ->', settings.volume);
     }
     if (settings.brightness && settings.brightness.value != null) {
-      const pct = Math.max(0, Math.min(100, Number(settings.brightness.value)));
-      // No hardware brightness control from a webpage -- CSS filter is the
-      // closest browser-side approximation.
-      document.body.style.filter = `brightness(${pct / 100})`;
-      console.log('[settings] brightness ->', pct);
+      // Brightness is a hardware backlight level — there is no browser API
+      // to control physical screen brightness. CSS filter: brightness() only
+      // darkens/lightens rendered pixels and would corrupt remote-view
+      // captures (html2canvas would capture the filtered/darkened DOM).
+      // Logged so it's visible in devtools but intentionally not applied.
+      console.log('[settings] brightness (not applied — hardware-only, no browser API)', settings.brightness.value);
     }
     if (settings.screen_rotation != null) {
       const deg = Number(settings.screen_rotation) || 0;
