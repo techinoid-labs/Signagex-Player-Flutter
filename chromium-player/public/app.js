@@ -267,7 +267,6 @@
       console.warn('[remote-view] html2canvas not loaded');
       return;
     }
-    const overlays = await overlayIframeScreenshots();
     try {
       const canvas = await html2canvas(document.body, {
         useCORS: true,
@@ -276,6 +275,7 @@
         backgroundColor: '#000000',
         imageTimeout: 5000,
       });
+      await compositeIframeScreenshots(canvas);
       const base64 = encodeCanvasTiered(canvas);
       if (!base64 || !remoteViewActive || !mqttClient) return;
       const payload = JSON.stringify({
@@ -296,8 +296,6 @@
       mqttClient.publish(`${mqttTopic}/remote2`, payload);
     } catch (e) {
       console.error('[remote-view] capture failed', e);
-    } finally {
-      overlays.forEach((img) => img.remove());
     }
   }
 
@@ -335,30 +333,36 @@
   // html2canvas can't read pixels out of a cross-origin iframe, so
   // web_app_instance zones would otherwise capture as blank/white even
   // though the live iframe renders correctly for the actual kiosk display.
-  // Fetches a server-rendered screenshot of each web-app URL (headless
-  // Chromium, see /api/webapp-screenshot in server.js) and overlays it on
-  // top of the corresponding zone just for this one capture; caller removes
-  // the overlays once html2canvas has run.
-  async function overlayIframeScreenshots() {
-    if (iframeZones.length === 0) return [];
-    const overlays = await Promise.all(iframeZones.map(async ({ el, url }) => {
-      const img = document.createElement('img');
-      img.style.position = 'absolute';
-      img.style.inset = '0';
-      img.style.width = '100%';
-      img.style.height = '100%';
-      img.style.objectFit = 'cover';
-      img.style.zIndex = '10';
-      await new Promise((resolve) => {
-        img.onload = resolve;
-        img.onerror = resolve;
-        setTimeout(resolve, 4000);
+  // Composites a server-rendered screenshot of each web-app URL (headless
+  // Chromium, see /api/webapp-screenshot in server.js) directly onto the
+  // already-captured canvas at the zone's coordinates. This used to
+  // overlay a real <img> onto the *live* DOM and remove it right after --
+  // which meant the actual kiosk screen itself flashed to a static
+  // screenshot and back once a second (visible flicker), not just remote
+  // view. Operating only on the canvas never touches anything a viewer
+  // can actually see.
+  async function compositeIframeScreenshots(canvas) {
+    if (iframeZones.length === 0) return;
+    const ctx = canvas.getContext('2d');
+    await Promise.all(iframeZones.map(async ({ el, url }) => {
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return;
+      const img = new Image();
+      const loaded = await new Promise((resolve) => {
+        img.onload = () => resolve(true);
+        img.onerror = () => resolve(false);
+        setTimeout(() => resolve(false), 4000);
         img.src = `/api/webapp-screenshot?url=${encodeURIComponent(url)}`;
       });
-      el.appendChild(img);
-      return img;
+      if (!loaded) return;
+      ctx.drawImage(
+        img,
+        rect.left * REMOTE_VIEW_CAPTURE_SCALE,
+        rect.top * REMOTE_VIEW_CAPTURE_SCALE,
+        rect.width * REMOTE_VIEW_CAPTURE_SCALE,
+        rect.height * REMOTE_VIEW_CAPTURE_SCALE,
+      );
     }));
-    return overlays;
   }
 
   let blankScreenTimer = null;
