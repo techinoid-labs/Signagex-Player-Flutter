@@ -41,7 +41,16 @@ app.use('/vendor/mqtt', express.static(path.join(__dirname, 'node_modules/mqtt/d
 // Serve html2canvas for DOM screenshot capture (used by remote view).
 app.use('/vendor/html2canvas', express.static(path.join(__dirname, 'node_modules/html2canvas/dist')));
 
-app.use(express.static(path.join(__dirname, 'public')));
+// The kiosk launcher reuses the same persistent Chrome profile
+// (.chrome-profile) on every restart, so the browser's own disk cache can
+// keep serving a stale copy of app.js/index.html/style.css even after
+// `git pull` + server restart -- there's no cache-busting step in between,
+// so nothing ever tells the browser the files changed. Force revalidation
+// on every load for our own code specifically (vendor bundles above are
+// unchanging npm package files, fine to cache normally).
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res) => res.set('Cache-Control', 'no-store'),
+}));
 
 // Proxied so the pairing call happens server-side (no CORS, no exposed
 // backend details to the page source).
