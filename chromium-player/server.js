@@ -120,10 +120,24 @@ app.get('/api/svg-proxy', async (req, res) => {
       console.warn('[svg-proxy] upstream', upstream.status, url);
       return res.status(502).json({ error: 'upstream_error', status: upstream.status });
     }
-    const content = await upstream.text();
-    res.set('Content-Type', 'image/svg+xml; charset=utf-8');
+
+    // Not every "sticker" asset is actually SVG -- some are raster PNG/JPG.
+    // Reading everything as .text() and forcing Content-Type: image/svg+xml
+    // corrupted raster bytes (UTF-8 decode of binary data is lossy) and then
+    // re-served that corrupted string even to the client's <img> fallback,
+    // so non-SVG stickers silently failed to render. Buffer the raw bytes,
+    // sniff for real SVG (by upstream content-type OR a text prefix check
+    // that's safe for binary because it just won't match), and pass
+    // everything else through untouched with its real content-type.
+    const buffer = Buffer.from(await upstream.arrayBuffer());
+    const upstreamType = upstream.headers.get('content-type') || '';
+    const sniffed = buffer.subarray(0, 256).toString('utf8').trimStart();
+    const isSvg = upstreamType.includes('svg') || sniffed.startsWith('<svg') ||
+      (sniffed.startsWith('<?xml') && sniffed.includes('<svg'));
+
+    res.set('Content-Type', isSvg ? 'image/svg+xml; charset=utf-8' : (upstreamType || 'application/octet-stream'));
     res.set('Cache-Control', 'public, max-age=3600');
-    res.send(content);
+    res.send(buffer);
   } catch (err) {
     console.error('[svg-proxy] fetch failed', url, err.message);
     res.status(502).json({ error: 'fetch_failed', message: String(err) });
