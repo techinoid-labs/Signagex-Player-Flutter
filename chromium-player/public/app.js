@@ -631,6 +631,16 @@
       document.body.style.transformOrigin = 'center center';
       console.log('[settings] screen_rotation ->', deg);
     }
+
+    // Mirrors Flutter's mqtt_view_model.dart: after processing
+    // action_setup_player the Flutter player sends {"success":true} back to
+    // the CMS on the player topic.  The CMS waits for this ack before
+    // sending the follow-up publish_campaign — without it the campaign never
+    // arrives and the screen stays on "no content".
+    if (mqttClient && mqttTopic) {
+      mqttClient.publish(mqttTopic, JSON.stringify({ success: true }));
+      console.log('[settings] ack sent to CMS');
+    }
   }
 
   function applyAudioSettings() {
