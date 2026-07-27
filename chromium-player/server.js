@@ -2,6 +2,7 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
+const puppeteer = require('puppeteer');
 
 const PORT = process.env.PORT || 5757;
 const BACKEND_BASE = process.env.BACKEND_BASE || 'https://stage.signagexai.com/v1/';
@@ -144,7 +145,79 @@ app.get('/api/svg-proxy', async (req, res) => {
   }
 });
 
-app.listen(PORT, () => {
+// html2canvas can't read pixels out of a cross-origin <iframe> (browser
+// security restriction, not a timing issue), so web_app_instance zones
+// always came back blank/white in remote view even though the kiosk
+// display renders them live and correctly. Instead we render each web-app
+// URL ourselves with a headless Chromium and serve back a PNG; the player
+// overlays that image on top of the live iframe just for the moment of a
+// remote-view capture (see captureAndPublishFrame in app.js).
+let browserPromise = null;
+function getBrowser() {
+  if (!browserPromise) {
+    browserPromise = puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
+  }
+  return browserPromise;
+}
+
+// One persistent page per unique web-app URL (avoids full navigation on
+// every capture, which would be far too slow for a ~1s remote-view cadence)
+// plus a short TTL cache so repeated captures within that window reuse the
+// same screenshot instead of re-rendering. This is a testing tool, not
+// long-running production infra, so pages are never evicted -- fine for the
+// handful of concurrent web-app zones a single screen actually shows.
+const screenshotPages = new Map(); // url -> Page
+const screenshotCache = new Map(); // url -> { buffer, ts }
+const SCREENSHOT_TTL_MS = 2000;
+
+app.get('/api/webapp-screenshot', async (req, res) => {
+  const url = (req.query.url || '').trim();
+  if (!url.startsWith('http://') && !url.startsWith('https://')) {
+    return res.status(400).json({ error: 'invalid url' });
+  }
+
+  try {
+    const cached = screenshotCache.get(url);
+    if (cached && Date.now() - cached.ts < SCREENSHOT_TTL_MS) {
+      res.set('Content-Type', 'image/png');
+      res.set('Cache-Control', 'no-store');
+      return res.send(cached.buffer);
+    }
+
+    const browser = await getBrowser();
+    let page = screenshotPages.get(url);
+    if (!page) {
+      page = await browser.newPage();
+      await page.setViewport({ width: 800, height: 600 });
+      await page.goto(url, { waitUntil: 'networkidle2', timeout: 10000 }).catch((err) => {
+        console.warn('[webapp-screenshot] initial navigation issue', url, err.message);
+      });
+      screenshotPages.set(url, page);
+    }
+
+    const buffer = await page.screenshot({ type: 'png' });
+    screenshotCache.set(url, { buffer, ts: Date.now() });
+    res.set('Content-Type', 'image/png');
+    res.set('Cache-Control', 'no-store');
+    res.send(buffer);
+  } catch (err) {
+    console.error('[webapp-screenshot] failed', url, err.message);
+    res.status(502).json({ error: 'screenshot_failed', message: String(err) });
+  }
+});
+
+const server = app.listen(PORT, () => {
   console.log(`SignageX chromium-player server running at http://localhost:${PORT}`);
   console.log(`Device id: ${deviceId}`);
 });
+
+async function shutdown() {
+  server.close();
+  if (browserPromise) {
+    const browser = await browserPromise;
+    await browser.close().catch(() => {});
+  }
+  process.exit(0);
+}
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);

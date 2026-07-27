@@ -26,6 +26,12 @@
   // campaign that got replaced before it finished loading.
   let contentReady = true;
   let renderToken = 0;
+  // {el: zoneEl, url}[] for every currently-rendered web_app_instance zone.
+  // html2canvas can't read pixels out of a cross-origin iframe, so remote
+  // view overlays a server-rendered screenshot of `url` on top of `el` just
+  // for the instant of a capture (see captureAndPublishFrame) -- the live
+  // iframe underneath is untouched for the actual kiosk display.
+  let iframeZones = [];
 
   async function pollPairStatus() {
     try {
@@ -244,6 +250,7 @@
       console.warn('[remote-view] html2canvas not loaded');
       return;
     }
+    const overlays = await overlayIframeScreenshots();
     try {
       const canvas = await html2canvas(document.body, {
         useCORS: true,
@@ -275,7 +282,38 @@
       mqttClient.publish(`${mqttTopic}/remote2`, payload);
     } catch (e) {
       console.error('[remote-view] capture failed', e);
+    } finally {
+      overlays.forEach((img) => img.remove());
     }
+  }
+
+  // html2canvas can't read pixels out of a cross-origin iframe, so
+  // web_app_instance zones would otherwise capture as blank/white even
+  // though the live iframe renders correctly for the actual kiosk display.
+  // Fetches a server-rendered screenshot of each web-app URL (headless
+  // Chromium, see /api/webapp-screenshot in server.js) and overlays it on
+  // top of the corresponding zone just for this one capture; caller removes
+  // the overlays once html2canvas has run.
+  async function overlayIframeScreenshots() {
+    if (iframeZones.length === 0) return [];
+    const overlays = await Promise.all(iframeZones.map(async ({ el, url }) => {
+      const img = document.createElement('img');
+      img.style.position = 'absolute';
+      img.style.inset = '0';
+      img.style.width = '100%';
+      img.style.height = '100%';
+      img.style.objectFit = 'cover';
+      img.style.zIndex = '10';
+      await new Promise((resolve) => {
+        img.onload = resolve;
+        img.onerror = resolve;
+        setTimeout(resolve, 4000);
+        img.src = `/api/webapp-screenshot?url=${encodeURIComponent(url)}`;
+      });
+      el.appendChild(img);
+      return img;
+    }));
+    return overlays;
   }
 
   // Handles MQTT messages received on <playerCode>/remote.
@@ -454,6 +492,7 @@
     const token = ++renderToken;
     contentReady = false;
     const loadPromises = [];
+    iframeZones = [];
 
     const resW = Number(campaign.resolution && campaign.resolution.width) || window.innerWidth;
     const resH = Number(campaign.resolution && campaign.resolution.height) || window.innerHeight;
@@ -616,6 +655,7 @@
       loadPromises.push(waitForLoad(el, 'load', 6000));
       container.appendChild(el);
       el.src = url;
+      iframeZones.push({ el: container, url });
       return;
     }
 
