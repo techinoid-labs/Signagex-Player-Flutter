@@ -67,19 +67,17 @@ html, body {
   overflow: hidden;
 }
 
-/* Fade-in when a new campaign stage is rendered */
-@keyframes stageFadeIn {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
-/* Campaign stage: simulator-screen frame — subtle border + shadow against black bg */
+/* Campaign stage: simulator-screen frame — subtle border + shadow against black bg.
+   No CSS animation/transition here on purpose: html2canvas clones the DOM into a
+   separate hidden iframe to render it, and a CSS `animation` can replay from its
+   start in that clone even though the real on-screen element finished fading in
+   long ago -- every remote-view capture was grabbing the clone mid-fade (dim,
+   washed-out frames) while the actual live screen looked completely normal. */
 .campaign-stage {
   box-shadow:
     0 0 0 2px rgba(255,255,255,0.12),
     0 12px 60px rgba(0,0,0,0.95),
     0 0 100px rgba(0,0,0,0.7);
-  animation: stageFadeIn 0.45s ease forwards;
 }
 
 /* Images fill their zone; SVGs/stickers use contain to preserve artwork */

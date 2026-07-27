@@ -812,20 +812,21 @@
 
     contentRoot.appendChild(stage);
 
-    // Fade-in animation (.campaign-stage, stageFadeIn) takes 0.45s. Content
-    // is only considered ready to screenshot once every async element this
-    // render kicked off has settled AND that animation has finished --
-    // otherwise remote view captures a half-opacity/half-loaded transition.
-    const fadeInDone = new Promise((resolve) => setTimeout(resolve, 500));
-    Promise.all([...loadPromises, fadeInDone]).then(() => {
+    // Content is only considered ready to screenshot once every async
+    // element this render kicked off has settled (images, stickers,
+    // iframes -- see waitForLoad below). No CSS animation to wait out
+    // anymore (see the .campaign-stage comment in style.css for why that
+    // was actually the root cause of dim/dark remote-view frames, not
+    // something a longer wait could ever fix).
+    Promise.all(loadPromises).then(() => {
       if (token !== renderToken) return;
-      // Extra paint buffer: even after all loads + animation promises resolve,
-      // the browser compositor may not have rasterised the layers yet.
-      // 300 ms ensures the first post-ready capture reflects a fully-painted
-      // frame rather than a partially-composited one.
+      // Small paint buffer: even after all loads resolve, the browser
+      // compositor may not have rasterised the layers yet. 150ms ensures
+      // the first post-ready capture reflects a fully-painted frame rather
+      // than a partially-composited one.
       setTimeout(() => {
         if (token === renderToken) contentReady = true;
-      }, 300);
+      }, 150);
     });
   }
 
