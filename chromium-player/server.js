@@ -210,15 +210,36 @@ app.get('/api/webapp-screenshot', async (req, res) => {
     if (!entry) {
       const page = await browser.newPage();
       await page.setViewport({ width: 800, height: 600 });
-      entry = { page, lastNavigated: 0 };
+      entry = { page, lastNavigated: 0, broken: false };
+      // Some web-app-instance pages fail to load a critical script (observed:
+      // boot.js returning 500 -- a CMS backend bug, not fixable here). A
+      // screenshot of that broken/half-loaded page composited across a large
+      // zone is what made whole remote-view frames look "dark" even though
+      // the rest of the campaign (white stage, stickers) rendered fine.
+      // Flag the page broken on any 5xx from its own origin so we can skip
+      // compositing that zone entirely instead of pasting in a broken page.
+      page.on('response', (response) => {
+        try {
+          if (response.status() >= 500 && new URL(response.url()).origin === new URL(url).origin) {
+            entry.broken = true;
+          }
+        } catch (_) {}
+      });
       screenshotPages.set(url, entry);
     }
     if (Date.now() - entry.lastNavigated > SCREENSHOT_RENAV_MS) {
+      entry.broken = false; // give it a fresh chance to load cleanly
       await entry.page.goto(url, { waitUntil: 'networkidle2', timeout: 10000 }).catch((err) => {
         console.warn('[webapp-screenshot] navigation issue', url, err.message);
       });
       await new Promise((resolve) => setTimeout(resolve, SCREENSHOT_SETTLE_MS));
       entry.lastNavigated = Date.now();
+    }
+
+    if (entry.broken) {
+      // No content -- let the player's compositor skip this zone (img.onerror)
+      // rather than draw a screenshot of a page that failed to load.
+      return res.status(204).end();
     }
 
     const buffer = await entry.page.screenshot({ type: 'png' });
