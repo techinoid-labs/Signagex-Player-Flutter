@@ -9,6 +9,12 @@
   // _resizeAndCompressForRemoteView: try decreasing width/quality tiers
   // until the frame fits under the byte budget.
   const REMOTE_VIEW_CAPTURE_SCALE = 1.0;
+  // localStorage key for the last successfully-rendered campaign payload.
+  // Mirrors the Flutter app's SharedPreferences('jsonObj') persistence so
+  // the player can show its last content immediately on startup without
+  // waiting for the CMS to re-push (CMS only pushes when a user clicks
+  // Publish; it does not auto-push on player reconnect).
+  const CAMPAIGN_STORAGE_KEY = 'signagex_last_campaign';
   const REMOTE_VIEW_MAX_BYTES = 120 * 1024;
   const REMOTE_VIEW_TIERS = [
     { width: 1280, quality: 0.75 },
@@ -88,7 +94,24 @@
   function showPlayerScreen() {
     pairingScreen.classList.add('hidden');
     playerScreen.classList.remove('hidden');
-    if (playlist.length === 0) noContentEl.classList.remove('hidden');
+    // Try to restore the last-known campaign from localStorage immediately so
+    // the screen shows content without waiting for a fresh CMS push.
+    // A live push from MQTT will overwrite this if/when it arrives.
+    if (playlist.length === 0) {
+      const saved = localStorage.getItem(CAMPAIGN_STORAGE_KEY);
+      if (saved) {
+        try {
+          const cachedData = JSON.parse(saved);
+          console.log('[storage] restoring cached campaign');
+          handleContentMessage(cachedData, /* fromCache */ true);
+        } catch (e) {
+          console.warn('[storage] cached campaign parse error', e);
+          localStorage.removeItem(CAMPAIGN_STORAGE_KEY);
+        }
+      } else {
+        noContentEl.classList.remove('hidden');
+      }
+    }
   }
 
   function buildDeviceInfo(topic) {
@@ -623,7 +646,9 @@
   //    campaign_settings:{transition,duration,loop}, zones:[{id,x,y,width,height,
   //    mediaItems:[{id, mediaType, mediaUrl, content_media_type, settings, schedule, ad_slot}]}]}
   // ]}}.
-  function handleContentMessage(data) {
+  // fromCache=true when restoring from localStorage so we don't re-save
+  // (no-op write) and don't clear an already-empty playlist twice.
+  function handleContentMessage(data, fromCache) {
     if (data.action !== 'publish_campaign' || !data.data || !Array.isArray(data.data.playerCampaigns)) {
       console.warn('[content] unrecognized message shape', data);
       return;
@@ -632,6 +657,9 @@
     const campaigns = data.data.playerCampaigns.filter((c) => !c.is_paused);
     if (campaigns.length === 0) {
       console.warn('[content] no active (non-paused) campaigns in payload', data);
+      // CMS explicitly cleared the campaign — remove cache so a restart
+      // also shows no content (mirrors CMS intent).
+      if (!fromCache) localStorage.removeItem(CAMPAIGN_STORAGE_KEY);
       playlist = [];
       clearTimeout(advanceTimer);
       contentRoot.innerHTML = '';
@@ -639,6 +667,17 @@
       renderToken++; // invalidate any still-pending readiness check
       contentReady = true; // blank state has nothing to wait on
       return;
+    }
+
+    // Persist for next startup before rendering (matches Flutter's
+    // SharedPreferences write before _startDownloadingForCampaign).
+    if (!fromCache) {
+      try {
+        localStorage.setItem(CAMPAIGN_STORAGE_KEY, JSON.stringify(data));
+        console.log('[storage] campaign saved to localStorage');
+      } catch (e) {
+        console.warn('[storage] failed to save campaign', e);
+      }
     }
 
     playlist = campaigns;
