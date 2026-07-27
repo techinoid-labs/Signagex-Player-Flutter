@@ -155,7 +155,18 @@ app.get('/api/svg-proxy', async (req, res) => {
 let browserPromise = null;
 function getBrowser() {
   if (!browserPromise) {
-    browserPromise = puppeteer.launch({ headless: 'new', args: ['--no-sandbox'] });
+    // headless:'new' was introduced in Puppeteer v19 and is unsupported
+    // on older installs — it causes launch() to reject, which crashes the
+    // server process when the rejected promise propagates. headless:true
+    // is the stable boolean form supported by all versions.
+    browserPromise = puppeteer.launch({
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    }).catch((err) => {
+      console.error('[puppeteer] browser launch failed:', err.message);
+      browserPromise = null; // reset so the next request retries
+      throw err;
+    });
   }
   return browserPromise;
 }

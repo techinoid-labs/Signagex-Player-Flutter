@@ -268,12 +268,22 @@
       return;
     }
     try {
-      const canvas = await html2canvas(document.body, {
+      // Capture contentRoot (the stage's direct parent) rather than
+      // document.body. The body has a black background and the stage
+      // uses CSS transform:scale() which html2canvas doesn't render
+      // correctly when body is the root — resulting in near-black frames.
+      // contentRoot is transparent; giving html2canvas a white
+      // backgroundColor means the stage's white background shows through.
+      const canvas = await html2canvas(contentRoot, {
         useCORS: true,
         scale: REMOTE_VIEW_CAPTURE_SCALE,
         logging: false,
-        backgroundColor: '#000000',
+        backgroundColor: '#ffffff',
         imageTimeout: 5000,
+        width: contentRoot.clientWidth,
+        height: contentRoot.clientHeight,
+        windowWidth: contentRoot.clientWidth,
+        windowHeight: contentRoot.clientHeight,
       });
       await compositeIframeScreenshots(canvas);
       const base64 = encodeCanvasTiered(canvas);
@@ -434,12 +444,13 @@
         break;
       }
       case 'press_home':
-      case 'press_back':
-        // Flutter's home/back trigger native OS actions with no browser
-        // equivalent. Per product spec, both take the player to a blank
-        // Chrome screen (empty address bar, nothing typed/loaded).
         showBlankChromeScreen();
-        console.log(`[remote-view] ${data.action}: showing blank Chrome screen`);
+        console.log('[remote-view] press_home: showing blank screen');
+        break;
+      case 'press_back':
+        // Back dismisses the blank overlay and returns to the player.
+        hideBlankChromeScreen();
+        console.log('[remote-view] press_back: returning to player');
         break;
       default:
         console.log('[remote-view] unhandled command', data.action);
@@ -527,10 +538,13 @@
         action === 'press_home' ||
         action === 'press_back'
       );
-      if (isRemoteViewAction) {
-        handleRemoteViewMessage(data);
-      } else if (action === 'action_setup_player' || action === 'action_reboot') {
+      // Settings actions take priority over topic-based routing:
+      // CMS may send action_setup_player on topic/remote, which would
+      // otherwise be swallowed by the isRemoteViewAction check below.
+      if (action === 'action_setup_player' || action === 'action_reboot') {
         handlePlayerSettings(data);
+      } else if (isRemoteViewAction) {
+        handleRemoteViewMessage(data);
       } else {
         handleContentMessage(data);
       }
