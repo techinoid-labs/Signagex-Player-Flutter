@@ -361,6 +361,10 @@
     return overlays;
   }
 
+  function openBlankChromeScreen() {
+    window.open('about:blank', '_blank');
+  }
+
   // Handles MQTT messages received on <playerCode>/remote.
   // These are CMS commands (start/stop remote view, click, scroll, etc.).
   function handleRemoteViewMessage(data) {
@@ -409,10 +413,15 @@
         break;
       }
       case 'press_home':
-        // Flutter's "home" triggers a native home-screen action; there's no
-        // browser equivalent, so per product spec this opens a new tab.
-        window.open('about:blank', '_blank');
-        console.log('[remote-view] press_home: opened new tab');
+      case 'press_back':
+        // Flutter's home/back trigger native OS actions with no browser
+        // equivalent. Per product spec, both take the player to a blank
+        // Chrome screen (empty address bar, nothing typed/loaded) -- opened
+        // as a new tab rather than navigating this tab away, so the kiosk
+        // tab's MQTT connection and remote-view loop keep running
+        // underneath instead of being torn down.
+        openBlankChromeScreen();
+        console.log(`[remote-view] ${data.action}: opened blank Chrome tab`);
         break;
       default:
         console.log('[remote-view] unhandled command', data.action);
