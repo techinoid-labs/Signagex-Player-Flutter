@@ -2,6 +2,20 @@
   const MQTT_URL = 'wss://signagexai.com:443/mqtt';
   const PAIR_POLL_MS = 5000;
   const DEFAULT_ITEM_DURATION_MS = 8000;
+  // Capture at a real resolution and let encodeCanvasTiered pick the
+  // quality -- was scale:0.25 + a flat toDataURL(..., 0.3), i.e. quarter
+  // resolution at 30% JPEG quality, far below even Flutter's *worst* tier
+  // (480px/45%). That's why frames looked blocky/muddy. Mirrors Flutter's
+  // _resizeAndCompressForRemoteView: try decreasing width/quality tiers
+  // until the frame fits under the byte budget.
+  const REMOTE_VIEW_CAPTURE_SCALE = 0.5;
+  const REMOTE_VIEW_MAX_BYTES = 120 * 1024;
+  const REMOTE_VIEW_TIERS = [
+    { width: 1280, quality: 0.75 },
+    { width: 960, quality: 0.65 },
+    { width: 720, quality: 0.55 },
+    { width: 480, quality: 0.45 },
+  ];
 
   const pairingScreen = document.getElementById('pairing-screen');
   const playerScreen = document.getElementById('player-screen');
@@ -32,6 +46,9 @@
   // for the instant of a capture (see captureAndPublishFrame) -- the live
   // iframe underneath is untouched for the actual kiosk display.
   let iframeZones = [];
+  // Applied to every <video> zone; see handlePlayerSettings/applyAudioSettings.
+  let muteAudio = false;
+  let playerVolume = 1;
 
   async function pollPairStatus() {
     try {
@@ -254,15 +271,12 @@
     try {
       const canvas = await html2canvas(document.body, {
         useCORS: true,
-        scale: 0.25,
+        scale: REMOTE_VIEW_CAPTURE_SCALE,
         logging: false,
         backgroundColor: '#000000',
         imageTimeout: 5000,
       });
-      // Use toDataURL (synchronous) instead of toBlob+FileReader to avoid
-      // async callback chains that can silently drop frames.
-      const dataUrl = canvas.toDataURL('image/jpeg', 0.3);
-      const base64 = dataUrl.split(',')[1];
+      const base64 = encodeCanvasTiered(canvas);
       if (!base64 || !remoteViewActive || !mqttClient) return;
       const payload = JSON.stringify({
         action: 'image',
@@ -285,6 +299,37 @@
     } finally {
       overlays.forEach((img) => img.remove());
     }
+  }
+
+  // Encodes a captured canvas at the largest tier (width/quality) that fits
+  // under REMOTE_VIEW_MAX_BYTES, matching Flutter's
+  // _resizeAndCompressForRemoteView. Returns the base64 payload (no data-URL
+  // prefix) or null if the canvas is empty.
+  function encodeCanvasTiered(sourceCanvas) {
+    const srcW = sourceCanvas.width;
+    const srcH = sourceCanvas.height;
+    if (!srcW || !srcH) return null;
+
+    let best = null;
+    for (const tier of REMOTE_VIEW_TIERS) {
+      let canvas = sourceCanvas;
+      if (srcW > tier.width) {
+        const w = tier.width;
+        const h = Math.round((srcH / srcW) * w);
+        canvas = document.createElement('canvas');
+        canvas.width = w;
+        canvas.height = h;
+        canvas.getContext('2d').drawImage(sourceCanvas, 0, 0, w, h);
+      }
+      // toDataURL (synchronous) instead of toBlob+FileReader avoids async
+      // callback chains that can silently drop frames.
+      const dataUrl = canvas.toDataURL('image/jpeg', tier.quality);
+      const base64 = dataUrl.split(',')[1];
+      const approxBytes = base64.length * 0.75;
+      best = base64;
+      if (approxBytes <= REMOTE_VIEW_MAX_BYTES) break;
+    }
+    return best;
   }
 
   // html2canvas can't read pixels out of a cross-origin iframe, so
@@ -350,6 +395,25 @@
         console.log('[remote-view] scroll', dx, dy);
         break;
       }
+      case 'send_text': {
+        // Flutter types the text via synthetic keystrokes (native macOS
+        // CGEvent) into whatever's focused -- there's no equivalent for a
+        // kiosk browser tab. Copy to clipboard instead, per product spec.
+        // Field is `message`, matching mqtt_view_model.dart:2177.
+        const text = data.message;
+        if (text) {
+          navigator.clipboard.writeText(text)
+            .then(() => console.log('[remote-view] send_text copied to clipboard'))
+            .catch((e) => console.warn('[remote-view] clipboard write failed', e));
+        }
+        break;
+      }
+      case 'press_home':
+        // Flutter's "home" triggers a native home-screen action; there's no
+        // browser equivalent, so per product spec this opens a new tab.
+        window.open('about:blank', '_blank');
+        console.log('[remote-view] press_home: opened new tab');
+        break;
       default:
         console.log('[remote-view] unhandled command', data.action);
     }
@@ -430,6 +494,8 @@
       );
       if (isRemoteViewAction) {
         handleRemoteViewMessage(data);
+      } else if (action === 'action_setup_player' || action === 'action_reboot') {
+        handlePlayerSettings(data);
       } else {
         handleContentMessage(data);
       }
@@ -438,6 +504,60 @@
     mqttClient.on('error', (err) => console.error('[mqtt] error', err));
     mqttClient.on('reconnect', () => console.log('[mqtt] reconnecting…'));
     mqttClient.on('close', () => console.log('[mqtt] connection closed'));
+  }
+
+  // Only fields with a confirmed wire name from mqtt_view_model.dart's
+  // action_setup_player handling are applied here (mute_audio, brightness,
+  // volume, screen_rotation, action_reboot). Other CMS settings shown in
+  // the dashboard (disable transitions, hide helpful messages, legacy
+  // webview, safe mode video, touch feedback, auto-start/auto-update)
+  // don't have a confirmed field name anywhere in the Flutter app either --
+  // guessing one would risk silently no-op'ing against whatever the CMS
+  // actually sends, so they're intentionally left unimplemented for now.
+  function handlePlayerSettings(data) {
+    if (data.action === 'action_reboot') {
+      console.log('[settings] action_reboot received, reloading');
+      location.reload();
+      return;
+    }
+
+    const settings = data.settings || {};
+    // Independent ifs, not else-if: CMS resends the whole settings object
+    // on any single change (mirrors the Flutter comment at
+    // mqtt_view_model.dart:2031).
+    if (typeof settings.mute_audio === 'boolean') {
+      muteAudio = settings.mute_audio;
+      applyAudioSettings();
+      console.log('[settings] mute_audio ->', muteAudio);
+    }
+    if (settings.volume != null) {
+      playerVolume = Math.max(0, Math.min(100, Number(settings.volume))) / 100;
+      applyAudioSettings();
+      console.log('[settings] volume ->', settings.volume);
+    }
+    if (settings.brightness && settings.brightness.value != null) {
+      const pct = Math.max(0, Math.min(100, Number(settings.brightness.value)));
+      // No hardware brightness control from a webpage -- CSS filter is the
+      // closest browser-side approximation.
+      document.body.style.filter = `brightness(${pct / 100})`;
+      console.log('[settings] brightness ->', pct);
+    }
+    if (settings.screen_rotation != null) {
+      const deg = Number(settings.screen_rotation) || 0;
+      // Simple whole-page rotation. Doesn't swap width/height for 90/270 --
+      // a real device would rotate its physical display; this is a CSS
+      // approximation good enough for testing, but 90/270 will letterbox.
+      document.body.style.transform = deg ? `rotate(${deg}deg)` : '';
+      document.body.style.transformOrigin = 'center center';
+      console.log('[settings] screen_rotation ->', deg);
+    }
+  }
+
+  function applyAudioSettings() {
+    contentRoot.querySelectorAll('video').forEach((el) => {
+      el.muted = muteAudio || playerVolume === 0;
+      el.volume = playerVolume;
+    });
   }
 
   // Real shape, confirmed from a live payload:
@@ -636,7 +756,8 @@
     if (mediaType.includes('video')) {
       const el = document.createElement('video');
       el.autoplay = true;
-      el.muted = true;
+      el.muted = muteAudio || playerVolume === 0;
+      el.volume = playerVolume;
       el.loop = !!settings.loop;
       styleFill(el);
       loadPromises.push(waitForLoad(el, 'loadeddata', 4000));

@@ -72,6 +72,10 @@ async function main() {
       '--disable-infobars',
       '--disable-session-crashed-bubble',
       '--overscroll-history-navigation=0',
+      // Without this, Chrome's autoplay policy silently blocks unmuted
+      // <video> autoplay (no user gesture ever happens on a kiosk screen),
+      // which would make the mute_audio/volume settings meaningless.
+      '--autoplay-policy=no-user-gesture-required',
       `--user-data-dir=${__dirname}/.chrome-profile`,
     ],
     { stdio: 'inherit' }
