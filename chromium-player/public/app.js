@@ -191,12 +191,17 @@
     } catch (e) {
       console.warn('[content] SVG proxy fetch failed, using img fallback', e);
     }
-    // Fallback for non-SVG assets or fetch errors
+    // Fallback for non-SVG assets or fetch errors.
+    // waitForLoad is called so contentReady doesn't flip before the image
+    // has actually painted — without this the promise in loadPromises
+    // resolves at fetch-failure time, not at img-load time.
     const img = document.createElement('img');
-    img.src = src;
     img.style.objectFit = 'contain';
     styleFill(img);
     container.appendChild(img);
+    const loadPromise = waitForLoad(img, 'load', 4000);
+    img.src = src; // set after listener so 'error' can't fire unheard
+    return loadPromise;
   }
 
   // Port of Flutter's MediaItem.svgFromShapeProperties — constructs an inline
@@ -813,7 +818,14 @@
     // otherwise remote view captures a half-opacity/half-loaded transition.
     const fadeInDone = new Promise((resolve) => setTimeout(resolve, 500));
     Promise.all([...loadPromises, fadeInDone]).then(() => {
-      if (token === renderToken) contentReady = true;
+      if (token !== renderToken) return;
+      // Extra paint buffer: even after all loads + animation promises resolve,
+      // the browser compositor may not have rasterised the layers yet.
+      // 300 ms ensures the first post-ready capture reflects a fully-painted
+      // frame rather than a partially-composited one.
+      setTimeout(() => {
+        if (token === renderToken) contentReady = true;
+      }, 300);
     });
   }
 
