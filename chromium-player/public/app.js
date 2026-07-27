@@ -291,6 +291,21 @@
       return;
     }
     try {
+      // html2canvas silently drops inline <svg> elements (a well-known
+      // limitation: it can't read svg pixels due to cross-origin canvas
+      // taint rules). Fix: before capturing, stamp every inline SVG inside
+      // the content root with its rendered pixel size as data attributes.
+      // In the onclone callback (which operates on a throw-away clone, never
+      // touching the live DOM), replace each SVG with an <img> whose src is
+      // a data: URL of the serialised SVG — Chromium can draw that fine.
+      contentRoot.querySelectorAll('svg').forEach((svg) => {
+        const rect = svg.getBoundingClientRect();
+        const w = Math.round(rect.width) || svg.parentElement?.offsetWidth || 0;
+        const h = Math.round(rect.height) || svg.parentElement?.offsetHeight || 0;
+        if (w) svg.setAttribute('data-rv-w', w);
+        if (h) svg.setAttribute('data-rv-h', h);
+      });
+
       // Capture document.body so the full screen (including the black
       // letterbox background and the campaign stage) is in the frame.
       // backgroundColor must match body background (#000) so areas outside
@@ -303,6 +318,31 @@
         logging: false,
         backgroundColor: '#000000',
         imageTimeout: 5000,
+        onclone: (clonedDoc) => {
+          clonedDoc.querySelectorAll('#content-root svg').forEach((svg) => {
+            try {
+              const w = svg.getAttribute('data-rv-w');
+              const h = svg.getAttribute('data-rv-h');
+              if (w) svg.setAttribute('width', w);
+              if (h) svg.setAttribute('height', h);
+              const xml = new XMLSerializer().serializeToString(svg);
+              const url = 'data:image/svg+xml;charset=utf-8,' + encodeURIComponent(xml);
+              const img = clonedDoc.createElement('img');
+              img.src = url;
+              img.style.cssText = svg.style.cssText;
+              img.style.width = w + 'px';
+              img.style.height = h + 'px';
+              img.style.display = 'block';
+              svg.parentNode.replaceChild(img, svg);
+            } catch (_) {}
+          });
+        },
+      });
+
+      // Remove temporary measurement attributes from live DOM
+      contentRoot.querySelectorAll('svg[data-rv-w]').forEach((svg) => {
+        svg.removeAttribute('data-rv-w');
+        svg.removeAttribute('data-rv-h');
       });
       await compositeIframeScreenshots(canvas);
       const base64 = encodeCanvasTiered(canvas);
