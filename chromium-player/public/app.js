@@ -361,8 +361,25 @@
     return overlays;
   }
 
-  function openBlankChromeScreen() {
-    window.open('about:blank', '_blank');
+  let blankScreenTimer = null;
+  const BLANK_SCREEN_AUTO_RETURN_MS = 15000;
+
+  // window.open() is silently blocked by Chrome's --kiosk single-window
+  // lock (confirmed: press_home logged success with zero errors, but
+  // nothing visibly happened). Showing an in-page overlay works regardless
+  // of kiosk restrictions and, unlike navigating this tab away, doesn't
+  // risk tearing down the live MQTT connection. Auto-returns after 15s so
+  // the kiosk can't get stuck blank if the CMS never sends a follow-up.
+  function showBlankChromeScreen() {
+    document.getElementById('blank-chrome-overlay').classList.remove('hidden');
+    clearTimeout(blankScreenTimer);
+    blankScreenTimer = setTimeout(hideBlankChromeScreen, BLANK_SCREEN_AUTO_RETURN_MS);
+  }
+
+  function hideBlankChromeScreen() {
+    document.getElementById('blank-chrome-overlay').classList.add('hidden');
+    clearTimeout(blankScreenTimer);
+    blankScreenTimer = null;
   }
 
   // Handles MQTT messages received on <playerCode>/remote.
@@ -416,12 +433,9 @@
       case 'press_back':
         // Flutter's home/back trigger native OS actions with no browser
         // equivalent. Per product spec, both take the player to a blank
-        // Chrome screen (empty address bar, nothing typed/loaded) -- opened
-        // as a new tab rather than navigating this tab away, so the kiosk
-        // tab's MQTT connection and remote-view loop keep running
-        // underneath instead of being torn down.
-        openBlankChromeScreen();
-        console.log(`[remote-view] ${data.action}: opened blank Chrome tab`);
+        // Chrome screen (empty address bar, nothing typed/loaded).
+        showBlankChromeScreen();
+        console.log(`[remote-view] ${data.action}: showing blank Chrome screen`);
         break;
       default:
         console.log('[remote-view] unhandled command', data.action);
@@ -487,6 +501,14 @@
         console.error('[mqtt] payload was not JSON', err);
         return;
       }
+      // We're subscribed to the same topics we publish remote-view frames
+      // to, so the broker loops our own publishes straight back to us
+      // (confirmed in logs: every "publishing frame" is immediately
+      // followed by receiving that same {action:"image",...} message).
+      // `sender: 'mac'` is a value only this player's own frames set --
+      // drop them here instead of letting them reach the dispatcher as
+      // meaningless "unhandled command image" noise.
+      if (data.sender === 'mac') return;
       // Route by topic AND by action name — mirrors the Flutter dispatcher
       // which handles remote-view actions on any subscribed topic.
       const action = data.action || '';
