@@ -733,12 +733,17 @@
     const stage = document.createElement('div');
     stage.className = 'campaign-stage'; // triggers fade-in CSS animation
     stage.style.position = 'absolute';
-    stage.style.width = `${resW}px`;
-    stage.style.height = `${resH}px`;
+    // Pre-scaled literal dimensions instead of `transform: scale()`.
+    // html2canvas has long-standing bugs rendering transformed elements
+    // (sometimes painting them blank/transparent, which the capture's
+    // backgroundColor:'#000000' fallback then fills in as solid black --
+    // the actual mechanism behind the "dark screenshot" reports). Scaling
+    // the box model directly instead of via CSS transform sidesteps that
+    // entirely; zones below are scaled the same way.
+    stage.style.width = `${resW * scale}px`;
+    stage.style.height = `${resH * scale}px`;
     stage.style.left = `${left}px`;
     stage.style.top = `${top}px`;
-    stage.style.transform = `scale(${scale})`;
-    stage.style.transformOrigin = 'top left';
     // White background matches Flutter's Scaffold backgroundColor: Colors.white.
     // CMS campaign content is authored against a white stage — using black here
     // makes black text / shapes invisible.
@@ -747,10 +752,10 @@
     (campaign.zones || []).forEach((zone) => {
       const zoneEl = document.createElement('div');
       zoneEl.style.position = 'absolute';
-      zoneEl.style.left = `${Number(zone.x) || 0}px`;
-      zoneEl.style.top = `${Number(zone.y) || 0}px`;
-      zoneEl.style.width = `${Number(zone.width) || 0}px`;
-      zoneEl.style.height = `${Number(zone.height) || 0}px`;
+      zoneEl.style.left = `${(Number(zone.x) || 0) * scale}px`;
+      zoneEl.style.top = `${(Number(zone.y) || 0) * scale}px`;
+      zoneEl.style.width = `${(Number(zone.width) || 0) * scale}px`;
+      zoneEl.style.height = `${(Number(zone.height) || 0) * scale}px`;
       zoneEl.style.overflow = 'hidden';
 
       const item = (zone.mediaItems || []).find((mi) => !(mi.ad_slot && mi.ad_slot.skip_playback));
