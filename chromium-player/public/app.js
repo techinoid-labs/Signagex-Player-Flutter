@@ -268,22 +268,18 @@
       return;
     }
     try {
-      // Capture contentRoot (the stage's direct parent) rather than
-      // document.body. The body has a black background and the stage
-      // uses CSS transform:scale() which html2canvas doesn't render
-      // correctly when body is the root — resulting in near-black frames.
-      // contentRoot is transparent; giving html2canvas a white
-      // backgroundColor means the stage's white background shows through.
-      const canvas = await html2canvas(contentRoot, {
+      // Capture document.body so the full screen (including the black
+      // letterbox background and the campaign stage) is in the frame.
+      // backgroundColor must match body background (#000) so areas outside
+      // the stage render as black, not transparent.
+      // NOTE: do NOT capture contentRoot only — that element is empty when
+      // no campaign is loaded, producing a pure-white frame.
+      const canvas = await html2canvas(document.body, {
         useCORS: true,
         scale: REMOTE_VIEW_CAPTURE_SCALE,
         logging: false,
-        backgroundColor: '#ffffff',
+        backgroundColor: '#000000',
         imageTimeout: 5000,
-        width: contentRoot.clientWidth,
-        height: contentRoot.clientHeight,
-        windowWidth: contentRoot.clientWidth,
-        windowHeight: contentRoot.clientHeight,
       });
       await compositeIframeScreenshots(canvas);
       const base64 = encodeCanvasTiered(canvas);
@@ -493,16 +489,27 @@
           return;
         }
         console.log('[mqtt] subscribed, publishing online status and device info');
-        // Publish retained online status to <playerCode>/player_status so the
-        // CMS knows this player is reachable and triggers a campaign push.
-        // This mirrors exactly what the Flutter app does.
+        // Publish offline first, then online. The broker may still hold a
+        // retained {status:'online'} from the previous session. If we just
+        // re-publish online without clearing it, the CMS sees no state
+        // change and does not re-push campaigns. The brief offline→online
+        // transition guarantees the CMS observes the change regardless of
+        // previous retained state.
         mqttClient.publish(
           `${topic}/player_status`,
-          JSON.stringify({ status: 'online' }),
+          JSON.stringify({ status: 'offline' }),
           { retain: true, qos: 1 },
         );
-        // Also publish device info for CMS registration/identification.
-        mqttClient.publish(topic, JSON.stringify(buildDeviceInfo(topic)));
+        setTimeout(() => {
+          if (!mqttClient) return;
+          mqttClient.publish(
+            `${topic}/player_status`,
+            JSON.stringify({ status: 'online' }),
+            { retain: true, qos: 1 },
+          );
+          // Also publish device info for CMS registration/identification.
+          mqttClient.publish(topic, JSON.stringify(buildDeviceInfo(topic)));
+        }, 400);
       });
     });
 
