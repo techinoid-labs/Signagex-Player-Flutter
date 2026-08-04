@@ -2,7 +2,11 @@ const express = require('express');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
-const puppeteer = require('puppeteer');
+
+// Puppeteer is only available when installed locally (optional dep).
+// Vercel serverless skips it; /api/webapp-screenshot returns 501 instead.
+let puppeteer = null;
+try { puppeteer = require('puppeteer'); } catch (_) {}
 
 const PORT = process.env.PORT || 5757;
 const BACKEND_BASE = process.env.BACKEND_BASE || 'https://stage.signagexai.com/v1/';
@@ -16,16 +20,16 @@ const PLATFORM_ID = process.env.PLATFORM_ID || 'windows';
 const DEVICE_FILE = path.join(__dirname, 'device.json');
 
 function getDeviceId() {
+  // Prefer DEVICE_UUID env var (required on Vercel; filesystem is read-only).
+  if (process.env.DEVICE_UUID) return process.env.DEVICE_UUID;
   if (fs.existsSync(DEVICE_FILE)) {
     try {
       const { uuid } = JSON.parse(fs.readFileSync(DEVICE_FILE, 'utf8'));
       if (uuid) return uuid;
-    } catch (_) {
-      // fall through and regenerate
-    }
+    } catch (_) {}
   }
   const uuid = crypto.randomUUID();
-  fs.writeFileSync(DEVICE_FILE, JSON.stringify({ uuid }, null, 2));
+  try { fs.writeFileSync(DEVICE_FILE, JSON.stringify({ uuid }, null, 2)); } catch (_) {}
   return uuid;
 }
 
@@ -34,23 +38,7 @@ const deviceId = getDeviceId();
 const app = express();
 app.use(express.json());
 
-// Serve the mqtt.js browser bundle straight from node_modules so the
-// frontend can talk to the MQTT-over-WSS broker directly.
-app.use('/vendor/mqtt', express.static(path.join(__dirname, 'node_modules/mqtt/dist')));
-
-// Serve html2canvas for DOM screenshot capture (used by remote view).
-app.use('/vendor/html2canvas', express.static(path.join(__dirname, 'node_modules/html2canvas/dist')));
-
-// The kiosk launcher reuses the same persistent Chrome profile
-// (.chrome-profile) on every restart, so the browser's own disk cache can
-// keep serving a stale copy of app.js/index.html/style.css even after
-// `git pull` + server restart -- there's no cache-busting step in between,
-// so nothing ever tells the browser the files changed. Force revalidation
-// on every load for our own code specifically (vendor bundles above are
-// unchanging npm package files, fine to cache normally).
-app.use(express.static(path.join(__dirname, 'public'), {
-  setHeaders: (res) => res.set('Cache-Control', 'no-store'),
-}));
+app.use(express.static(path.join(__dirname, 'public')));
 
 // Proxied so the pairing call happens server-side (no CORS, no exposed
 // backend details to the page source).
@@ -201,6 +189,9 @@ const SCREENSHOT_SETTLE_MS = 1500;
 const SCREENSHOT_RENAV_MS = 60000;
 
 app.get('/api/webapp-screenshot', async (req, res) => {
+  if (!puppeteer) {
+    return res.status(501).json({ error: 'not_available', message: 'Puppeteer not installed' });
+  }
   const url = (req.query.url || '').trim();
   if (!url.startsWith('http://') && !url.startsWith('https://')) {
     return res.status(400).json({ error: 'invalid url' });
@@ -219,36 +210,15 @@ app.get('/api/webapp-screenshot', async (req, res) => {
     if (!entry) {
       const page = await browser.newPage();
       await page.setViewport({ width: 800, height: 600 });
-      entry = { page, lastNavigated: 0, broken: false };
-      // Some web-app-instance pages fail to load a critical script (observed:
-      // boot.js returning 500 -- a CMS backend bug, not fixable here). A
-      // screenshot of that broken/half-loaded page composited across a large
-      // zone is what made whole remote-view frames look "dark" even though
-      // the rest of the campaign (white stage, stickers) rendered fine.
-      // Flag the page broken on any 5xx from its own origin so we can skip
-      // compositing that zone entirely instead of pasting in a broken page.
-      page.on('response', (response) => {
-        try {
-          if (response.status() >= 500 && new URL(response.url()).origin === new URL(url).origin) {
-            entry.broken = true;
-          }
-        } catch (_) {}
-      });
+      entry = { page, lastNavigated: 0 };
       screenshotPages.set(url, entry);
     }
     if (Date.now() - entry.lastNavigated > SCREENSHOT_RENAV_MS) {
-      entry.broken = false; // give it a fresh chance to load cleanly
       await entry.page.goto(url, { waitUntil: 'networkidle2', timeout: 10000 }).catch((err) => {
         console.warn('[webapp-screenshot] navigation issue', url, err.message);
       });
       await new Promise((resolve) => setTimeout(resolve, SCREENSHOT_SETTLE_MS));
       entry.lastNavigated = Date.now();
-    }
-
-    if (entry.broken) {
-      // No content -- let the player's compositor skip this zone (img.onerror)
-      // rather than draw a screenshot of a page that failed to load.
-      return res.status(204).end();
     }
 
     const buffer = await entry.page.screenshot({ type: 'png' });
@@ -262,18 +232,22 @@ app.get('/api/webapp-screenshot', async (req, res) => {
   }
 });
 
-const server = app.listen(PORT, () => {
-  console.log(`SignageX chromium-player server running at http://localhost:${PORT}`);
-  console.log(`Device id: ${deviceId}`);
-});
+// Export for Vercel serverless; start listener only when run directly.
+module.exports = app;
+if (require.main === module) {
+  const server = app.listen(PORT, () => {
+    console.log(`SignageX chromium-player server running at http://localhost:${PORT}`);
+    console.log(`Device id: ${deviceId}`);
+  });
 
-async function shutdown() {
-  server.close();
-  if (browserPromise) {
-    const browser = await browserPromise;
-    await browser.close().catch(() => {});
+  async function shutdown() {
+    server.close();
+    if (browserPromise) {
+      const browser = await browserPromise;
+      await browser.close().catch(() => {});
+    }
+    process.exit(0);
   }
-  process.exit(0);
+  process.on('SIGINT', shutdown);
+  process.on('SIGTERM', shutdown);
 }
-process.on('SIGINT', shutdown);
-process.on('SIGTERM', shutdown);

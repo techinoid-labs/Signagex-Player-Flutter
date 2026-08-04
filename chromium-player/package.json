@@ -12,9 +12,9 @@
     "kiosk": "node launch-kiosk.js"
   },
   "dependencies": {
-    "express": "^4.19.2",
-    "html2canvas": "^1.4.1",
-    "mqtt": "^5.10.1",
+    "express": "^4.19.2"
+  },
+  "optionalDependencies": {
     "puppeteer": "^25.3.0"
   }
 }
