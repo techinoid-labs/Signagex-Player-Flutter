@@ -177,10 +177,13 @@ class MqttViewModel extends ChangeNotifier {
     _monitorConnectivity();
   }
 
+  // Field name and "Version: x.y.z" format match the working Android
+  // player's PlayerInformation.getPlayerVersion() exactly -- the backend
+  // reads player_version, not app_version.
   Future<void> _populateAppVersion() async {
     try {
       final info = await PackageInfo.fromPlatform();
-      devicesinfo["app_version"] = "${info.version}+${info.buildNumber}";
+      devicesinfo["player_version"] = "Version: ${info.version}";
       notifyListeners();
     } catch (e) {
       debugPrint("Failed to read app version: $e");
@@ -214,17 +217,19 @@ class MqttViewModel extends ChangeNotifier {
         // Convert to Base64 string
         final base64String = base64Encode(compressedImageBytes);
 
-        // Publish the Base64-encoded string
+        // Remote View reads this from <topic>/remote as a single JSON
+        // message with an img_url field -- this used to publish two
+        // unrelated messages (a metadata blob, then raw base64 bytes with
+        // no JSON wrapper) to the plain topic instead, which the backend
+        // had no way to parse as a screenshot at all. Match the working
+        // Android player's exact contract.
         Map<String, dynamic> sendLog = {
-          "action": "screenShot",
-          "name": "screenshot",
-          "type": "screenShot",
-          "dateTime": DateTime.now()
-              .toIso8601String(), // Current date and time in ISO 8601 format
+          "action": "image",
+          "img_url": base64String,
+          "sender": "windows",
         };
 
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
-        _mqttClientService.publishMessage(topic, utf8.encode(base64String));
+        _mqttClientService.publish('$topic/remote', jsonEncode(sendLog));
       } else {
         debugPrint("Failed to capture screenshot: ByteData is null.");
       }
@@ -730,6 +735,8 @@ class MqttViewModel extends ChangeNotifier {
         devicesinfo["cpu_information"]["cpu_architecture"] =
             systemInfo["CPUArchitecture"];
         devicesinfo["cpu_information"]["processor"] = systemInfo["CPUInfo"];
+        devicesinfo["system_version"] =
+            "${systemInfo["OSCaption"] ?? "Windows"} (${systemInfo["OSVersion"] ?? ""})";
         _applyWindowsDynamicStats(systemInfo);
         systemInfo.forEach((key, value) {
           print('$key: $value');
@@ -805,7 +812,9 @@ class MqttViewModel extends ChangeNotifier {
       "CPUArchitecture" = (Get-WmiObject -Class Win32_Processor | Select-Object -ExpandProperty Architecture);
       "AvailableMemory" = (Get-CimInstance -ClassName Win32_OperatingSystem | Select-Object -ExpandProperty FreePhysicalMemory);
       "TimeZone" = (Get-TimeZone).Id;
-      
+      "OSCaption" = (Get-CimInstance -ClassName Win32_OperatingSystem | Select-Object -ExpandProperty Caption);
+      "OSVersion" = (Get-CimInstance -ClassName Win32_OperatingSystem | Select-Object -ExpandProperty Version);
+
       "DeviceName" = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Name);
       "InstalledRAM" = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty TotalPhysicalMemory);
       "Manufacturer" = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Manufacturer);

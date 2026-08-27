@@ -16,6 +16,13 @@ const String port = "3002/";
 bool isIos = Platform.isIOS;
 bool isMac = Platform.isMacOS;
 Map<String, dynamic> deviceInfoMap = {
+  // The backend's message router dispatches on this field the same way our
+  // own inbound MQTT handler dispatches on jsonObj["action"] -- the working
+  // Android player sends "player_details" on every device-info payload.
+  // Without it, the backend has no way to recognize this message as device
+  // info at all, so App Version/Manufacturer/Resource Usage/etc. all stay
+  // blank regardless of what's actually in the rest of the payload.
+  "action": "player_details",
   if (!isIos || !isMac) ...{
     "mac_address": {
       "macAddress": [
@@ -29,7 +36,8 @@ Map<String, dynamic> deviceInfoMap = {
   "sender": "",
   "android_version": "",
   "webview_version": "",
-  "app_version": "",
+  "player_version": "",
+  "system_version": "",
   "last_seen": "",
   "device_model": "",
   "network_name": "",

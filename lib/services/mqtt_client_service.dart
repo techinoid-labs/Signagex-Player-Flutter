@@ -102,6 +102,26 @@ class MqttClientService {
               'flutter_client_${DateTime.now().millisecondsSinceEpoch}')
           .startClean();
 
+      // Matches the working Android player's presence protocol: a Last Will
+      // registered with the broker so it auto-publishes {"status":"offline"}
+      // to <topic>/player_status the moment this client drops off
+      // ungracefully (crash, power loss, network cut) -- this is what the
+      // dashboard's Online/Offline actually reads. Without a will (the
+      // previous state of this file), the backend had no way to ever learn
+      // the player went offline except our own graceful disconnect, which
+      // explains the stuck "Online" + "Sync Issue" combination reported in
+      // the CMS.
+      if (globleTopic.isNotEmpty) {
+        final willPayload = Uint8Buffer();
+        willPayload.addAll(utf8.encode(jsonEncode({'status': 'offline'})));
+        connMessage
+            .will()
+            .withWillTopic('$globleTopic/player_status')
+            .withWillPayload(willPayload)
+            .withWillQos(MqttQos.atLeastOnce)
+            .withWillRetain();
+      }
+
       _client.connectionMessage = connMessage;
 
       print(
@@ -133,6 +153,18 @@ class MqttClientService {
           _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
             _handleReceivedMessage(c);
           });
+
+          // Explicit "online" companion to the will registered above --
+          // the will only fires on an *unexpected* drop, so we still need
+          // to say "online" ourselves right after every successful connect
+          // (including reconnects) for the dashboard to flip back from
+          // whatever it last saw.
+          if (globleTopic.isNotEmpty) {
+            publish(
+              '$globleTopic/player_status',
+              jsonEncode({'status': 'online'}),
+            );
+          }
 
           return;
         } else if (connectionState == MqttConnectionState.faulted ||
