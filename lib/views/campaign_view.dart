@@ -1199,37 +1199,35 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       final totalMedia = widget.mediaItems.length;
       print("[LOG] Media ended at index $currentIndex of $totalMedia");
 
+      if (widget.mediaItems.isEmpty) {
+        print("[LOG] No media items available, cannot transition");
+        return;
+      }
+
+      // Swap directly to the next item instead of fading the whole zone to
+      // fully transparent first -- that forced blank frame exposed the
+      // white Scaffold background behind it on every single transition.
+      // AnimatedSwitcher's own transitionBuilder (fadeIn/slide/etc, keyed
+      // per item below) already handles the visual crossfade.
       setState(() {
-        _opacity = 0.0;
-      });
+        _opacity = 1.0;
 
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (!mounted || _isDisposed) return;
+        if (_currentMediaIndex < widget.mediaItems.length - 1) {
+          _currentMediaIndex++;
+        } else {
+          _currentMediaIndex = 0;
+        }
+        print(
+            "[LOG] Transitioning to media index $_currentMediaIndex of ${widget.mediaItems.length}");
 
-        if (widget.mediaItems.isEmpty) {
-          print("[LOG] No media items available, cannot transition");
-          return;
+        if (_currentMediaIndex < widget.mediaItems.length) {
+          print(
+              "[LOG] Next media ID: ${widget.mediaItems[_currentMediaIndex].id ?? 'N/A'}");
+          print(
+              "[LOG] Next media URL: ${widget.mediaItems[_currentMediaIndex].mediaUrl ?? 'N/A'}");
         }
 
-        setState(() {
-          if (_currentMediaIndex < widget.mediaItems.length - 1) {
-            _currentMediaIndex++;
-          } else {
-            _currentMediaIndex = 0;
-          }
-          print(
-              "[LOG] Transitioning to media index $_currentMediaIndex of ${widget.mediaItems.length}");
-
-          if (_currentMediaIndex < widget.mediaItems.length) {
-            print(
-                "[LOG] Next media ID: ${widget.mediaItems[_currentMediaIndex].id ?? 'N/A'}");
-            print(
-                "[LOG] Next media URL: ${widget.mediaItems[_currentMediaIndex].mediaUrl ?? 'N/A'}");
-          }
-
-          _opacity = 1.0;
-          _initializeNextMedia();
-        });
+        _initializeNextMedia();
       });
     }
   }

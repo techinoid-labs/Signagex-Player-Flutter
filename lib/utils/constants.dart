@@ -29,6 +29,7 @@ Map<String, dynamic> deviceInfoMap = {
   "sender": "",
   "android_version": "",
   "webview_version": "",
+  "app_version": "",
   "last_seen": "",
   "device_model": "",
   "network_name": "",

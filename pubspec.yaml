@@ -73,7 +73,7 @@ dependencies:
   # location: ^4.4.0
   # system_info2: ^4.0.0
   # platform_device_id:
-  # package_info_plus: ^8.0.2
+  package_info_plus: ^8.0.2
   # platform_device_id_v3: ^1.0.0
   # flutter_background_service: ^5.0.10
   # flutter_local_notifications: ^9.0.0

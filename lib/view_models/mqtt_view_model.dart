@@ -14,6 +14,7 @@ import 'package:flutter_phoenix/flutter_phoenix.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:permission_handler/permission_handler.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -171,8 +172,19 @@ class MqttViewModel extends ChangeNotifier {
     _mqttClientService.onMessageReceived = _handleIncomingMessage;
 
     fetchAllInfo();
+    _populateAppVersion();
     _initializeBasedOnPlatform();
     _monitorConnectivity();
+  }
+
+  Future<void> _populateAppVersion() async {
+    try {
+      final info = await PackageInfo.fromPlatform();
+      devicesinfo["app_version"] = "${info.version}+${info.buildNumber}";
+      notifyListeners();
+    } catch (e) {
+      debugPrint("Failed to read app version: $e");
+    }
   }
 
   Future<void> captureAndSendScreenshot(String topic) async {
@@ -706,6 +718,8 @@ class MqttViewModel extends ChangeNotifier {
         devicesinfo["hardware_details"]["model"] = systemInfo["DeviceName"];
         print(systemInfo["TimeZone"]);
         devicesinfo["hardware_details"]["device_id"] = systemInfo["DeviceID"];
+        devicesinfo["hardware_details"]["manufacturer"] =
+            systemInfo["Manufacturer"] ?? "";
         devicesinfo["storage_info"]["total_storage"] =
             systemInfo["Drives"][0]["TotalSpaceGB"].toString();
 
@@ -716,6 +730,7 @@ class MqttViewModel extends ChangeNotifier {
         devicesinfo["cpu_information"]["cpu_architecture"] =
             systemInfo["CPUArchitecture"];
         devicesinfo["cpu_information"]["processor"] = systemInfo["CPUInfo"];
+        _applyWindowsDynamicStats(systemInfo);
         systemInfo.forEach((key, value) {
           print('$key: $value');
         });
@@ -727,6 +742,46 @@ class MqttViewModel extends ChangeNotifier {
       }
     } catch (e) {
       print('An error occurred: $e');
+    }
+  }
+
+  // Fills in the fields Resource Usage/Player Info actually chart -- these
+  // used to only ever get set once at pairing time and then go stale.
+  void _applyWindowsDynamicStats(Map<String, dynamic> systemInfo) {
+    final totalBytes = _asNum(systemInfo["InstalledRAM"]);
+    final availableKb = _asNum(systemInfo["AvailableMemory"]);
+    if (totalBytes != null) {
+      final availableBytes =
+          availableKb != null ? (availableKb * 1024).round() : null;
+      devicesinfo["memory_information"]["total_memory"] = totalBytes.round();
+      if (availableBytes != null) {
+        devicesinfo["memory_information"]["available_memory"] =
+            availableBytes;
+        devicesinfo["memory_information"]["used_memory"] =
+            totalBytes.round() - availableBytes;
+      }
+    }
+    devicesinfo["last_seen"] = DateTime.now().toIso8601String();
+  }
+
+  num? _asNum(dynamic value) {
+    if (value is num) return value;
+    if (value is String) return num.tryParse(value);
+    return null;
+  }
+
+  // Re-samples CPU/memory/last-seen and re-publishes deviceInfoMap without
+  // re-running the full pairing handshake (unlike getSystemDataForWindows).
+  Future<void> _refreshWindowsHeartbeatStats() async {
+    try {
+      final result = await getAllSystemInfo();
+      if (result.exitCode != 0) return;
+      final systemInfo =
+          jsonDecode((result.stdout as String).trim()) as Map<String, dynamic>;
+      devicesinfo["cpu_information"]["processor"] = systemInfo["CPUInfo"];
+      _applyWindowsDynamicStats(systemInfo);
+    } catch (e) {
+      debugPrint("Heartbeat stats refresh failed: $e");
     }
   }
 
@@ -753,6 +808,7 @@ class MqttViewModel extends ChangeNotifier {
       
       "DeviceName" = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Name);
       "InstalledRAM" = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty TotalPhysicalMemory);
+      "Manufacturer" = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Manufacturer);
       "DeviceID" = (Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty UUID);
       "Drives" = \$drives
     }
@@ -1597,7 +1653,6 @@ EOF
       await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
 
-      // await captureAndSendScreenshot(globleTopic);
       // Reset retry counter on successful connection
       _pairingRetryCount = 0;
 
@@ -1605,12 +1660,10 @@ EOF
         print("this is state screeen ${response["paired"]}");
         await prefs.setBool('storeState', response["paired"]);
 
+        _stopPeriodicReporting();
         _state = MqttState.pairedScreen;
       } else if (response["paired"] == true) {
-        // Start capturing screenshots every second
-        // Timer.periodic(Duration(seconds: 1), (timer) async {
-        //   await captureAndSendScreenshot(globleTopic);
-        // });
+        _startPeriodicReporting();
 
         _state = MqttState.noContent;
       } else {
@@ -2145,6 +2198,40 @@ EOF
   }
   Timer? _timerOfCampaign;
 
+  Timer? _heartbeatTimer;
+  Timer? _screenshotTimer;
+
+  // Device info/resource stats and the Remote View screenshot used to only
+  // ever be sent once, right after pairing -- after that the backend had no
+  // way to tell the player apart from one that had gone offline, so it kept
+  // reporting Sync Issue / Offline / empty Resource Usage graphs even while
+  // content was actively playing. Re-send both on a recurring basis instead.
+  void _startPeriodicReporting() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
+      if (globleTopic.isEmpty) return;
+      if (Platform.isWindows) {
+        await _refreshWindowsHeartbeatStats();
+      } else {
+        devicesinfo["last_seen"] = DateTime.now().toIso8601String();
+      }
+      publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+    });
+
+    _screenshotTimer?.cancel();
+    _screenshotTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
+      if (globleTopic.isEmpty) return;
+      await captureAndSendScreenshot(globleTopic);
+    });
+  }
+
+  void _stopPeriodicReporting() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+    _screenshotTimer?.cancel();
+    _screenshotTimer = null;
+  }
+
   int get currentIndexOfCapmaign => _currentIndexOfCapmaign;
 
   int get currentDurationOfCampaign {
@@ -2288,17 +2375,27 @@ EOF
     );
     // #endregion
 
+    final currentCampaignName = (_currentIndexOfCapmaign < count)
+        ? (playableCampaigns[_currentIndexOfCapmaign].campaignName ?? "")
+        : "";
+
     Map<String, dynamic> sendLog = {
       "action": "player_logs",
       "log": "Current Campaign",
-      "name": (_currentIndexOfCapmaign < count)
-          ? (playableCampaigns[_currentIndexOfCapmaign].campaignName ?? "")
-          : "",
+      "name": currentCampaignName,
       "type": "info",
       "date_time": DateTime.now().toIso8601String(),
+      "is_composition": nextCampaign.isCompositionLayout,
     };
 
     _mqttClientService.publish(topic, jsonEncode(sendLog));
+
+    // publishLogsForCampaign was written for exactly this ("Playing Loop"
+    // representation) but was never actually called -- compositions were
+    // rotating through _updateIndexForCampain like everything else, but
+    // never reported here, so the dashboard timeline never saw them.
+    publishLogsForCampaign(currentCampaignName);
+
     notifyListeners();
     startPlaylistTimerForCampaign();
   }
@@ -2435,6 +2532,7 @@ EOF
   void dispose() {
     _timerOfCampaign?.cancel();
     _timer?.cancel();
+    _stopPeriodicReporting();
     super.dispose();
   }
 
