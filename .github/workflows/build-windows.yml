@@ -1,0 +1,47 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [windows]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Enable Windows desktop support
+        run: flutter config --enable-windows-desktop
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Build production
+        run: flutter build windows --release
+
+      - name: Package production build
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath digital_signage-production.zip
+
+      - name: Build staging
+        run: flutter build windows --release --dart-define=APP_ENV=staging
+
+      - name: Package staging build
+        run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath digital_signage-staging.zip
+
+      - name: Upload production build
+        uses: actions/upload-artifact@v4
+        with:
+          name: digital_signage-production
+          path: digital_signage-production.zip
+
+      - name: Upload staging build
+        uses: actions/upload-artifact@v4
+        with:
+          name: digital_signage-staging
+          path: digital_signage-staging.zip
