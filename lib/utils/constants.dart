@@ -1,8 +1,16 @@
 import 'dart:io';
 
+// Build-time environment switch: pass --dart-define=APP_ENV=staging to build
+// against stage.signagexai.com. Defaults to production if not specified.
+const String appEnvironment =
+    String.fromEnvironment('APP_ENV', defaultValue: 'production');
+const bool isStagingEnvironment = appEnvironment == 'staging';
+const String apiHost =
+    isStagingEnvironment ? 'stage.signagexai.com' : 'signagexai.com';
+
 const String mqttBroker = 'broker';
 const int mqttPort = 1883;
-const String baseurl = "https://signagexai.com/v1/";
+const String baseurl = "https://$apiHost/v1/";
 const String adCampaignProofOfPlayPath = "player/ad-campaign-proof-of-play";
 const String port = "3002/";
 bool isIos = Platform.isIOS;

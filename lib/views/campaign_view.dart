@@ -14,6 +14,7 @@ import 'package:video_player/video_player.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
+import 'package:digital_signage/utils/constants.dart';
 import 'package:digital_signage/utils/log_format.dart';
 
 import '../view_models/mqtt_view_model.dart';
@@ -2384,7 +2385,7 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
     if ((widget.svgUrl.startsWith('/_next') ||
             widget.svgUrl.startsWith('/static')) &&
         !widget.svgUrl.startsWith('http')) {
-      return (url: 'https://signagexai.com${widget.svgUrl}', path: null);
+      return (url: 'https://$apiHost${widget.svgUrl}', path: null);
     }
     String path = widget.svgUrl;
     if (widget.svgUrl.startsWith('file://')) {
@@ -2513,7 +2514,7 @@ class _SvgFileWidgetState extends State<SvgFileWidget> {
     if ((widget.svgUrl.startsWith('/_next') ||
             widget.svgUrl.startsWith('/static')) &&
         !widget.svgUrl.startsWith('http')) {
-      return (url: 'https://signagexai.com${widget.svgUrl}', path: null);
+      return (url: 'https://$apiHost${widget.svgUrl}', path: null);
     }
     String path = widget.svgUrl;
     if (widget.svgUrl.startsWith('file://')) {
@@ -2613,7 +2614,7 @@ class _WBViewWidgetState extends State<WBViewWidget> {
         widget.media.startsWith('https://')) {
       targetUrl = widget.media;
     } else if (widget.media.startsWith('/')) {
-      targetUrl = 'https://signagexai.com${widget.media}';
+      targetUrl = 'https://$apiHost${widget.media}';
     } else {
       targetUrl = 'file://${widget.media}';
     }

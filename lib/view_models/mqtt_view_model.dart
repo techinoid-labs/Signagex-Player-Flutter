@@ -1372,7 +1372,7 @@ EOF
     if (trimmed.startsWith('/') &&
         !trimmed.startsWith('http://') &&
         !trimmed.startsWith('https://')) {
-      fullUrl = 'https://signagexai.com$trimmed';
+      fullUrl = 'https://$apiHost$trimmed';
       print('Converting relative path to full URL: $trimmed -> $fullUrl');
     }
 
