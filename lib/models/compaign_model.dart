@@ -18,6 +18,39 @@ double? _asDouble(dynamic value) {
   return null;
 }
 
+// Ad flight dates/times come from the backend in UTC (confirmed against the
+// working Android player, which parses these as UTC and converts to
+// device-local before comparing -- unlike the generic schedule/restriction
+// system elsewhere in this file, which is already device-local on both
+// ends and needs no conversion).
+DateTime? _utcDateStringToLocal(String value) {
+  try {
+    final trimmed = value.trim();
+    final iso = trimmed.contains('T')
+        ? (trimmed.endsWith('Z') ? trimmed : '${trimmed}Z')
+        : '${trimmed}T00:00:00Z';
+    return DateTime.parse(iso).toLocal();
+  } catch (_) {
+    return null;
+  }
+}
+
+DateTime? _utcTimeStringToLocal(String value) {
+  try {
+    final parts = value.trim().split(':');
+    if (parts.length < 2) return null;
+    final hour = int.parse(parts[0].trim());
+    final minute = int.parse(parts[1].trim());
+    final second = parts.length > 2 ? int.parse(parts[2].trim()) : 0;
+    final nowUtc = DateTime.now().toUtc();
+    final utcDateTime =
+        DateTime.utc(nowUtc.year, nowUtc.month, nowUtc.day, hour, minute, second);
+    return utcDateTime.toLocal();
+  } catch (_) {
+    return null;
+  }
+}
+
 String? _jsonStringField(Map<String, dynamic> json, List<String> keys) {
   for (final key in keys) {
     final v = json[key];
@@ -1160,6 +1193,14 @@ class Settings {
   String? creativeUrl;
   String? creativeMediaType;
 
+  // Ad flight schedule (separate from the generic date/time restrictions
+  // above). The backend sends these in UTC -- see adFlightWindowActive on
+  // MediaItem, which converts to device-local before comparing.
+  String? adFlightStartDate;
+  String? adFlightEndDate;
+  String? adFlightStartTime;
+  String? adFlightEndTime;
+
   Settings({
     this.duration,
     this.transition,
@@ -1189,6 +1230,10 @@ class Settings {
     this.creativeName,
     this.creativeUrl,
     this.creativeMediaType,
+    this.adFlightStartDate,
+    this.adFlightEndDate,
+    this.adFlightStartTime,
+    this.adFlightEndTime,
   });
 
   static String? _jsonString(Map<String, dynamic> json, List<String> keys) {
@@ -1337,6 +1382,14 @@ class Settings {
         creativeUrl: _cleanMediaUrl(json["creative_url"]),
         creativeMediaType:
             json["creative_media_type"] ?? json["media_type"],
+        adFlightStartDate:
+            json["start_date"]?.toString() ?? json["startDate"]?.toString(),
+        adFlightEndDate:
+            json["end_date"]?.toString() ?? json["endDate"]?.toString(),
+        adFlightStartTime:
+            json["start_time"]?.toString() ?? json["startTime"]?.toString(),
+        adFlightEndTime:
+            json["end_time"]?.toString() ?? json["endTime"]?.toString(),
       );
 
   Map<String, dynamic> toJson() => {
@@ -1368,6 +1421,10 @@ class Settings {
         "creative_name": creativeName,
         "creative_url": creativeUrl,
         "creative_media_type": creativeMediaType,
+        "start_date": adFlightStartDate,
+        "end_date": adFlightEndDate,
+        "start_time": adFlightStartTime,
+        "end_time": adFlightEndTime,
       };
 }
 
@@ -1979,6 +2036,59 @@ extension MediaItemAdExtensions on MediaItem {
     return isAdMediaType(mediaType) ||
         idLooksLikeAdSlot(id) ||
         hasAdProofMetadata(settings);
+  }
+
+  /// Ad flight window (start_date/end_date/start_time/end_time), separate
+  /// from the generic schedule/restrictions gating. True when there's no
+  /// flight window configured (nothing to gate on) or when unparseable, so
+  /// this never blocks playback for ad items that don't send these fields.
+  bool get adFlightWindowActive {
+    final s = settings;
+    if (s == null) return true;
+
+    final hasDate = (s.adFlightStartDate?.isNotEmpty ?? false) &&
+        (s.adFlightEndDate?.isNotEmpty ?? false);
+    final hasTime = (s.adFlightStartTime?.isNotEmpty ?? false) &&
+        (s.adFlightEndTime?.isNotEmpty ?? false);
+    if (!hasDate && !hasTime) return true;
+
+    final now = DateTime.now();
+
+    if (hasDate) {
+      final startLocal = _utcDateStringToLocal(s.adFlightStartDate!);
+      final endLocal = _utcDateStringToLocal(s.adFlightEndDate!);
+      if (startLocal != null && endLocal != null) {
+        final today = DateTime(now.year, now.month, now.day);
+        final startDay =
+            DateTime(startLocal.year, startLocal.month, startLocal.day);
+        final endDay = DateTime(endLocal.year, endLocal.month, endLocal.day);
+        if (today.isBefore(startDay) || today.isAfter(endDay)) {
+          return false;
+        }
+      }
+    }
+
+    if (hasTime) {
+      final startLocal = _utcTimeStringToLocal(s.adFlightStartTime!);
+      final endLocal = _utcTimeStringToLocal(s.adFlightEndTime!);
+      if (startLocal != null && endLocal != null) {
+        final nowMinutes = now.hour * 60 + now.minute;
+        final startMinutes = startLocal.hour * 60 + startLocal.minute;
+        final endMinutes = endLocal.hour * 60 + endLocal.minute;
+        if (startMinutes <= endMinutes) {
+          if (nowMinutes < startMinutes || nowMinutes > endMinutes) {
+            return false;
+          }
+        } else {
+          // Overnight window (e.g. 22:00 -> 06:00).
+          if (nowMinutes < startMinutes && nowMinutes > endMinutes) {
+            return false;
+          }
+        }
+      }
+    }
+
+    return true;
   }
 
   static bool _isRemoteUrl(String? url) {

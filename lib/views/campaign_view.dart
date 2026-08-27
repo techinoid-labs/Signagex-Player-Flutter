@@ -730,6 +730,22 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     bool shouldPlay = false;
     final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
 
+    // Ad flight window (start_date/end_date/start_time/end_time) is a
+    // separate gate from the schedule/restrictions checked below -- the
+    // backend sends these in UTC, converted to local inside
+    // adFlightWindowActive. Only applies to ad items; a no-op otherwise.
+    if (currentMedia.isAd && !currentMedia.adFlightWindowActive) {
+      print(
+          '$red⏭️  MEDIA: Ad outside its flight window (UTC start/end date/time) → Skipping$reset');
+      _sendAdProofOfPlay(
+        currentMedia,
+        status: 'failed',
+        errorMessage: 'outside_flight_window',
+      );
+      _onMediaEnd();
+      return;
+    }
+
     // Missing schedule = play (SignageX layers often omit schedule on stickers/compositions).
     if (currentMedia.schedule == null ||
         (currentMedia.schedule?.alwaysPlay ?? false)) {
