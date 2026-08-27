@@ -10,6 +10,14 @@ int? _asInt(dynamic value) {
   return null;
 }
 
+double? _asDouble(dynamic value) {
+  if (value == null) return null;
+  if (value is double) return value;
+  if (value is num) return value.toDouble();
+  if (value is String) return double.tryParse(value.trim());
+  return null;
+}
+
 String? _jsonStringField(Map<String, dynamic> json, List<String> keys) {
   for (final key in keys) {
     final v = json[key];
@@ -592,15 +600,26 @@ class MediaItem {
 
     switch (type) {
       case 'text':
+        // Konva scales the whole node -- including its rendered glyph size
+        // and stroke -- so fontSize/strokeWidth need the same scaleX/scaleY
+        // applied as the bounding box (handled by the caller for width/
+        // height). Font size scales with vertical scale.
+        final textScaleY = _asDouble(obj['scaleY']) ?? 1.0;
+        final baseFontSize = _asInt(propMap['fontSize']);
+        final baseTextStrokeWidth = _asInt(propMap['strokeWidth']);
         mediaType = 'text';
         mediaUrl = null;
         settings = Settings(
           text: propMap['text']?.toString() ?? obj['name']?.toString(),
           html: propMap['html']?.toString(),
-          fontSize: _asInt(propMap['fontSize']),
+          fontSize: baseFontSize != null
+              ? (baseFontSize * textScaleY).round()
+              : null,
           fontFamily: propMap['fontFamily']?.toString(),
           fill: propMap['fill']?.toString(),
-          strokeWidth: _asInt(propMap['strokeWidth']),
+          strokeWidth: baseTextStrokeWidth != null
+              ? (baseTextStrokeWidth * textScaleY).round()
+              : null,
           shadowBlur: _asInt(propMap['shadowBlur']),
           duration: _asInt(propMap['duration']),
         );
@@ -672,8 +691,21 @@ class MediaItem {
         );
       case 'shape':
         final mergedShape = _mergeShapeProps(obj, propMap);
+        // width/height on obj are already scaled by the caller (see
+        // zonesFromCompositionMap) -- this is what makes the SVG's own
+        // viewBox come out the right size instead of the pre-resize base
+        // size. Stroke width scales with the node too, same as fontSize
+        // does for text.
         final zoneW = _asInt(obj['width']) ?? 100;
         final zoneH = _asInt(obj['height']) ?? 100;
+        final shapeScaleY = _asDouble(obj['scaleY']) ?? 1.0;
+        final baseShapeStrokeWidth = _asInt(mergedShape['strokeWidth']);
+        if (baseShapeStrokeWidth != null) {
+          // Scale in place so the generated SVG's own stroke-width (below)
+          // comes out right, not just the Settings field.
+          mergedShape['strokeWidth'] =
+              (baseShapeStrokeWidth * shapeScaleY).round();
+        }
         final builtSvg = svgFromShapeProperties(
           mergedShape,
           width: zoneW,
@@ -763,15 +795,36 @@ class MediaItem {
     for (final raw in objects) {
       if (raw is! Map<String, dynamic>) continue;
       zoneIndex++;
-      final media = _mediaItemFromCompositionObject(raw, zoneIndex);
+
+      // The editor is Konva-based: resizing a shape/text object commonly
+      // changes scaleX/scaleY rather than width/height directly (this is
+      // how Konva.Rect/RegularPolygon/Text handle resize). Reading
+      // width/height alone -- as this used to -- gives the object's
+      // pre-resize base size, not what's actually shown in the editor.
+      // Bake the scale into an effective width/height once here, so every
+      // downstream consumer (shape SVG sizing, sticker sizing, the zone's
+      // own box) sees the true rendered size without each needing to know
+      // about scaleX/scaleY separately. Stickers are plain SVGs with no
+      // Konva scale applied by the editor, so this is a no-op for them.
+      final scaleX = _asDouble(raw['scaleX']) ?? 1.0;
+      final scaleY = _asDouble(raw['scaleY']) ?? 1.0;
+      final baseWidth = _asInt(raw['width']) ?? 0;
+      final baseHeight = _asInt(raw['height']) ?? 0;
+      final effectiveWidth = (baseWidth * scaleX).round();
+      final effectiveHeight = (baseHeight * scaleY).round();
+      final scaledRaw = (scaleX == 1.0 && scaleY == 1.0)
+          ? raw
+          : {...raw, 'width': effectiveWidth, 'height': effectiveHeight};
+
+      final media = _mediaItemFromCompositionObject(scaledRaw, zoneIndex);
       if (media == null) continue;
       zones.add(
         CampaignZone(
           id: zoneIndex,
           x: _asInt(raw['x']),
           y: _asInt(raw['y']),
-          width: _asInt(raw['width']),
-          height: _asInt(raw['height']),
+          width: effectiveWidth,
+          height: effectiveHeight,
           mediaItems: [media],
         ),
       );
