@@ -736,6 +736,11 @@ class MqttViewModel extends ChangeNotifier {
         }
         devicesinfo["ram_info"] = systemInfo["InstalledRAM"].toString();
 
+        // device_model is a separate top-level field from
+        // hardware_details.model -- Android sends both (getDeviceModel()
+        // vs Build.MODEL) and only the top-level one was never populated
+        // for Windows.
+        devicesinfo["device_model"] = systemInfo["DeviceName"];
         devicesinfo["hardware_details"]["model"] = systemInfo["DeviceName"];
         print(systemInfo["TimeZone"]);
         devicesinfo["hardware_details"]["device_id"] = systemInfo["DeviceID"];
