@@ -1937,10 +1937,10 @@ EOF
           deviceSettings.setVolumeForAndroid(value);
         } else if (Platform.isWindows) {
           var res = jsonObj["settings"]["volume"];
-          deviceSettings.adjustBrightnessForWindows(res);
+          deviceSettings.changeVolumeForWindows(res);
         } else if (Platform.isLinux) {
-          var res = jsonObj["settings"]["brightness"];
-          deviceSettings.changeBrightnessForLinux(res);
+          var res = jsonObj["settings"]["volume"];
+          deviceSettings.changeVolumeForLinux(res.toString());
         }
       }
       var data = {"success": true};

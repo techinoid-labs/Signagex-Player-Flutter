@@ -265,17 +265,23 @@ class DeviceSettingsViewModel with ChangeNotifier {
       if (brightness < 0) brightness = 0;
       if (brightness > 100) brightness = 100;
 
-      // Prepare the PowerShell command to adjust the brightness
-      String command =
-          '(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $brightness)';
-
-      // Execute PowerShell command with RunAs for elevation
+      // WmiMonitorBrightnessMethods is a user-level WMI call -- it does not
+      // need admin rights. The previous implementation wrapped it in
+      // Start-Process -Verb RunAs, which pops a UAC prompt; on an unattended
+      // kiosk with nobody there to click "Yes", that prompt just hangs
+      // forever and the brightness command silently never completes. Call
+      // it directly instead.
+      //
+      // Note: this WMI class is only populated for displays with
+      // driver-level ACPI brightness support (typically laptop panels). A
+      // signage box driving an external monitor/TV over HDMI has no WMI
+      // brightness provider at all -- that needs DDC/CI control instead,
+      // which isn't implemented here yet.
       final result = await Process.run('powershell', [
         '-Command',
-        'Start-Process PowerShell -ArgumentList \'-NoProfile -ExecutionPolicy Bypass -Command "$command"\' -Verb RunAs'
+        '(Get-WmiObject -Namespace root/wmi -Class WmiMonitorBrightnessMethods).WmiSetBrightness(1, $brightness)'
       ]);
 
-      // Check the output
       print('Output: ${result.stdout}');
       print('Error: ${result.stderr}');
       if (result.exitCode != 0) {
@@ -288,21 +294,38 @@ class DeviceSettingsViewModel with ChangeNotifier {
     }
   }
 
+  // Set-AudioDevice comes from the third-party AudioDeviceCmdlets PowerShell
+  // module, not from Windows itself. If it was never installed on a given
+  // kiosk machine, every volume command below silently fails (the error is
+  // caught and only printed). Import it if present, install it if it isn't,
+  // before every volume command -- Install-Module is a no-op once the
+  // module is already there.
+  Future<void> _ensureAudioDeviceCmdlets() async {
+    await Process.run('powershell', [
+      '-Command',
+      "if (-not (Get-Module -ListAvailable -Name AudioDeviceCmdlets)) { "
+          "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted "
+          "-ErrorAction SilentlyContinue; "
+          "Install-Module -Name AudioDeviceCmdlets -Force -Confirm:\$false "
+          "-Scope CurrentUser -ErrorAction SilentlyContinue }"
+    ]);
+  }
+
+  Future<void> _setWindowsVolume(int volume) async {
+    if (volume < 0) volume = 0;
+    if (volume > 100) volume = 100;
+
+    await _ensureAudioDeviceCmdlets();
+    final result = await Process.run('powershell',
+        ['-Command', 'Set-AudioDevice -PlaybackVolume $volume']);
+    print('Output: ${result.stdout}');
+    print('Error: ${result.stderr}');
+  }
+
   Future<void> changeVolumeForWindows(int volume) async {
     try {
-      // Ensure volume is between 0-100
-      if (volume < 0) volume = 0;
-      if (volume > 100) volume = 100;
-
-      // Run PowerShell command to set the volume
-      final result = await Process.run('powershell',
-          ['-Command', 'Set-AudioDevice -PlaybackVolume $volume']);
-
-      if (result.exitCode != 0) {
-        print('Error changing volume: ${result.stderr}');
-      } else {
-        print('Volume changed to $volume%');
-      }
+      await _setWindowsVolume(volume);
+      print('Volume changed to $volume%');
     } catch (e) {
       print('An error occurred: $e');
     }
@@ -310,15 +333,8 @@ class DeviceSettingsViewModel with ChangeNotifier {
 
   Future<void> unmuteVolumeForWindows() async {
     try {
-      // Run PowerShell command to set the playback volume to 50% (unmute)
-      final result = await Process.run(
-          'powershell', ['-Command', 'Set-AudioDevice -PlaybackVolume 50']);
-
-      if (result.exitCode != 0) {
-        print('Error unmuting volume: ${result.stderr}');
-      } else {
-        print('Volume is unmuted (50%).');
-      }
+      await _setWindowsVolume(50);
+      print('Volume is unmuted (50%).');
     } catch (e) {
       print('An error occurred: $e');
     }
@@ -326,15 +342,8 @@ class DeviceSettingsViewModel with ChangeNotifier {
 
   Future<void> muteVolumeForWindows() async {
     try {
-      // Run PowerShell command to mute the volume
-      final result = await Process.run(
-          'powershell', ['-Command', 'Set-AudioDevice -PlaybackVolume 0']);
-
-      if (result.exitCode != 0) {
-        print('Error muting volume: ${result.stderr}');
-      } else {
-        print('Volume is muted.');
-      }
+      await _setWindowsVolume(0);
+      print('Volume is muted.');
     } catch (e) {
       print('An error occurred: $e');
     }
