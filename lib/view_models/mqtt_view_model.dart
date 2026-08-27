@@ -160,7 +160,23 @@ class MqttViewModel extends ChangeNotifier {
     String? jsonString = prefs.getString('deviceInfoMap');
     prefs.clear();
     if (jsonString != null) {
-      deviceInfoMap = Map<String, dynamic>.from(jsonDecode(jsonString));
+      // `devicesinfo` (the field every population/publish call in this
+      // class actually uses) was assigned `= deviceInfoMap` once, at
+      // construction time -- it's a reference to that same map object.
+      // Reassigning the *variable* `deviceInfoMap` here (as this used to
+      // do) only repoints the global, it does not change what `devicesinfo`
+      // points to. From that moment on, every devicesinfo["..."] = ...
+      // write anywhere in this file (Windows/Mac/Linux/Android device
+      // stats, app/player version, manufacturer, everything) lands on an
+      // object that publishMessage(globleTopic, jsonEncode(deviceInfoMap))
+      // never reads from again -- silently discarded for the rest of the
+      // app's lifetime. This is why device-info fields stayed stuck at
+      // whatever was sent on the very first-ever pairing, no matter what
+      // got fixed afterward. Merge into the existing object in place
+      // instead, so the two names keep referring to the same map.
+      deviceInfoMap
+        ..clear()
+        ..addAll(Map<String, dynamic>.from(jsonDecode(jsonString)));
       print('Loaded device info from SharedPreferences: $deviceInfoMap');
     } else {
       print('No device info found in SharedPreferences.');
@@ -2358,9 +2374,16 @@ EOF
   // pairing -- after that the backend had no way to tell the player apart
   // from one that had gone offline, so it kept reporting Sync Issue /
   // Offline / empty Resource Usage graphs even while content was actively
-  // playing. Re-send both on a recurring basis instead. Remote View's
-  // screenshot stream is handled separately by _startRemoteView/
-  // _stopRemoteView, on-demand, not on a fixed timer -- see there.
+  // playing. Re-send both on a recurring basis instead.
+  //
+  // Remote View: Android only streams screenshots on an explicit
+  // start_remote_view/stop_remote_view command from the backend, but that's
+  // unconfirmed for this platform -- there's no evidence the dashboard
+  // actually sends that command for a "windows" player. Rather than bet
+  // Remote View entirely on an unverified inbound command, always send a
+  // baseline low-rate screenshot (so Remote View has *something* even if
+  // that command never arrives), and speed up to Android's ~2s cadence if
+  // start_remote_view does show up.
   void _startPeriodicReporting() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
@@ -2378,6 +2401,8 @@ EOF
     _resourceUsageTimer =
         Timer.periodic(const Duration(minutes: 5), (_) => _sendResourceUsage());
     _sendResourceUsage();
+
+    _startBaselineScreenshots();
   }
 
   void _stopPeriodicReporting() {
@@ -2385,13 +2410,25 @@ EOF
     _heartbeatTimer = null;
     _resourceUsageTimer?.cancel();
     _resourceUsageTimer = null;
-    _stopRemoteView();
+    _screenshotTimer?.cancel();
+    _screenshotTimer = null;
+    _remoteViewActive = false;
   }
 
   bool _remoteViewActive = false;
 
+  void _startBaselineScreenshots() {
+    _screenshotTimer?.cancel();
+    _screenshotTimer =
+        Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (globleTopic.isEmpty) return;
+      await captureAndSendScreenshot(globleTopic);
+    });
+    if (globleTopic.isNotEmpty) captureAndSendScreenshot(globleTopic);
+  }
+
   void _startRemoteView() {
-    if (globleTopic.isEmpty || _remoteViewActive) return;
+    if (globleTopic.isEmpty) return;
     _remoteViewActive = true;
     _screenshotTimer?.cancel();
     // Matches the working Android player's ~1-2s capture rate while a
@@ -2404,8 +2441,10 @@ EOF
 
   void _stopRemoteView() {
     _remoteViewActive = false;
-    _screenshotTimer?.cancel();
-    _screenshotTimer = null;
+    // Drop back to the baseline rate rather than stopping entirely --
+    // still paired and playing, so Remote View should still show
+    // something if opened again without a fresh start_remote_view.
+    _startBaselineScreenshots();
   }
 
   int get currentIndexOfCapmaign => _currentIndexOfCapmaign;
