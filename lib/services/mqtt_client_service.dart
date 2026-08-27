@@ -21,6 +21,25 @@ class MqttClientService {
 
   Function(String)? onMessageReceived;
 
+  // Feeds the "connectivity" block of the resource_usage payload, mirroring
+  // MqttClientHelper.getMqttStats() on the Android player.
+  int successRequests = 0;
+  int failedRequests = 0;
+  final DateTime _serviceStartTime = DateTime.now();
+  Duration _totalConnectedDuration = Duration.zero;
+  DateTime? _connectedSince;
+
+  int get timeConnectedPercent {
+    final totalMs =
+        DateTime.now().difference(_serviceStartTime).inMilliseconds;
+    if (totalMs <= 0) return 0;
+    var connectedMs = _totalConnectedDuration.inMilliseconds;
+    if (_connectedSince != null) {
+      connectedMs += DateTime.now().difference(_connectedSince!).inMilliseconds;
+    }
+    return ((connectedMs * 100) / totalMs).clamp(0, 100).round();
+  }
+
   MqttClientService() {
     _initializeClient();
   }
@@ -58,6 +77,7 @@ class MqttClientService {
   void _onConnected() {
     print('MQTT_LOGS:: Connected callback fired');
     print('MQTT_LOGS:: Connection state: ${_client.connectionStatus?.state}');
+    _connectedSince = DateTime.now();
   }
 
   void _onDisconnected() {
@@ -66,6 +86,11 @@ class MqttClientService {
     print(
         'MQTT_LOGS:: Disconnection origin: ${_client.connectionStatus?.disconnectionOrigin}');
     print('MQTT_LOGS:: Auto-reconnect enabled: ${_client.autoReconnect}');
+    if (_connectedSince != null) {
+      _totalConnectedDuration +=
+          DateTime.now().difference(_connectedSince!);
+      _connectedSince = null;
+    }
   }
 
   void _onSubscribed(MqttSubscription subscription) {
@@ -257,8 +282,10 @@ class MqttClientService {
       );
 
       print('Message published to topic: $topic');
+      successRequests++;
     } else {
       print('Cannot publish: MQTT client not connected.');
+      failedRequests++;
     }
   }
 
@@ -279,8 +306,10 @@ class MqttClientService {
         retain: true,
       );
       print('MQTT_LOGS:: Published message to topic $topic: $message');
+      successRequests++;
     } else {
       print('MQTT_LOGS:: Cannot publish - client not connected');
+      failedRequests++;
     }
   }
 

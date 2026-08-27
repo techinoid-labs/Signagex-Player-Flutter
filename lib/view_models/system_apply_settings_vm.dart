@@ -442,4 +442,66 @@ class DeviceSettingsViewModel with ChangeNotifier {
       print("Failed to restart Wi-Fi: '${e.message}'.");
     }
   }
+
+  // Remote View controls for Windows -- mirror the Android player's
+  // PRESS_HOME/PRESS_BACK/CLICK remote actions using the closest desktop
+  // equivalents, since there's no "launcher home screen" or Android-style
+  // back stack on a Windows desktop.
+
+  // "Home": show the desktop (minimizes every window), same as Win+D.
+  Future<void> showDesktopForWindows() async {
+    try {
+      final result = await Process.run('powershell', [
+        '-Command',
+        '(New-Object -ComObject Shell.Application).MinimizeAll()'
+      ]);
+      if (result.exitCode != 0) print('Error showing desktop: ${result.stderr}');
+    } catch (e) {
+      print('An error occurred: $e');
+    }
+  }
+
+  // "Back": undo the minimize-all, restoring whatever windows were open.
+  Future<void> restoreWindowsForWindows() async {
+    try {
+      final result = await Process.run('powershell', [
+        '-Command',
+        '(New-Object -ComObject Shell.Application).UndoMinimizeALL()'
+      ]);
+      if (result.exitCode != 0) {
+        print('Error restoring windows: ${result.stderr}');
+      }
+    } catch (e) {
+      print('An error occurred: $e');
+    }
+  }
+
+  // Simulates a real mouse click at (x, y) in screen pixel coordinates via
+  // user32.dll, so remote-view tap-through actually clicks whatever is
+  // under the cursor in the running app (e.g. a "next content" hotspot),
+  // instead of Flutter never learning a click happened at all.
+  Future<void> simulateClickForWindows(int x, int y) async {
+    try {
+      final command = '''
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public class SignageXInput {
+    [DllImport("user32.dll")]
+    public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")]
+    public static extern void mouse_event(uint dwFlags, uint dx, uint dy, uint dwData, System.IntPtr dwExtraInfo);
+}
+'@ -ErrorAction SilentlyContinue
+[SignageXInput]::SetCursorPos($x, $y)
+[SignageXInput]::mouse_event(0x0002, 0, 0, 0, [System.IntPtr]::Zero)
+[SignageXInput]::mouse_event(0x0004, 0, 0, 0, [System.IntPtr]::Zero)
+''';
+      final result = await Process.run('powershell', ['-Command', command]);
+      if (result.exitCode != 0) {
+        print('Error simulating click: ${result.stderr}');
+      }
+    } catch (e) {
+      print('An error occurred: $e');
+    }
+  }
 }

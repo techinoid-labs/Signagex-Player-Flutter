@@ -792,6 +792,110 @@ class MqttViewModel extends ChangeNotifier {
     }
   }
 
+  // Matches the working Android player's dedicated "resource_usage" MQTT
+  // message -- the Resource Usage dashboard charts read from this action
+  // specifically, not from the general "player_details" device-info blob.
+  // Sent every 5 minutes, same interval Android uses.
+  Future<void> _sendResourceUsage() async {
+    if (globleTopic.isEmpty || !Platform.isWindows) return;
+    try {
+      final result = await _getWindowsResourceUsageInfo();
+      if (result.exitCode != 0) return;
+      final info =
+          jsonDecode((result.stdout as String).trim()) as Map<String, dynamic>;
+
+      final payload = {
+        "action": "resource_usage",
+        "timestamp": DateTime.now().toUtc().toIso8601String(),
+        "resourceUsage": {
+          "memory": {
+            "free": info["FreeMemMB"] ?? 0,
+            "used": info["UsedMemMB"] ?? 0,
+          },
+          "networkTraffic": {
+            "inKB": info["RxKB"] ?? 0,
+            "outKB": info["TxKB"] ?? 0,
+          },
+          "connectivity": {
+            "successRequests": _mqttClientService.successRequests,
+            "failedRequests": _mqttClientService.failedRequests,
+            "timeConnectedPercent": _mqttClientService.timeConnectedPercent,
+          },
+          "disk": {
+            "free": info["DiskFreeKB"] ?? 0,
+            "used": info["DiskUsedKB"] ?? 0,
+          },
+          "cpu": {
+            "idlePercent": info["IdlePercent"] ?? 0,
+            "usedPercent": info["UsedPercent"] ?? 0,
+          },
+          "uptime": {
+            "system": info["UptimeSec"] ?? 0,
+            "app": DateTime.now().difference(_appStartTime).inSeconds,
+          },
+          "battery": {
+            "time_charging": 0,
+            "level": info["BatteryLevel"] ?? 0,
+          },
+          "temperature": {"value": null},
+        },
+      };
+
+      publishMessage(globleTopic, jsonEncode(payload));
+    } catch (e) {
+      debugPrint("Resource usage collection failed: $e");
+    }
+  }
+
+  Future<ProcessResult> _getWindowsResourceUsageInfo() {
+    return Process.run('powershell', [
+      '-Command',
+      '''
+    \$cpu = (Get-CimInstance Win32_PerfFormattedData_PerfOS_Processor -Filter "Name='_Total'").PercentProcessorTime
+    if (-not \$cpu) { \$cpu = 0 }
+    \$usedPercent = [math]::Round(\$cpu)
+    \$idlePercent = 100 - \$usedPercent
+
+    \$os = Get-CimInstance Win32_OperatingSystem
+    \$totalMemMB = [math]::Round(\$os.TotalVisibleMemorySize / 1024)
+    \$freeMemMB = [math]::Round(\$os.FreePhysicalMemory / 1024)
+    \$usedMemMB = \$totalMemMB - \$freeMemMB
+    \$uptimeSec = [math]::Round((New-TimeSpan -Start \$os.LastBootUpTime -End (Get-Date)).TotalSeconds)
+
+    \$rxBytes = 0
+    \$txBytes = 0
+    Get-NetAdapterStatistics -ErrorAction SilentlyContinue | ForEach-Object {
+      \$rxBytes += \$_.ReceivedBytes
+      \$txBytes += \$_.SentBytes
+    }
+    \$rxKB = [math]::Round(\$rxBytes / 1024)
+    \$txKB = [math]::Round(\$txBytes / 1024)
+
+    \$drive = Get-WmiObject Win32_LogicalDisk -Filter "DeviceID='C:'"
+    \$diskFreeKB = [math]::Round(\$drive.FreeSpace / 1024)
+    \$diskUsedKB = [math]::Round((\$drive.Size - \$drive.FreeSpace) / 1024)
+
+    \$battery = Get-WmiObject Win32_Battery -ErrorAction SilentlyContinue
+    \$batteryLevel = 0
+    if (\$battery) { \$batteryLevel = \$battery.EstimatedChargeRemaining }
+
+    \$result = @{
+      "UsedPercent" = \$usedPercent
+      "IdlePercent" = \$idlePercent
+      "FreeMemMB" = \$freeMemMB
+      "UsedMemMB" = \$usedMemMB
+      "UptimeSec" = \$uptimeSec
+      "RxKB" = \$rxKB
+      "TxKB" = \$txKB
+      "DiskFreeKB" = \$diskFreeKB
+      "DiskUsedKB" = \$diskUsedKB
+      "BatteryLevel" = \$batteryLevel
+    }
+    \$result | ConvertTo-Json
+    '''
+    ]);
+  }
+
   Future<ProcessResult> getAllSystemInfo() {
     return Process.run('powershell', [
       '-Command',
@@ -1807,6 +1911,44 @@ EOF
       return;
     }
 
+    // Remote View + its interactive controls, matching the working Android
+    // player's action names (case-insensitive there; normalized to
+    // lowercase here) and its start/stop-on-demand handshake instead of a
+    // fixed timer -- the backend only wants frames while its Remote View
+    // panel for this player is actually open.
+    final normalizedAction = (jsonObj["action"] ?? "").toString().toLowerCase();
+    switch (normalizedAction) {
+      case "start_remote_view":
+        _startRemoteView();
+        return;
+      case "stop_remote_view":
+        _stopRemoteView();
+        return;
+      case "press_home":
+        if (Platform.isWindows) deviceSettings.showDesktopForWindows();
+        return;
+      case "press_back":
+        if (Platform.isWindows) deviceSettings.restoreWindowsForWindows();
+        return;
+      case "send_text":
+        {
+          final text = (jsonObj["message"] ?? "").toString();
+          if (text.isNotEmpty) Clipboard.setData(ClipboardData(text: text));
+        }
+        return;
+      case "click":
+        {
+          if (Platform.isWindows) {
+            final x = (jsonObj["x"] as num?)?.round();
+            final y = (jsonObj["y"] as num?)?.round();
+            if (x != null && y != null) {
+              deviceSettings.simulateClickForWindows(x, y);
+            }
+          }
+        }
+        return;
+    }
+
     if (jsonObj["action"] == "publish_playlist" ||
         jsonObj["action"] == "publish_campaign") {
       SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -2209,12 +2351,16 @@ EOF
 
   Timer? _heartbeatTimer;
   Timer? _screenshotTimer;
+  Timer? _resourceUsageTimer;
+  final DateTime _appStartTime = DateTime.now();
 
-  // Device info/resource stats and the Remote View screenshot used to only
-  // ever be sent once, right after pairing -- after that the backend had no
-  // way to tell the player apart from one that had gone offline, so it kept
-  // reporting Sync Issue / Offline / empty Resource Usage graphs even while
-  // content was actively playing. Re-send both on a recurring basis instead.
+  // Device info/resource stats used to only ever be sent once, right after
+  // pairing -- after that the backend had no way to tell the player apart
+  // from one that had gone offline, so it kept reporting Sync Issue /
+  // Offline / empty Resource Usage graphs even while content was actively
+  // playing. Re-send both on a recurring basis instead. Remote View's
+  // screenshot stream is handled separately by _startRemoteView/
+  // _stopRemoteView, on-demand, not on a fixed timer -- see there.
   void _startPeriodicReporting() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
@@ -2224,19 +2370,40 @@ EOF
       } else {
         devicesinfo["last_seen"] = DateTime.now().toIso8601String();
       }
+      await fetchNetworkInfo();
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
     });
 
-    _screenshotTimer?.cancel();
-    _screenshotTimer = Timer.periodic(const Duration(seconds: 10), (_) async {
-      if (globleTopic.isEmpty) return;
-      await captureAndSendScreenshot(globleTopic);
-    });
+    _resourceUsageTimer?.cancel();
+    _resourceUsageTimer =
+        Timer.periodic(const Duration(minutes: 5), (_) => _sendResourceUsage());
+    _sendResourceUsage();
   }
 
   void _stopPeriodicReporting() {
     _heartbeatTimer?.cancel();
     _heartbeatTimer = null;
+    _resourceUsageTimer?.cancel();
+    _resourceUsageTimer = null;
+    _stopRemoteView();
+  }
+
+  bool _remoteViewActive = false;
+
+  void _startRemoteView() {
+    if (globleTopic.isEmpty || _remoteViewActive) return;
+    _remoteViewActive = true;
+    _screenshotTimer?.cancel();
+    // Matches the working Android player's ~1-2s capture rate while a
+    // Remote View session is actually open on the dashboard.
+    _screenshotTimer = Timer.periodic(const Duration(seconds: 2), (_) async {
+      await captureAndSendScreenshot(globleTopic);
+    });
+    captureAndSendScreenshot(globleTopic);
+  }
+
+  void _stopRemoteView() {
+    _remoteViewActive = false;
     _screenshotTimer?.cancel();
     _screenshotTimer = null;
   }
