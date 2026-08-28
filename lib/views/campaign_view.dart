@@ -805,7 +805,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       _debugLog(
           'zone=${widget.zoneId} playing mediaType=${currentMedia.mediaType} '
           'id=${currentMedia.id} url=${currentMedia.mediaUrl ?? "N/A"} duration=$effectiveDuration');
-      if (!currentMedia.isAd) {
+      if (!currentMedia.isAd && !_isVideoMedia(currentMedia)) {
         _startMediaLoop(effectiveDuration.toString(), currentMedia);
       }
 
@@ -900,6 +900,26 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   int _effectiveMediaDurationSeconds(MediaItem media) {
     final duration = media.settings?.duration ?? 0;
     return duration > 0 ? duration : 15;
+  }
+
+  // A video's real length (27s, say) rarely matches the CMS-configured
+  // "duration" field (e.g. 20s, meant for images/ads). Racing a wall-clock
+  // _startMediaLoop timer against the video meant the zone advanced to the
+  // next item while the current video was still legitimately playing --
+  // and since that next VideoPlayerWidget starts immediately, two
+  // video_player_win decode/texture sessions ran concurrently for the
+  // difference, which is what was blanking/corrupting the video on Windows.
+  // Videos must drive their own advance via onVideoEnd (see
+  // VideoPlayerWidget.setLooping(false)), not this timer.
+  bool _isVideoMedia(MediaItem media) {
+    final mediaType = (media.mediaType ?? '').toLowerCase();
+    if (mediaType.startsWith('video')) return true;
+    final mediaUrl = media.mediaUrl ?? '';
+    if (mediaType == 'content') {
+      final kind = (media.settings?.kind ?? '').toLowerCase();
+      return kind.contains('video') || isVideoFile(mediaUrl);
+    }
+    return isVideoFile(mediaUrl);
   }
 
   void _startMediaLoop(String duration, MediaItem sourceMedia) {
@@ -1964,8 +1984,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
             () {
               _isLoading = false;
               _controller!.setVolume(widget.volume.clamp(0.0, 1.0));
-              // Keep videos playing continuously (repeat forever).
-              _controller!.setLooping(true);
+              // Looping suppressed the onVideoEnd signal entirely (the
+              // position listener below only fires it when !isLooping), so
+              // the parent playlist never learned the video actually
+              // finished and relied on a separate CMS-duration timer that
+              // rarely matches the video's real length -- see
+              // _isVideoMedia in the parent for the full story. Let the
+              // video play once and report its own end.
+              _controller!.setLooping(false);
               _controller!.play();
               _debugLog("VideoPlayerWidget: Video play() called");
             },
@@ -2059,6 +2085,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         _controller = null;
       }
       _initializeVideo();
+    } else if (_isVideoEnded &&
+        _controller != null &&
+        _controller!.value.isInitialized) {
+      // A single-item zone replays the same media item (same key, same
+      // filePath) once it ends -- setLooping(false) means the controller
+      // sits on its last frame until told to play again.
+      _isVideoEnded = false;
+      _controller!.seekTo(Duration.zero);
+      _controller!.play();
     }
   }
 
