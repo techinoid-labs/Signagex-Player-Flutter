@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
+import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:video_player/video_player.dart';
@@ -24,6 +25,22 @@ import '../widgets/text_widget.dart';
 
 bool _isNetworkMediaUrl(String url) =>
     url.startsWith('http://') || url.startsWith('https://');
+
+// Diagnostic-only file logger -- see the matching one in MqttViewModel/
+// MqttClientService/DeviceSettingsViewModel for why this exists (release-
+// mode Windows exes are GUI-subsystem, print() output goes nowhere visible
+// no matter how the exe is launched).
+Future<void> _debugLog(String message) async {
+  try {
+    final dir = await getApplicationSupportDirectory();
+    final file = File('${dir.path}\\signagex_debug.log');
+    await file.writeAsString(
+      '${DateTime.now().toIso8601String()} [CampaignView] $message\n',
+      mode: FileMode.append,
+      flush: true,
+    );
+  } catch (_) {}
+}
 
 // #region agent log
 void _agentDebugLog(
@@ -349,6 +366,22 @@ class _CampaignViewState extends State<CampaignView> {
     print("Campaign resolution: ${campaignWidth}x${campaignHeight}");
     print("Device resolution: ${deviceWidth}x${deviceHeight}");
     print("Scale factors: X=$scaleX, Y=$scaleY");
+    // scaleX/scaleY landing at (near) 1.0 with a wide/scattered layout is the
+    // signature of campaign.resolution being null (i.e. falling back to
+    // deviceWidth/deviceHeight below) -- meaning raw small-canvas zone
+    // coordinates are being placed directly as screen pixels with no
+    // scale-up at all. This is the one piece of evidence needed to confirm
+    // or rule that out for a real composition instead of guessing further.
+    _debugLog(
+        'buildZones campaignId=${campaign.campaignId} resolution=${campaign.resolution?.width}x${campaign.resolution?.height} '
+        'device=${deviceWidth}x$deviceHeight scale=${scaleX}x$scaleY zones=${campaign.zones?.length ?? 0}');
+    if (campaign.zones != null) {
+      for (final z in campaign.zones!) {
+        _debugLog(
+            'zone id=${z.id} raw=(${z.x},${z.y},${z.width},${z.height}) '
+            'scaled=(${(z.x ?? 0) * scaleX},${(z.y ?? 0) * scaleY},${(z.width ?? 0) * scaleX},${(z.height ?? 0) * scaleY})');
+      }
+    }
 
     return Scaffold(
       backgroundColor: Colors.white,

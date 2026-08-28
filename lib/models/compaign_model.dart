@@ -194,9 +194,29 @@ class Campaign {
         playbackType: json["playback_type"],
         campaignId: json["campaign_id"],
         campaignName: json["campaign_name"],
-        resolution: json["resolution"] == null
-            ? null
-            : Resolution.fromJson(json["resolution"]),
+        // A composition-type campaign's canvas size doesn't always arrive as
+        // a top-level "resolution" key -- fall back to the composition
+        // blob's own width/height (same fallback _campaignFromCompositionMediaMap
+        // already uses). Without this, campaign.resolution silently ends up
+        // null for some composition payloads, which makes _buildZones fall
+        // back to using the device's own screen size as the scale
+        // denominator -- i.e. scaleX/scaleY come out ~1.0 and raw small-
+        // canvas zone coordinates get placed directly as screen pixels, so
+        // every shape renders tiny and scattered instead of scaled up to
+        // fill the screen.
+        resolution: json["resolution"] != null
+            ? Resolution.fromJson(json["resolution"])
+            : (() {
+                final compMap = MediaItem.compositionMapFromJson(json);
+                if (compMap == null) return null;
+                if (compMap['width'] == null && compMap['height'] == null) {
+                  return null;
+                }
+                return Resolution.fromJson({
+                  'width': compMap['width'],
+                  'height': compMap['height'],
+                });
+              })(),
         campaignSchedule: json["campaign_schedule"] == null
             ? null
             : CampaignSchedule.fromJson(json["campaign_schedule"]),
