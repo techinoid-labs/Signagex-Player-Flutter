@@ -2411,6 +2411,9 @@ EOF
       );
       final campaigns = _campaignModel?.data?.playerCampaigns;
       final count = campaigns?.length ?? 0;
+      _debugLog(
+          'publish_campaign received: $count campaign(s) currentIndex=$_currentIndexOfCapmaign '
+          '${campaigns?.map((c) => "[id=${c.campaignId} name=${c.campaignName} composition=${c.isCompositionLayout}]").join(" ")}');
       for (var i = 0; i < count; i++) {
         final c = campaigns![i];
         print(
