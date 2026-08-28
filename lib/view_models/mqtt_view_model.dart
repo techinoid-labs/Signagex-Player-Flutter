@@ -1857,17 +1857,7 @@ EOF
       requestBody = {"platform": "ios", "uuid": uuid ?? "unknown"};
       print(requestBody);
     } else if (Platform.isWindows) {
-      // TEMPORARY (testing only): suffix the hardware UUID with the build
-      // environment so production and staging register as separate devices
-      // server-side instead of colliding on the same physical machine's
-      // UUID -- otherwise pairing one environment can look like it silently
-      // un-pairs/rejects the other when they're really the same device ID
-      // hitting the same backend. Remove this suffix once staging and
-      // production are tested on separate hardware.
-      requestBody = {
-        "platform": "windows",
-        "uuid": "${await getDeviceID()}-$appEnvironment"
-      };
+      requestBody = {"platform": "windows", "uuid": await getDeviceID()};
       print("windows$requestBody");
     } else if (Platform.isLinux) {
       requestBody = {"platform": "linux", "uuid": await getDeviceIDForLinux()};
