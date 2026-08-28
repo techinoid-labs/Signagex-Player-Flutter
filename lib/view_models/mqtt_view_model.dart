@@ -12,6 +12,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_phoenix/flutter_phoenix.dart';
 import 'package:geolocator/geolocator.dart';
+import 'package:image/image.dart' as img;
 import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
@@ -276,15 +277,37 @@ class MqttViewModel extends ChangeNotifier {
         };
 
         _mqttClientService.publish('$topic/remote', jsonEncode(sendLog));
+        _debugLog(
+            'captureAndSendScreenshot: published to $topic/remote, ${compressedImageBytes.length} bytes');
       } else {
         debugPrint("Failed to capture screenshot: ByteData is null.");
+        _debugLog('captureAndSendScreenshot: FAILED -- byteData is null');
       }
-    } catch (error) {
+    } catch (error, st) {
       debugPrint("Error capturing or sending screenshot: $error");
+      _debugLog('captureAndSendScreenshot: FAILED -- $error\n$st');
     }
   }
 
   Future<Uint8List> _compressImage(Uint8List imageBytes) async {
+    // flutter_image_compress has no Windows platform implementation --
+    // calling compressWithList() there throws MissingPluginException on
+    // every single call, which captureAndSendScreenshot's catch block was
+    // silently swallowing (only debugPrint, invisible in a release Windows
+    // exe). That meant Remote View screenshots never actually got published
+    // on Windows at all. Use the pure-Dart `image` package there instead --
+    // no native plugin, so it works the same on every platform.
+    if (Platform.isWindows) {
+      final decoded = img.decodePng(imageBytes);
+      if (decoded == null) return imageBytes;
+      final resized = decoded.width > 400
+          ? img.copyResize(decoded, width: 400)
+          : decoded;
+      _debugLog(
+          'captureAndSendScreenshot: compressed via image pkg, ${resized.width}x${resized.height}');
+      return Uint8List.fromList(img.encodeJpg(resized, quality: 40));
+    }
+
     // Compress the image further by lowering quality and size
     final compressedBytes = await FlutterImageCompress.compressWithList(
       imageBytes,
