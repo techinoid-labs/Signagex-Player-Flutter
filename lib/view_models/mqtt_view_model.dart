@@ -2381,29 +2381,20 @@ EOF
           _currentIndexOfCapmaign = 0;
         }
       }
-      // Ensure any listening UI updates immediately
+      // Ensure any listening UI updates immediately. This used to be
+      // followed by a Phoenix.rebirth() full-app restart on every single
+      // publish_campaign message (guarded only by a raw-payload diff) --
+      // but MqttProvider (main_provider.dart) sits *below* the Phoenix
+      // boundary and recreates a brand new MqttClientService()/MqttViewModel
+      // on every rebirth, so every CMS content edit/delete/pause was tearing
+      // down and reconnecting the MQTT client and wiping all in-memory state
+      // (_campaignModel included), forcing the player to reconnect and wait
+      // for the broker to push the campaign again before anything rendered.
+      // That's what caused the blank/white screen and stale-content-persists
+      // bugs reported by QA. CampaignView and PlaylistScreen already listen
+      // reactively via Provider.of<MqttViewModel>(context) (listen: true),
+      // so notifyListeners() alone is sufficient -- no restart needed.
       notifyListeners();
-
-      // Optional: soft-restart the Flutter widget tree so the whole UI reloads
-      // (useful if some screens are not wired to rebuild correctly).
-      //
-      // Guarded to avoid restart loops if broker re-sends retained messages.
-      try {
-        final prefs = await SharedPreferences.getInstance();
-        final payload = jsonEncode(jsonObj);
-        final prev = prefs.getString('last_publish_campaign_payload');
-        if (prev != payload) {
-          await prefs.setString('last_publish_campaign_payload', payload);
-          final ctx = boundaryKey.currentContext;
-          if (ctx != null) {
-            Phoenix.rebirth(ctx);
-          } else {
-            debugPrint('MQTT_LOGS:: Phoenix context not available for restart');
-          }
-        }
-      } catch (e) {
-        debugPrint('MQTT_LOGS:: Failed to restart app on publish_campaign: $e');
-      }
       // Safely check media URL with proper null/empty checks
       String? mediaUrl = 'N/A';
       try {
