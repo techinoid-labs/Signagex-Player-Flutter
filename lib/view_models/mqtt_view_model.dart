@@ -183,7 +183,28 @@ class MqttViewModel extends ChangeNotifier {
     }
   }
 
+  // Diagnostic-only file logger. print()/debugPrint() are invisible on a
+  // release-mode Windows build (Flutter Windows builds as a GUI-subsystem
+  // exe, so stdout isn't attached to a console even when launched from
+  // one, whether double-clicked or run via `.\exe` in a terminal) -- this
+  // writes straight to a file next to the exe so it's readable afterward
+  // regardless of how the app was launched.
+  Future<void> _debugLog(String message) async {
+    try {
+      final dir = await getApplicationSupportDirectory();
+      final file = File('${dir.path}\\signagex_debug.log');
+      await file.writeAsString(
+        '${DateTime.now().toIso8601String()} $message\n',
+        mode: FileMode.append,
+        flush: true,
+      );
+    } catch (_) {
+      // Never let logging itself break anything.
+    }
+  }
+
   MqttViewModel(this._mqttClientService) {
+    _debugLog('=== MqttViewModel constructed (app launched) ===');
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
     _mqttClientService.onMessageReceived = _handleIncomingMessage;
 
@@ -201,8 +222,10 @@ class MqttViewModel extends ChangeNotifier {
       final info = await PackageInfo.fromPlatform();
       devicesinfo["player_version"] = "Version: ${info.version}";
       notifyListeners();
+      _debugLog('_populateAppVersion OK: player_version="Version: ${info.version}"');
     } catch (e) {
       debugPrint("Failed to read app version: $e");
+      _debugLog('_populateAppVersion FAILED: $e');
     }
   }
 
@@ -719,10 +742,14 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> getSystemDataForWindows() async {
+    _debugLog('getSystemDataForWindows: starting WMI query...');
     try {
       final result = await getAllSystemInfo();
+      _debugLog(
+          'getSystemDataForWindows: PowerShell exitCode=${result.exitCode}, stderr=${result.stderr}');
       if (result.exitCode == 0) {
         final output = result.stdout.trim();
+        _debugLog('getSystemDataForWindows: raw WMI JSON: $output');
 
         final Map<String, dynamic> systemInfo = jsonDecode(output);
         devicesinfo["sender"] = "windows";
@@ -762,14 +789,18 @@ class MqttViewModel extends ChangeNotifier {
         systemInfo.forEach((key, value) {
           print('$key: $value');
         });
+        _debugLog(
+            'getSystemDataForWindows: after population, manufacturer=${devicesinfo["hardware_details"]["manufacturer"]}, model=${devicesinfo["hardware_details"]["model"]}, device_model=${devicesinfo["device_model"]}, system_version=${devicesinfo["system_version"]}');
 
         _fetchCurrentLocation();
         await _checkPairingStatus();
       } else {
         print('Error: ${result.stderr}');
+        _debugLog('getSystemDataForWindows: PowerShell FAILED, exitCode=${result.exitCode}');
       }
     } catch (e) {
       print('An error occurred: $e');
+      _debugLog('getSystemDataForWindows: EXCEPTION $e');
     }
   }
 
@@ -1785,6 +1816,7 @@ EOF
       globleTopic = _topic;
       subsibeMessage(_topic);
       await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
+      _debugLog('_checkPairingStatus: publishing deviceInfoMap to $globleTopic: ${jsonEncode(deviceInfoMap)}');
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
 
       // Reset retry counter on successful connection
@@ -2390,6 +2422,7 @@ EOF
   // that command never arrives), and speed up to Android's ~2s cadence if
   // start_remote_view does show up.
   void _startPeriodicReporting() {
+    _debugLog('_startPeriodicReporting: heartbeat/resource-usage/screenshot timers starting for topic $globleTopic');
     _heartbeatTimer?.cancel();
     _heartbeatTimer = Timer.periodic(const Duration(seconds: 30), (_) async {
       if (globleTopic.isEmpty) return;
@@ -2399,6 +2432,7 @@ EOF
         devicesinfo["last_seen"] = DateTime.now().toIso8601String();
       }
       await fetchNetworkInfo();
+      _debugLog('heartbeat: publishing deviceInfoMap: ${jsonEncode(deviceInfoMap)}');
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
     });
 

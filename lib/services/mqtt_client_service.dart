@@ -1,11 +1,13 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import 'package:mqtt5_client/mqtt5_client.dart';
 import 'package:mqtt5_client/mqtt5_server_client.dart';
+import 'package:path_provider/path_provider.dart';
 import 'package:typed_data/typed_data.dart';
 
 import 'package:digital_signage/utils/globle_variable.dart';
@@ -13,6 +15,21 @@ import 'package:digital_signage/utils/globle_variable.dart';
 const String mqttBroker = 'signagexai.com';
 const int mqttPort = 443;
 const String mqttWebSocketPath = '/mqtt';
+
+// Diagnostic-only file logger -- see the matching one in MqttViewModel for
+// why this exists (release-mode Windows exes are GUI-subsystem, print()
+// output goes nowhere visible no matter how the exe is launched).
+Future<void> _debugLog(String message) async {
+  try {
+    final dir = await getApplicationSupportDirectory();
+    final file = File('${dir.path}\\signagex_debug.log');
+    await file.writeAsString(
+      '${DateTime.now().toIso8601String()} [MqttClientService] $message\n',
+      mode: FileMode.append,
+      flush: true,
+    );
+  } catch (_) {}
+}
 
 class MqttClientService {
   late MqttServerClient _client;
@@ -174,6 +191,7 @@ class MqttClientService {
         if (connectionState == MqttConnectionState.connected) {
           print('MQTT_LOGS:: Successfully connected!');
           print('MQTT_LOGS:: Connection status: ${_client.connectionStatus}');
+          _debugLog('connect(): SUCCESS, will topic set for globleTopic="$globleTopic"');
 
           _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
             _handleReceivedMessage(c);
@@ -216,6 +234,7 @@ class MqttClientService {
         print('MQTT_LOGS:: Connection status: ${_client.connectionStatus}');
       }
       print('MQTT_LOGS:: Stack trace: $st');
+      _debugLog('connect(): FAILED -- $e\n$st');
       try {
         _client.disconnect();
       } catch (_) {}
@@ -292,6 +311,7 @@ class MqttClientService {
   void publish(String topic, String message) {
     if (topic.isEmpty || topic.trim().isEmpty) {
       print('MQTT_LOGS:: Cannot publish - topic is empty');
+      _debugLog('publish($topic): SKIPPED, topic is empty');
       return;
     }
     if (_client.connectionStatus?.state == MqttConnectionState.connected) {
@@ -307,9 +327,12 @@ class MqttClientService {
       );
       print('MQTT_LOGS:: Published message to topic $topic: $message');
       successRequests++;
+      _debugLog('publish($topic): SENT, ${message.length} bytes');
     } else {
       print('MQTT_LOGS:: Cannot publish - client not connected');
       failedRequests++;
+      _debugLog(
+          'publish($topic): FAILED -- client state is ${_client.connectionStatus?.state}, NOT actually sent');
     }
   }
 
