@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart'; // Import for keyboard events
 import 'package:provider/provider.dart';
 
+import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/view_models/mqtt_view_model.dart';
 import 'package:digital_signage/widgets/center_image_widget.dart';
 import 'package:digital_signage/widgets/text_widget.dart';
@@ -48,7 +49,14 @@ class _NoContentViewState extends State<NoContentView> {
             print(
                 "Tapped at: x=${details.localPosition.dx}, y=${details.localPosition.dy}");
           },
-          child: Center(
+          child: ValueListenableBuilder<bool>(
+            valueListenable: hideNoCampaignMessages,
+            builder: (context, hideMessages, _) {
+              // Player Configuration's "Hide helpful messages" setting --
+              // shows a blank screen instead of the no-campaign message when
+              // enabled (settings.hide_no_campaign_messages).
+              if (hideMessages) return const SizedBox.expand();
+              return Center(
                 child: Column(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
@@ -69,7 +77,9 @@ class _NoContentViewState extends State<NoContentView> {
                     )
                   ],
                 ),
-              ),
+              );
+            },
+          ),
         ),
       ),
     );

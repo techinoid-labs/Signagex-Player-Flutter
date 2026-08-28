@@ -652,26 +652,19 @@ class MediaItem {
 
     switch (type) {
       case 'text':
-        // Konva scales the whole node -- including its rendered glyph size
-        // and stroke -- so fontSize/strokeWidth need the same scaleX/scaleY
-        // applied as the bounding box (handled by the caller for width/
-        // height). Font size scales with vertical scale.
-        final textScaleY = _asDouble(obj['scaleY']) ?? 1.0;
-        final baseFontSize = _asInt(propMap['fontSize']);
-        final baseTextStrokeWidth = _asInt(propMap['strokeWidth']);
+        // fontSize/strokeWidth used as-is, matching Android's
+        // CompositionRenderFragment.kt (reads props.fontSize directly, no
+        // scaleY compensation) -- see the width/height note above zoneIndex
+        // for why the scale-multiplication this used to do was removed.
         mediaType = 'text';
         mediaUrl = null;
         settings = Settings(
           text: propMap['text']?.toString() ?? obj['name']?.toString(),
           html: propMap['html']?.toString(),
-          fontSize: baseFontSize != null
-              ? (baseFontSize * textScaleY).round()
-              : null,
+          fontSize: _asInt(propMap['fontSize']),
           fontFamily: propMap['fontFamily']?.toString(),
           fill: propMap['fill']?.toString(),
-          strokeWidth: baseTextStrokeWidth != null
-              ? (baseTextStrokeWidth * textScaleY).round()
-              : null,
+          strokeWidth: _asInt(propMap['strokeWidth']),
           shadowBlur: _asInt(propMap['shadowBlur']),
           duration: _asInt(propMap['duration']),
         );
@@ -743,21 +736,13 @@ class MediaItem {
         );
       case 'shape':
         final mergedShape = _mergeShapeProps(obj, propMap);
-        // width/height on obj are already scaled by the caller (see
-        // zonesFromCompositionMap) -- this is what makes the SVG's own
-        // viewBox come out the right size instead of the pre-resize base
-        // size. Stroke width scales with the node too, same as fontSize
-        // does for text.
+        // width/height used as-is (see the zonesFromCompositionMap note on
+        // why the scaleX/scaleY multiplication was removed) -- this is only
+        // the fallback size for the primitive SVG reconstruction below,
+        // which itself only runs when the backend hasn't already provided a
+        // pre-rendered SVG via download_url/svg/mediaUrl.
         final zoneW = _asInt(obj['width']) ?? 100;
         final zoneH = _asInt(obj['height']) ?? 100;
-        final shapeScaleY = _asDouble(obj['scaleY']) ?? 1.0;
-        final baseShapeStrokeWidth = _asInt(mergedShape['strokeWidth']);
-        if (baseShapeStrokeWidth != null) {
-          // Scale in place so the generated SVG's own stroke-width (below)
-          // comes out right, not just the Settings field.
-          mergedShape['strokeWidth'] =
-              (baseShapeStrokeWidth * shapeScaleY).round();
-        }
         final builtSvg = svgFromShapeProperties(
           mergedShape,
           width: zoneW,
@@ -848,27 +833,19 @@ class MediaItem {
       if (raw is! Map<String, dynamic>) continue;
       zoneIndex++;
 
-      // The editor is Konva-based: resizing a shape/text object commonly
-      // changes scaleX/scaleY rather than width/height directly (this is
-      // how Konva.Rect/RegularPolygon/Text handle resize). Reading
-      // width/height alone -- as this used to -- gives the object's
-      // pre-resize base size, not what's actually shown in the editor.
-      // Bake the scale into an effective width/height once here, so every
-      // downstream consumer (shape SVG sizing, sticker sizing, the zone's
-      // own box) sees the true rendered size without each needing to know
-      // about scaleX/scaleY separately. Stickers are plain SVGs with no
-      // Konva scale applied by the editor, so this is a no-op for them.
-      final scaleX = _asDouble(raw['scaleX']) ?? 1.0;
-      final scaleY = _asDouble(raw['scaleY']) ?? 1.0;
-      final baseWidth = _asInt(raw['width']) ?? 0;
-      final baseHeight = _asInt(raw['height']) ?? 0;
-      final effectiveWidth = (baseWidth * scaleX).round();
-      final effectiveHeight = (baseHeight * scaleY).round();
-      final scaledRaw = (scaleX == 1.0 && scaleY == 1.0)
-          ? raw
-          : {...raw, 'width': effectiveWidth, 'height': effectiveHeight};
+      // Use width/height exactly as the backend sends them -- confirmed
+      // against the working Android player (CompositionRenderFragment.kt),
+      // which reads obj.width/obj.height directly with no scaleX/scaleY
+      // compensation at all. An earlier attempt here multiplied by
+      // scaleX/scaleY on the theory that Konva reports pre-resize base
+      // dimensions, but that wasn't confirmed to fix anything and the
+      // backend appears to already bake the resize into width/height by
+      // the time it serializes the object -- multiplying again on top of
+      // that double-scales it, which is why shapes came out the wrong size.
+      final effectiveWidth = _asInt(raw['width']) ?? 0;
+      final effectiveHeight = _asInt(raw['height']) ?? 0;
 
-      final media = _mediaItemFromCompositionObject(scaledRaw, zoneIndex);
+      final media = _mediaItemFromCompositionObject(raw, zoneIndex);
       if (media == null) continue;
       zones.add(
         CampaignZone(

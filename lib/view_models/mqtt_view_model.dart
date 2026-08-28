@@ -247,8 +247,12 @@ class MqttViewModel extends ChangeNotifier {
         await Future.delayed(const Duration(milliseconds: 100));
       }
 
-      final image =
-          await boundary.toImage(pixelRatio: 0.5); // Reduce pixel ratio
+      // The working Android player captures Remote View screenshots at full
+      // native screen resolution with JPEG quality 80 (ScreenCaptureManager
+      // .convertBitmapToBase64) and sends that uncapped -- our previous
+      // pixelRatio: 0.5 plus a 400px-wide quality-40 JPEG recompression was
+      // far below that, which is what made Remote View look "very bad".
+      final image = await boundary.toImage(pixelRatio: 1.0);
 
       final ByteData? byteData =
           await image.toByteData(format: ImageByteFormat.png);
@@ -300,12 +304,17 @@ class MqttViewModel extends ChangeNotifier {
     if (Platform.isWindows) {
       final decoded = img.decodePng(imageBytes);
       if (decoded == null) return imageBytes;
-      final resized = decoded.width > 400
-          ? img.copyResize(decoded, width: 400)
+      // Match Android's ScreenCaptureManager.convertBitmapToBase64: quality
+      // 80, no forced downscale. A 4K signage display is a lot wider than a
+      // phone screen though, so still cap at 1280px wide to keep the MQTT
+      // payload reasonable -- 400px/quality 40 (previous values) was what
+      // made this look "very bad".
+      final resized = decoded.width > 1280
+          ? img.copyResize(decoded, width: 1280)
           : decoded;
       _debugLog(
           'captureAndSendScreenshot: compressed via image pkg, ${resized.width}x${resized.height}');
-      return Uint8List.fromList(img.encodeJpg(resized, quality: 40));
+      return Uint8List.fromList(img.encodeJpg(resized, quality: 80));
     }
 
     // Compress the image further by lowering quality and size
@@ -2095,6 +2104,11 @@ EOF
         deviceSettings.rebootDeviceForLinux();
       }
     } else if (jsonObj["action"] == "action_setup_player") {
+      // Full payload, for confirming the field names of any Player
+      // Configuration option that isn't wired up yet (autostart-on-boot,
+      // auto-update, legacy webview, safe-mode video, volume timeout, etc.
+      // have no confirmed backend key -- this is how to find them).
+      _debugLog('action_setup_player settings: ${jsonEncode(jsonObj["settings"])}');
       Map<String, dynamic> sendLog = {
         "action": "Action Setup Player",
         "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
@@ -2109,6 +2123,14 @@ EOF
         }
       }
       // print("action mute${jsonObj["settings"]?["mute_audio"]}");
+      // The Player Configuration form in the CMS submits mute_audio,
+      // brightness, and volume together in a single settings payload --
+      // these used to be one big if/else-if chain, so whichever setting was
+      // checked first (mute_audio, then brightness) "won" and silently
+      // swallowed the rest. That's why brightness worked but volume never
+      // applied: brightness's branch matched first and volume's branch
+      // never even ran. Independent ifs so every setting present in the
+      // payload actually gets applied.
       if (jsonObj["settings"] != null &&
           jsonObj["settings"]["mute_audio"] == true) {
         Map<String, dynamic> sendLog = {
@@ -2130,7 +2152,8 @@ EOF
         } else if (Platform.isLinux) {
           deviceSettings.muteVolumeForLinux();
         }
-      } else if (jsonObj["settings"] != null &&
+      }
+      if (jsonObj["settings"] != null &&
           jsonObj["settings"]["mute_audio"] == false) {
         Map<String, dynamic> sendLog = {
           "action": "player_logs",
@@ -2151,7 +2174,8 @@ EOF
         } else if (Platform.isLinux) {
           deviceSettings.unmuteVolumeForLinux();
         }
-      } else if (jsonObj["settings"] != null &&
+      }
+      if (jsonObj["settings"] != null &&
           jsonObj["settings"]["brightness"] != null &&
           jsonObj["settings"]["brightness"]['value'] != null) {
         Map<String, dynamic> sendLog = {
@@ -2177,7 +2201,8 @@ EOF
           var res = jsonObj["settings"]["brightness"]['value'];
           deviceSettings.changeBrightnessForLinux(res);
         }
-      } else if (jsonObj["settings"] != null &&
+      }
+      if (jsonObj["settings"] != null &&
           jsonObj["settings"]["volume"] != null) {
         Map<String, dynamic> sendLog = {
           "action": "player_logs",
@@ -2203,6 +2228,33 @@ EOF
           var res = jsonObj["settings"]["volume"];
           deviceSettings.changeVolumeForLinux(res.toString());
         }
+      }
+      // Screen Rotation / Show touch feedback / Hide helpful messages --
+      // field names (screen_rotation, touch_feedback,
+      // hide_no_campaign_messages) confirmed against the working Android
+      // player's Setting model. These are pure Flutter widget-tree concerns
+      // (a RotatedBox around the whole app, a tap-feedback overlay, a
+      // no-campaign-screen gate), so they apply the same way on every
+      // platform rather than needing a per-platform native call like
+      // volume/brightness do.
+      if (jsonObj["settings"] != null &&
+          jsonObj["settings"]["screen_rotation"] != null) {
+        final raw = jsonObj["settings"]["screen_rotation"].toString();
+        final normalized = raw.toLowerCase() == "landscape" ? "0" : raw;
+        final degrees = int.tryParse(normalized);
+        if (degrees != null) {
+          screenRotationDegrees.value = ((degrees % 360) + 360) % 360;
+          _debugLog('screen_rotation applied: $degrees degrees');
+        }
+      }
+      if (jsonObj["settings"] != null &&
+          jsonObj["settings"]["touch_feedback"] != null) {
+        touchFeedbackEnabled.value = jsonObj["settings"]["touch_feedback"] == true;
+      }
+      if (jsonObj["settings"] != null &&
+          jsonObj["settings"]["hide_no_campaign_messages"] != null) {
+        hideNoCampaignMessages.value =
+            jsonObj["settings"]["hide_no_campaign_messages"] == true;
       }
       var data = {"success": true};
       publishMessage(globleTopic, jsonEncode(data));

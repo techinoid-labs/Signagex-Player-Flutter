@@ -3,12 +3,29 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'package:path_provider/path_provider.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 
 import 'package:digital_signage/services/mqtt_client_service.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
 
 MqttClientService mqttClientService = MqttClientService();
+
+// Diagnostic-only file logger -- see the matching one in MqttViewModel/
+// MqttClientService for why this exists (release-mode Windows exes are
+// GUI-subsystem, print() output goes nowhere visible no matter how the exe
+// is launched).
+Future<void> _debugLog(String message) async {
+  try {
+    final dir = await getApplicationSupportDirectory();
+    final file = File('${dir.path}\\signagex_debug.log');
+    await file.writeAsString(
+      '${DateTime.now().toIso8601String()} [DeviceSettings] $message\n',
+      mode: FileMode.append,
+      flush: true,
+    );
+  } catch (_) {}
+}
 
 class DeviceSettingsViewModel with ChangeNotifier {
   Future<void> setVolumeForIOS(double value) async {
@@ -320,6 +337,8 @@ class DeviceSettingsViewModel with ChangeNotifier {
         ['-Command', 'Set-AudioDevice -PlaybackVolume $volume']);
     print('Output: ${result.stdout}');
     print('Error: ${result.stderr}');
+    _debugLog(
+        'setWindowsVolume($volume): exitCode=${result.exitCode}, stdout=${result.stdout}, stderr=${result.stderr}');
   }
 
   Future<void> changeVolumeForWindows(int volume) async {
@@ -328,6 +347,7 @@ class DeviceSettingsViewModel with ChangeNotifier {
       print('Volume changed to $volume%');
     } catch (e) {
       print('An error occurred: $e');
+      _debugLog('changeVolumeForWindows($volume): FAILED -- $e');
     }
   }
 
