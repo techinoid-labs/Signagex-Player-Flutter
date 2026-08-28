@@ -1006,7 +1006,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType.startsWith('video')) {
       print("[LOG] Current media is video type: $mediaType");
-      _initializeNextVideo(nextMedia);
+      // Let VideoPlayerWidget own its controller; a second concurrent
+      // VideoPlayerController for the same URL blanks the video on Windows.
+      setState(() {});
       return;
     }
 
@@ -1022,7 +1024,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       }
 
       if (kind.toLowerCase().contains('video') || isVideoFile(mediaUrl)) {
-        _initializeNextVideo(nextMedia);
+        setState(() {});
         return;
       } else if (kind.toLowerCase().contains('image') ||
           isImageFile(mediaUrl)) {
@@ -1886,11 +1888,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     print("[LOG] VideoPlayerWidget: Initializing video: ${widget.filePath}");
 
     if (!_isNetworkUrl) {
-      final file = File(widget.filePath);
+      final localPath =
+          _normalizeLocalMediaPath(widget.filePath) ?? widget.filePath;
+      final file = File(localPath);
       if (!await file.exists()) {
         _initAttempts++;
         print(
-            "[LOG] VideoPlayerWidget: File does not exist (attempt $_initAttempts/$_maxInitAttempts): ${widget.filePath}");
+            "[LOG] VideoPlayerWidget: File does not exist (attempt $_initAttempts/$_maxInitAttempts): $localPath");
         if (_initAttempts <= _maxInitAttempts) {
           await Future.delayed(const Duration(seconds: 1));
           if (!mounted) return;
@@ -1918,9 +1922,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       _controller = null;
     }
 
+    // Normalize Windows local paths (mixed separators confuse WMF)
+    final resolvedPath = _isNetworkUrl
+        ? widget.filePath
+        : (_normalizeLocalMediaPath(widget.filePath) ?? widget.filePath);
+
     final VideoPlayerController controller = _isNetworkUrl
-        ? VideoPlayerController.networkUrl(Uri.parse(widget.filePath))
-        : VideoPlayerController.file(File(widget.filePath));
+        ? VideoPlayerController.networkUrl(Uri.parse(resolvedPath))
+        : VideoPlayerController.file(File(resolvedPath));
     _controller = controller
       ..initialize().then(
         (_) {

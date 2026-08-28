@@ -189,7 +189,13 @@ class MqttViewModel extends ChangeNotifier {
     //
     // Simplest correct fix: don't load stale data into the live map at all.
     SharedPreferences prefs = await SharedPreferences.getInstance();
+    // Preserve the environment marker so future launches can detect a
+    // staging ↔ production switch and clear stale player codes.
+    final env = prefs.getString('app_environment');
     prefs.clear();
+    if (env != null) {
+      await prefs.setString('app_environment', env);
+    }
   }
 
   // Diagnostic-only file logger. print()/debugPrint() are invisible on a
@@ -322,6 +328,19 @@ class MqttViewModel extends ChangeNotifier {
 
   // Monitor connectivity changes and reinitialize MQTT on connection recovery
   Future<void> _monitorConnectivity() async {
+    // Wipe SharedPreferences when the build environment switches (e.g.
+    // production ZIP installed over staging), otherwise the old player code
+    // bleeds into the new build and the player can't pair correctly.
+    final prefsCheck = await SharedPreferences.getInstance();
+    final storedEnv = prefsCheck.getString('app_environment') ?? '';
+    if (storedEnv.isNotEmpty && storedEnv != appEnvironment) {
+      await prefsCheck.clear();
+      debugPrint(
+          '[Env] SharedPreferences cleared: environment changed '
+          'from $storedEnv → $appEnvironment');
+    }
+    await prefsCheck.setString('app_environment', appEnvironment);
+
     await _loadStoredJsonObj();
     await getStoredState();
     await retrieveStoredResponse();
