@@ -827,6 +827,14 @@ class MqttViewModel extends ChangeNotifier {
             totalBytes.round() - availableBytes;
       }
     }
+    // Win32_Battery returns nothing at all on a desktop with no battery --
+    // that's a real "no battery" answer, not a bug, so battery_percentage
+    // correctly stays whatever it already was (0 by default) in that case.
+    final batteryPercent = _asNum(systemInfo["BatteryPercent"]);
+    if (batteryPercent != null) {
+      devicesinfo["battery_information"]["battery_percentage"] =
+          batteryPercent.round();
+    }
     devicesinfo["last_seen"] = DateTime.now().toIso8601String();
   }
 
@@ -982,6 +990,7 @@ class MqttViewModel extends ChangeNotifier {
       "InstalledRAM" = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty TotalPhysicalMemory);
       "Manufacturer" = (Get-WmiObject -Class Win32_ComputerSystem | Select-Object -ExpandProperty Manufacturer);
       "DeviceID" = (Get-WmiObject -Class Win32_ComputerSystemProduct | Select-Object -ExpandProperty UUID);
+      "BatteryPercent" = (Get-WmiObject -Class Win32_Battery -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty EstimatedChargeRemaining -ErrorAction SilentlyContinue);
       "Drives" = \$drives
     }
 

@@ -58,7 +58,11 @@ Map<String, dynamic> deviceInfoMap = {
   "battery_information": {
     "battery_percentage": 0,
     "formatted_voltage": 0,
-    "formated_tempature": 0.0
+    // Matches the working Android player's actual key spelling
+    // (formatted_temperature) -- this was "formated_tempature" (typo'd,
+    // missing letters), a key nothing in this app or the Android app ever
+    // actually writes to.
+    "formatted_temperature": 0.0
   },
   "cpu_usage": 0.0,
   "cpu_detailed_information": {
