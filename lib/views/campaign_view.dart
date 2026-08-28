@@ -5,7 +5,7 @@ import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
-import 'package:flutter_html/flutter_html.dart';
+import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
@@ -136,14 +136,12 @@ Widget _buildStickerSvgContent(
 
   return SizedBox.expand(
     key: key,
-    child: Html(
-      data:
-          '<div style="width:100%;height:100%;display:flex;align-items:center;'
-          'justify-content:center;overflow:hidden;">'
-          '<img src="data:image/svg+xml;charset=utf-8,$encoded" '
-          'style="max-width:100%;max-height:100%;object-fit:contain;" alt="" />'
-          '</div>',
-      style: _stickerHtmlStyles,
+    child: HtmlWidget(
+      '<div style="width:100%;height:100%;display:flex;align-items:center;'
+      'justify-content:center;overflow:hidden;">'
+      '<img src="data:image/svg+xml;charset=utf-8,$encoded" '
+      'style="max-width:100%;max-height:100%;object-fit:contain;" alt="" />'
+      '</div>',
     ),
   );
 }
@@ -1108,7 +1106,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     _videoController?.dispose();
     final VideoPlayerController controller = isNetwork
-        ? VideoPlayerController.network(mediaUrl)
+        ? VideoPlayerController.networkUrl(Uri.parse(mediaUrl))
         : VideoPlayerController.file(File(localPath!));
 
     _videoController = controller
@@ -1921,7 +1919,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     }
 
     final VideoPlayerController controller = _isNetworkUrl
-        ? VideoPlayerController.network(widget.filePath)
+        ? VideoPlayerController.networkUrl(Uri.parse(widget.filePath))
         : VideoPlayerController.file(File(widget.filePath));
     _controller = controller
       ..initialize().then(
@@ -2321,20 +2319,9 @@ class _TextWidgetState extends State<TextWidget> {
           return SizedBox(
             width: w,
             height: h,
-            child: Html(
-              data:
-                  '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;text-align:center;">$data</div>',
-              style: {
-                'div': Style(
-                  margin: Margins.zero,
-                  padding: HtmlPaddings.zero,
+            child: HtmlWidget(
+                  '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;text-align:center;margin:0;padding:0;">$data</div>',
                 ),
-                'p': Style(
-                  margin: Margins.zero,
-                  padding: HtmlPaddings.zero,
-                ),
-              },
-            ),
           );
         },
       ),
@@ -2342,18 +2329,7 @@ class _TextWidgetState extends State<TextWidget> {
   }
 }
 
-final _stickerHtmlStyles = {
-  'div': Style(
-    margin: Margins.zero,
-    padding: HtmlPaddings.zero,
-  ),
-  'img': Style(
-    margin: Margins.zero,
-    padding: HtmlPaddings.zero,
-  ),
-};
-
-/// Renders sticker SVG via [Html] (settings.html or fetched SVG as data-URI img).
+/// Renders sticker SVG via [HtmlWidget] (settings.html or fetched SVG as data-URI img).
 class StickerHtmlWidget extends StatefulWidget {
   final String svgUrl;
   final String? htmlContent;
@@ -2439,10 +2415,7 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
     final presetHtml = widget.htmlContent?.trim();
     if (presetHtml != null && presetHtml.isNotEmpty) {
       return SizedBox.expand(
-        child: Html(
-          data: _wrapHtml(presetHtml),
-          style: _stickerHtmlStyles,
-        ),
+        child: HtmlWidget(_wrapHtml(presetHtml)),
       );
     }
 
@@ -2469,7 +2442,7 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
             );
           }
           if (raw.contains('<html') || raw.contains('<body')) {
-            return Html(data: raw, style: _stickerHtmlStyles);
+            return HtmlWidget(raw);
           }
           if (raw.contains('<svg')) {
             return _buildStickerSvgContent(
@@ -2479,7 +2452,7 @@ class _StickerHtmlWidgetState extends State<StickerHtmlWidget> {
               key: ValueKey('sticker_html_${widget.svgUrl}'),
             );
           }
-          return Html(data: _svgToHtmlImg(raw), style: _stickerHtmlStyles);
+          return HtmlWidget(_svgToHtmlImg(raw));
         },
       ),
     );
