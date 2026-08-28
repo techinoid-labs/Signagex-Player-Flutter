@@ -1885,7 +1885,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       widget.filePath.startsWith('https://');
 
   void _initializeVideo() async {
-    print("[LOG] VideoPlayerWidget: Initializing video: ${widget.filePath}");
+    _debugLog("VideoPlayerWidget: Initializing video: ${widget.filePath}");
 
     if (!_isNetworkUrl) {
       final localPath =
@@ -1893,16 +1893,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       final file = File(localPath);
       if (!await file.exists()) {
         _initAttempts++;
-        print(
-            "[LOG] VideoPlayerWidget: File does not exist (attempt $_initAttempts/$_maxInitAttempts): $localPath");
+        _debugLog(
+            "VideoPlayerWidget: File does not exist (attempt $_initAttempts/$_maxInitAttempts): $localPath");
         if (_initAttempts <= _maxInitAttempts) {
           await Future.delayed(const Duration(seconds: 1));
           if (!mounted) return;
           _initializeVideo();
           return;
         } else {
-          print(
-              "[LOG] VideoPlayerWidget: Giving up after $_maxInitAttempts attempts – video will show as not initialized.");
+          _debugLog(
+              "VideoPlayerWidget: Giving up after $_maxInitAttempts attempts – video will show as not initialized.");
           setState(() {
             _isLoading = false;
           });
@@ -1911,8 +1911,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       }
     }
 
-    print(
-        "[LOG] VideoPlayerWidget: ${_isNetworkUrl ? "Network URL" : "File exists"}, creating controller...");
+    _debugLog(
+        "VideoPlayerWidget: ${_isNetworkUrl ? "Network URL" : "File exists"}, creating controller path=${_isNetworkUrl ? widget.filePath : (_normalizeLocalMediaPath(widget.filePath) ?? widget.filePath)}");
 
     // Dispose any previous controller before re-initializing
     if (_controller != null) {
@@ -1935,18 +1935,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         (_) {
           if (!mounted || _controller == null) return;
 
-          print("[LOG] VideoPlayerWidget: Video initialized successfully");
-          print(
-              "[LOG] VideoPlayerWidget: Duration: ${_controller!.value.duration}");
-          print("[LOG] VideoPlayerWidget: Size: ${_controller!.value.size}");
-          print(
-              "[LOG] VideoPlayerWidget: IsInitialized: ${_controller!.value.isInitialized}");
+          _debugLog(
+              "VideoPlayerWidget: Video initialized successfully "
+              "duration=${_controller!.value.duration} size=${_controller!.value.size} "
+              "isInitialized=${_controller!.value.isInitialized}");
 
           if (!_controller!.value.isInitialized ||
               _controller!.value.hasError) {
             _initAttempts++;
-            print(
-                "[LOG] VideoPlayerWidget: ERROR after initialize() (attempt $_initAttempts/$_maxInitAttempts) "
+            _debugLog(
+                "VideoPlayerWidget: ERROR after initialize() (attempt $_initAttempts/$_maxInitAttempts) "
                 "- hasError=${_controller!.value.hasError}, desc=${_controller!.value.errorDescription}");
             if (_initAttempts <= _maxInitAttempts) {
               Future.delayed(const Duration(seconds: 1), () {
@@ -1969,24 +1967,24 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
               // Keep videos playing continuously (repeat forever).
               _controller!.setLooping(true);
               _controller!.play();
-              print("[LOG] VideoPlayerWidget: Video play() called");
+              _debugLog("VideoPlayerWidget: Video play() called");
             },
           );
 
           Future.delayed(const Duration(milliseconds: 500), () {
             if (mounted && _controller != null) {
-              print(
-                  "[LOG] VideoPlayerWidget: After 500ms - IsPlaying: ${_controller!.value.isPlaying}, "
+              _debugLog(
+                  "VideoPlayerWidget: After 500ms - IsPlaying: ${_controller!.value.isPlaying}, "
                   "HasError: ${_controller!.value.hasError}, "
                   "Position: ${_controller!.value.position}");
               if (_controller!.value.hasError) {
-                print(
-                    "[LOG] VideoPlayerWidget: ERROR after play() - ${_controller!.value.errorDescription}");
+                _debugLog(
+                    "VideoPlayerWidget: ERROR after play() - ${_controller!.value.errorDescription}");
               }
               if (!_controller!.value.isPlaying &&
                   _controller!.value.isInitialized) {
-                print(
-                    "[LOG] VideoPlayerWidget: WARNING - Video not playing after play() call, trying again...");
+                _debugLog(
+                    "VideoPlayerWidget: WARNING - Video not playing after play() call, trying again...");
                 _controller!.play();
               }
             }
@@ -2005,13 +2003,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
 
               if (_controller!.value.position.inSeconds % 5 == 0 &&
                   _controller!.value.position.inMilliseconds > 0) {
-                print(
-                    "[LOG] VideoPlayerWidget: Playing - Position: ${_controller!.value.position}, "
+                _debugLog(
+                    "VideoPlayerWidget: Playing - Position: ${_controller!.value.position}, "
                     "IsPlaying: ${_controller!.value.isPlaying}, "
                     "HasError: ${_controller!.value.hasError}");
                 if (_controller!.value.hasError) {
-                  print(
-                      "[LOG] VideoPlayerWidget: ERROR - ${_controller!.value.errorDescription}");
+                  _debugLog(
+                      "VideoPlayerWidget: ERROR - ${_controller!.value.errorDescription}");
                 }
               }
             },
@@ -2020,10 +2018,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       ).catchError(
         (error, stackTrace) async {
           _initAttempts++;
-          print(
-              "[LOG] VideoPlayerWidget: ERROR initializing video (attempt $_initAttempts/$_maxInitAttempts): $error");
-          print("[LOG] VideoPlayerWidget: Stack trace: $stackTrace");
-          print("[LOG] VideoPlayerWidget: File path: ${widget.filePath}");
+          _debugLog(
+              "VideoPlayerWidget: ERROR initializing video (attempt $_initAttempts/$_maxInitAttempts): $error\n$stackTrace");
 
           if (_initAttempts <= _maxInitAttempts) {
             await Future.delayed(const Duration(seconds: 1));
@@ -2071,10 +2067,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     Widget videoWidget;
 
     if (_isLoading) {
-      print("[LOG] VideoPlayerWidget: Building - Still loading...");
       videoWidget = const Center(child: CircularProgressIndicator());
     } else if (_controller == null || !_controller!.value.isInitialized) {
-      print("[LOG] VideoPlayerWidget: Building - Controller not initialized!");
+      _debugLog("VideoPlayerWidget: Building - Controller not initialized! "
+          "hasError=${_controller?.value.hasError}, desc=${_controller?.value.errorDescription}");
       videoWidget = Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -2091,16 +2087,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         ),
       );
     } else {
-      print("[LOG] VideoPlayerWidget: Building - Displaying video player");
-      print(
-          "[LOG] VideoPlayerWidget: IsPlaying: ${_controller!.value.isPlaying}");
-      print(
-          "[LOG] VideoPlayerWidget: HasError: ${_controller!.value.hasError}");
-      if (_controller!.value.hasError) {
-        print(
-            "[LOG] VideoPlayerWidget: ERROR - ${_controller!.value.errorDescription}");
-      }
-
       videoWidget = SizedBox.expand(
         child: VideoPlayer(_controller!),
       );
