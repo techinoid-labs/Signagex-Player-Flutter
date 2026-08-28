@@ -85,7 +85,7 @@ class _DigivisionViewState extends State<DigivisionView> {
                       ),
                     const SizedBox(height: 40),
                     Text(
-                      topic.isNotEmpty ? topic : "------",
+                      topic.isNotEmpty ? topic.toUpperCase() : "------",
                       style: const TextStyle(
                         color: Colors.white,
                         fontSize: 56,
