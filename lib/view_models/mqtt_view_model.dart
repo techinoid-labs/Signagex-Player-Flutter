@@ -1883,13 +1883,32 @@ EOF
       if (response["paired"] == false) {
         print("this is state screeen ${response["paired"]}");
         await prefs.setBool('storeState', response["paired"]);
+        storeState = false;
 
         _stopPeriodicReporting();
         _state = MqttState.pairedScreen;
       } else if (response["paired"] == true) {
-        _startPeriodicReporting();
+        // Persist paired=true so the action_setup_player handler's
+        // `storeState == false` gate (mqtt_view_model.dart ~2280) stops
+        // re-running this whole pairing check on every subsequent
+        // action_setup_player message from the broker. Without this, storeState
+        // stayed false forever once a device had ever been unpaired, so every
+        // action_setup_player echo re-ran _checkPairingStatus and forced
+        // _state back to MqttState.noContent below -- blanking whatever
+        // campaign/video was actively playing, repeatedly, which is what
+        // looked like "video not playing".
+        await prefs.setBool('storeState', true);
+        storeState = true;
 
-        _state = MqttState.noContent;
+        // Only the initial pairing handshake should drop to noContent --
+        // once already showing real content, a redundant pairing
+        // confirmation shouldn't blank the screen out from under it.
+        if (_state != MqttState.campaignScreen &&
+            _state != MqttState.playlistScreen &&
+            _state != MqttState.downloading) {
+          _startPeriodicReporting();
+          _state = MqttState.noContent;
+        }
       } else {
         _state = MqttState.failure;
       }
