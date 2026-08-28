@@ -8,7 +8,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_html/flutter_html.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
-import 'package:path_provider/path_provider.dart';
 import 'package:provider/provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:video_player/video_player.dart';
@@ -16,6 +15,7 @@ import 'package:video_player/video_player.dart';
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
 import 'package:digital_signage/utils/constants.dart';
+import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/log_format.dart';
 
 import '../view_models/mqtt_view_model.dart';
@@ -26,21 +26,7 @@ import '../widgets/text_widget.dart';
 bool _isNetworkMediaUrl(String url) =>
     url.startsWith('http://') || url.startsWith('https://');
 
-// Diagnostic-only file logger -- see the matching one in MqttViewModel/
-// MqttClientService/DeviceSettingsViewModel for why this exists (release-
-// mode Windows exes are GUI-subsystem, print() output goes nowhere visible
-// no matter how the exe is launched).
-Future<void> _debugLog(String message) async {
-  try {
-    final dir = await getApplicationSupportDirectory();
-    final file = File('${dir.path}\\signagex_debug.log');
-    await file.writeAsString(
-      '${DateTime.now().toIso8601String()} [CampaignView] $message\n',
-      mode: FileMode.append,
-      flush: true,
-    );
-  } catch (_) {}
-}
+Future<void> _debugLog(String message) => debug.debugLog('CampaignView', message);
 
 // #region agent log
 void _agentDebugLog(

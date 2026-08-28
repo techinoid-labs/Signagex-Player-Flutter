@@ -27,6 +27,7 @@ import 'package:digital_signage/models/compaign_model.dart';
 import 'package:digital_signage/models/intractivity_model.dart'
     hide MediaItem, Settings;
 import 'package:digital_signage/models/play_list_model.dart';
+import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 
@@ -196,20 +197,11 @@ class MqttViewModel extends ChangeNotifier {
   // exe, so stdout isn't attached to a console even when launched from
   // one, whether double-clicked or run via `.\exe` in a terminal) -- this
   // writes straight to a file next to the exe so it's readable afterward
-  // regardless of how the app was launched.
-  Future<void> _debugLog(String message) async {
-    try {
-      final dir = await getApplicationSupportDirectory();
-      final file = File('${dir.path}\\signagex_debug.log');
-      await file.writeAsString(
-        '${DateTime.now().toIso8601String()} $message\n',
-        mode: FileMode.append,
-        flush: true,
-      );
-    } catch (_) {
-      // Never let logging itself break anything.
-    }
-  }
+  // regardless of how the app was launched. Funnels through debug_log.dart's
+  // shared write queue -- see that file for why (concurrent unsynchronized
+  // writes from multiple classes were corrupting/dropping each other).
+  Future<void> _debugLog(String message) =>
+      debug.debugLog('MqttViewModel', message);
 
   MqttViewModel(this._mqttClientService) {
     _debugLog('=== MqttViewModel constructed (app launched) ===');

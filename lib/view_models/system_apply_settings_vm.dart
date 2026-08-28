@@ -3,29 +3,20 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import 'package:path_provider/path_provider.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 
 import 'package:digital_signage/services/mqtt_client_service.dart';
+import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/globle_variable.dart';
 
 MqttClientService mqttClientService = MqttClientService();
 
-// Diagnostic-only file logger -- see the matching one in MqttViewModel/
-// MqttClientService for why this exists (release-mode Windows exes are
-// GUI-subsystem, print() output goes nowhere visible no matter how the exe
-// is launched).
-Future<void> _debugLog(String message) async {
-  try {
-    final dir = await getApplicationSupportDirectory();
-    final file = File('${dir.path}\\signagex_debug.log');
-    await file.writeAsString(
-      '${DateTime.now().toIso8601String()} [DeviceSettings] $message\n',
-      mode: FileMode.append,
-      flush: true,
-    );
-  } catch (_) {}
-}
+// Diagnostic-only file logger -- see debug_log.dart for why this exists
+// (release-mode Windows exes are GUI-subsystem, print() output goes
+// nowhere visible no matter how the exe is launched) and why it funnels
+// through a shared write queue instead of writing directly.
+Future<void> _debugLog(String message) =>
+    debug.debugLog('DeviceSettings', message);
 
 class DeviceSettingsViewModel with ChangeNotifier {
   Future<void> setVolumeForIOS(double value) async {

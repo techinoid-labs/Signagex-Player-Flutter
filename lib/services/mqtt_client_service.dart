@@ -7,29 +7,21 @@ import 'package:flutter/material.dart';
 
 import 'package:mqtt5_client/mqtt5_client.dart';
 import 'package:mqtt5_client/mqtt5_server_client.dart';
-import 'package:path_provider/path_provider.dart';
 import 'package:typed_data/typed_data.dart';
 
+import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/globle_variable.dart';
 
 const String mqttBroker = 'signagexai.com';
 const int mqttPort = 443;
 const String mqttWebSocketPath = '/mqtt';
 
-// Diagnostic-only file logger -- see the matching one in MqttViewModel for
-// why this exists (release-mode Windows exes are GUI-subsystem, print()
-// output goes nowhere visible no matter how the exe is launched).
-Future<void> _debugLog(String message) async {
-  try {
-    final dir = await getApplicationSupportDirectory();
-    final file = File('${dir.path}\\signagex_debug.log');
-    await file.writeAsString(
-      '${DateTime.now().toIso8601String()} [MqttClientService] $message\n',
-      mode: FileMode.append,
-      flush: true,
-    );
-  } catch (_) {}
-}
+// Diagnostic-only file logger -- see debug_log.dart for why this exists
+// (release-mode Windows exes are GUI-subsystem, print() output goes
+// nowhere visible no matter how the exe is launched) and why it funnels
+// through a shared write queue instead of writing directly.
+Future<void> _debugLog(String message) =>
+    debug.debugLog('MqttClientService', message);
 
 class MqttClientService {
   late MqttServerClient _client;
