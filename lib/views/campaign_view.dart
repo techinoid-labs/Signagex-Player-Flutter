@@ -2228,10 +2228,17 @@ class _SvgWidgetState extends State<SvgWidget> {
         "[LOG] SvgWidget: Rendering SVG content: ${widget.svgContent.substring(0, widget.svgContent.length > 100 ? 100 : widget.svgContent.length)}...");
 
     try {
+      // BoxFit.fill, not .contain -- the zone box (widget.svgContent's
+      // parent SizedBox.expand) already comes from the composition editor's
+      // own width/height for this object, so the shape should exactly fill
+      // it. .contain preserves the SVG's own internal aspect ratio, which
+      // can letterbox the shape smaller than its declared zone whenever the
+      // backend's generated SVG doesn't have precisely the same proportions
+      // -- that's what "not exact size" looked like.
       return SizedBox.expand(
         child: SvgPicture.string(
           widget.svgContent,
-          fit: BoxFit.contain,
+          fit: BoxFit.fill,
           placeholderBuilder: (BuildContext context) => const Center(
             child: CircularProgressIndicator(),
           ),

@@ -2030,6 +2030,22 @@ EOF
     'hide_no_campaign_messages',
   ];
 
+  // The backend echoes the full player record (including brightness/volume/
+  // screen_rotation) back on essentially every heartbeat cycle, not just
+  // when a setting actually changes -- confirmed from the debug log,
+  // showing setWindowsVolume() firing 5 times within 5 seconds and
+  // brightness's stored value jumping around between consecutive echoes a
+  // few seconds apart. Unconditionally re-applying on every echo meant
+  // brightness (and everything else) kept getting silently forced back to
+  // whatever the backend currently had stored, on its own cadence,
+  // completely independent of and unrelated to any actual volume change --
+  // which is what looked like "changing volume changes brightness". Only
+  // actually call the OS-level setter when the value differs from the last
+  // one we applied.
+  bool? _lastAppliedMute;
+  int? _lastAppliedBrightness;
+  int? _lastAppliedVolume;
+
   Future<void> _applySettingsMap(Map<String, dynamic>? settings) async {
     if (settings == null) return;
     _debugLog('applySettingsMap: ${jsonEncode(settings)}');
@@ -2042,7 +2058,8 @@ EOF
     // brightness's branch matched first and volume's branch never even ran.
     // Independent ifs so every setting present in the payload actually gets
     // applied.
-    if (settings["mute_audio"] == true) {
+    if (settings["mute_audio"] == true && _lastAppliedMute != true) {
+      _lastAppliedMute = true;
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
         "log": "Mute Audio",
@@ -2061,7 +2078,8 @@ EOF
         deviceSettings.muteVolumeForLinux();
       }
     }
-    if (settings["mute_audio"] == false) {
+    if (settings["mute_audio"] == false && _lastAppliedMute != false) {
+      _lastAppliedMute = false;
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
         "log": "Unmute Audio",
@@ -2080,7 +2098,11 @@ EOF
         deviceSettings.unmuteVolumeForLinux();
       }
     }
-    if (settings["brightness"] != null && settings["brightness"]['value'] != null) {
+    final brightnessValue = settings["brightness"] != null
+        ? _asNum(settings["brightness"]['value'])?.round()
+        : null;
+    if (brightnessValue != null && brightnessValue != _lastAppliedBrightness) {
+      _lastAppliedBrightness = brightnessValue;
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
         "log": "brightness",
@@ -2092,17 +2114,17 @@ EOF
       if (Platform.isMacOS) {
         print("No brightness For Mac");
       } else if (Platform.isAndroid) {
-        var value = settings["brightness"]['value'];
-        deviceSettings.setAppBrightnessForAndroid(value);
+        deviceSettings.setAppBrightnessForAndroid(brightnessValue.toDouble());
       } else if (Platform.isWindows) {
-        var res = settings["brightness"]['value'];
-        deviceSettings.adjustBrightnessForWindows(res);
+        deviceSettings.adjustBrightnessForWindows(brightnessValue);
       } else if (Platform.isLinux) {
-        var res = settings["brightness"]['value'];
-        deviceSettings.changeBrightnessForLinux(res);
+        deviceSettings.changeBrightnessForLinux(brightnessValue.toString());
       }
     }
-    if (settings["volume"] != null) {
+    final volumeValue =
+        settings["volume"] != null ? _asNum(settings["volume"])?.round() : null;
+    if (volumeValue != null && volumeValue != _lastAppliedVolume) {
+      _lastAppliedVolume = volumeValue;
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
         "log": "Volume",
@@ -2112,17 +2134,13 @@ EOF
       };
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       if (Platform.isMacOS) {
-        var res = settings["volume"];
-        deviceSettings.setVolumeForMac(res);
+        deviceSettings.setVolumeForMac(volumeValue);
       } else if (Platform.isAndroid) {
-        var value = settings["volume"];
-        deviceSettings.setVolumeForAndroid(value);
+        deviceSettings.setVolumeForAndroid(volumeValue);
       } else if (Platform.isWindows) {
-        var res = settings["volume"];
-        deviceSettings.changeVolumeForWindows(res is int ? res : int.tryParse(res.toString()) ?? 50);
+        deviceSettings.changeVolumeForWindows(volumeValue);
       } else if (Platform.isLinux) {
-        var res = settings["volume"];
-        deviceSettings.changeVolumeForLinux(res.toString());
+        deviceSettings.changeVolumeForLinux(volumeValue.toString());
       }
     }
     // Screen Rotation / Show touch feedback / Hide helpful messages --

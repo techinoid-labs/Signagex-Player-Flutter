@@ -311,30 +311,71 @@ class DeviceSettingsViewModel with ChangeNotifier {
     }
   }
 
-  // Set-AudioDevice comes from the third-party AudioDeviceCmdlets PowerShell
-  // module, not from Windows itself. If it was never installed on a given
-  // kiosk machine, every volume command below silently fails (the error is
-  // caught and only printed). Import it if present, install it if it isn't,
-  // before every volume command -- Install-Module is a no-op once the
-  // module is already there.
-  Future<void> _ensureAudioDeviceCmdlets() async {
-    await Process.run('powershell', [
-      '-Command',
-      "if (-not (Get-Module -ListAvailable -Name AudioDeviceCmdlets)) { "
-          "Set-PSRepository -Name PSGallery -InstallationPolicy Trusted "
-          "-ErrorAction SilentlyContinue; "
-          "Install-Module -Name AudioDeviceCmdlets -Force -Confirm:\$false "
-          "-Scope CurrentUser -ErrorAction SilentlyContinue }"
-    ]);
+  // Set-AudioDevice (from the third-party AudioDeviceCmdlets PowerShell
+  // module) turned out to be unreliable on a real kiosk machine -- confirmed
+  // via the debug log: "The term 'Set-AudioDevice' is not recognized",
+  // meaning the module never actually installed. Install-Module depends on
+  // PSGallery reachability, the NuGet provider being bootstrapped, and a
+  // permissive script execution policy -- any one of which can silently
+  // fail on a locked-down signage box even when the machine otherwise has
+  // working internet (as this one does -- MQTT/HTTPS both connect fine).
+  // Control the OS volume directly via the Core Audio API instead
+  // (IAudioEndpointVolume, reached through Add-Type/COM interop, the same
+  // technique already used for simulateClickForWindows below) -- no
+  // external module, no internet dependency, no execution-policy exposure.
+  static const String _audioComShim = r'''
+using System;
+using System.Runtime.InteropServices;
+[Guid("5CDF2C82-841E-4546-9722-0CF74078229A"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IAudioEndpointVolume {
+  int f0(); int f1();
+  int GetChannelCount(out uint c);
+  int SetMasterVolumeLevel(float l, [MarshalAs(UnmanagedType.LPStruct)] Guid ctx);
+  int SetMasterVolumeLevelScalar(float l, [MarshalAs(UnmanagedType.LPStruct)] Guid ctx);
+  int GetMasterVolumeLevel(out float l);
+  int GetMasterVolumeLevelScalar(out float l);
+  int SetChannelVolumeLevel(uint ch, float l, [MarshalAs(UnmanagedType.LPStruct)] Guid ctx);
+  int SetChannelVolumeLevelScalar(uint ch, float l, [MarshalAs(UnmanagedType.LPStruct)] Guid ctx);
+  int GetChannelVolumeLevel(uint ch, out float l);
+  int GetChannelVolumeLevelScalar(uint ch, out float l);
+  int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, [MarshalAs(UnmanagedType.LPStruct)] Guid ctx);
+  int GetMute(out bool mute);
+}
+[Guid("D666063F-1587-4E43-81F1-B948E807363F"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDevice {
+  int Activate(ref Guid iid, int ctx, IntPtr activationParams, [MarshalAs(UnmanagedType.IUnknown)] out object endpointVolume);
+}
+[Guid("A95664D2-9614-4F35-A746-DE8DB63617E6"), InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+interface IMMDeviceEnumerator {
+  int f0();
+  int GetDefaultAudioEndpoint(int dataFlow, int role, out IMMDevice endpoint);
+}
+[ComImport, Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+class MMDeviceEnumeratorComObject { }
+public class SignageXAudio {
+  static IAudioEndpointVolume Endpoint() {
+    var enumerator = (IMMDeviceEnumerator)(new MMDeviceEnumeratorComObject());
+    IMMDevice device;
+    enumerator.GetDefaultAudioEndpoint(0, 1, out device);
+    var iid = typeof(IAudioEndpointVolume).GUID;
+    object epv;
+    device.Activate(ref iid, 23, IntPtr.Zero, out epv);
+    return (IAudioEndpointVolume)epv;
   }
+  public static void SetVolume(int percent) {
+    Endpoint().SetMasterVolumeLevelScalar(percent / 100f, Guid.Empty);
+  }
+}
+''';
 
   Future<void> _setWindowsVolume(int volume) async {
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
 
-    await _ensureAudioDeviceCmdlets();
-    final result = await Process.run('powershell',
-        ['-Command', 'Set-AudioDevice -PlaybackVolume $volume']);
+    final script = "\$def = @'\n$_audioComShim\n'@\n"
+        "Add-Type -TypeDefinition \$def -Language CSharp -ErrorAction Stop\n"
+        "[SignageXAudio]::SetVolume($volume)";
+    final result = await Process.run('powershell', ['-Command', script]);
     print('Output: ${result.stdout}');
     print('Error: ${result.stderr}');
     _debugLog(
