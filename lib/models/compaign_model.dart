@@ -530,6 +530,9 @@ class MediaItem {
       'ry',
       'mediaUrl',
       'media_url',
+      'download_url',
+      'downloadUrl',
+      'svgUrl',
       'points',
     ]) {
       if (obj[key] != null && !merged.containsKey(key)) {
@@ -545,11 +548,27 @@ class MediaItem {
     int? width,
     int? height,
   }) {
-    final existing = props['svg']?.toString() ?? '';
-    if (existing.contains('<svg')) return existing;
-
-    final url = _cleanMediaUrl(props['mediaUrl'] ?? props['media_url']);
-    if (url != null && url.isNotEmpty && url.contains('<svg')) return url;
+    // The CMS composition editor (Konva) renders shapes server-side and
+    // hands back the real SVG markup in properties.download_url -- this is
+    // the ONLY thing the working Android player reads for shape objects
+    // (CompositionRenderFragment.kt just drops props.download_url into the
+    // DOM, no local reconstruction at all). Prefer that pre-rendered SVG,
+    // wherever it landed, over rebuilding from primitive fill/stroke/
+    // shapeType properties below -- that reconstruction doesn't understand
+    // editor shape kinds like Konva's RegularPolygon (hexagon/octagon), so
+    // it was silently producing a wrong/blank shape instead of the real one.
+    for (final key in [
+      'download_url',
+      'downloadUrl',
+      'svg',
+      'mediaUrl',
+      'media_url',
+      'svgUrl',
+      'url',
+    ]) {
+      final candidate = _cleanMediaUrl(props[key]?.toString());
+      if (candidate != null && candidate.contains('<svg')) return candidate;
+    }
 
     final w = width ?? _asInt(props['width']) ?? 100;
     final h = height ?? _asInt(props['height']) ?? 100;

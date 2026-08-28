@@ -412,7 +412,26 @@ class MqttViewModel extends ChangeNotifier {
       final ipAddress = await networkInfo.getWifiIP();
       devicesinfo["last_ip_address"] = ipAddress;
 
-      devicesinfo["network_name"] = networkName ?? "";
+      // Windows' underlying WinRT connectivity API reports the network
+      // profile as the literal placeholder string "Loading..." while it is
+      // still resolving the real SSID -- this is not ours, network_info_plus
+      // just surfaces it verbatim. Publishing that placeholder makes the
+      // dashboard show "Loading..." forever, so only overwrite the last-known
+      // good name once a real (non-placeholder) name comes back; a transient
+      // placeholder reading no longer clobbers a value we already had.
+      var cleanName = (networkName ?? "").trim();
+      if (cleanName.startsWith('"') && cleanName.endsWith('"') && cleanName.length > 1) {
+        cleanName = cleanName.substring(1, cleanName.length - 1);
+      }
+      final isPlaceholder = cleanName.isEmpty ||
+          cleanName.toLowerCase() == "loading..." ||
+          cleanName.toLowerCase() == "loading" ||
+          cleanName.toLowerCase() == "identifying...";
+      if (!isPlaceholder) {
+        devicesinfo["network_name"] = cleanName;
+      } else if ((devicesinfo["network_name"] as String? ?? "").isEmpty) {
+        devicesinfo["network_name"] = cleanName;
+      }
 
       print('Network Name (SSID): $networkName');
       print('IP Address: $ipAddress');
