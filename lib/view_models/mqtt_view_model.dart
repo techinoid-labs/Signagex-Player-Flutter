@@ -2012,18 +2012,171 @@ EOF
     }
   }
 
+  // Keys that mean "this payload carries Player Configuration settings",
+  // whether they arrive properly wrapped as {"action":"action_setup_player",
+  // "settings":{...}} or -- confirmed from a real captured payload on the
+  // player's own device-info topic -- as a flat, un-wrapped player record
+  // with no "action" field at all (volume/brightness/reboot/screen_rotation
+  // sitting as top-level siblings of the device-info fields). The second
+  // shape used to hit the "no action field -- ignoring" early return below
+  // and get silently dropped, which is why volume/brightness/rotation
+  // updates from the CMS often never reached the player at all.
+  static const _settingsKeys = [
+    'mute_audio',
+    'brightness',
+    'volume',
+    'screen_rotation',
+    'touch_feedback',
+    'hide_no_campaign_messages',
+  ];
+
+  Future<void> _applySettingsMap(Map<String, dynamic>? settings) async {
+    if (settings == null) return;
+    _debugLog('applySettingsMap: ${jsonEncode(settings)}');
+
+    // The Player Configuration form in the CMS submits mute_audio,
+    // brightness, and volume together in a single settings payload -- these
+    // used to be one big if/else-if chain, so whichever setting was checked
+    // first (mute_audio, then brightness) "won" and silently swallowed the
+    // rest. That's why brightness worked but volume never applied:
+    // brightness's branch matched first and volume's branch never even ran.
+    // Independent ifs so every setting present in the payload actually gets
+    // applied.
+    if (settings["mute_audio"] == true) {
+      Map<String, dynamic> sendLog = {
+        "action": "player_logs",
+        "log": "Mute Audio",
+        "name": "Player ${deviceInfo?["hardware_details"]?["model"] ?? ""}",
+        "type": "info",
+        "date_time": DateTime.now().toIso8601String(),
+      };
+      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      if (Platform.isMacOS) {
+        deviceSettings.muteVolumeForMac();
+      } else if (Platform.isAndroid) {
+        deviceSettings.muteVolumeForAndroid();
+      } else if (Platform.isWindows) {
+        deviceSettings.muteVolumeForWindows();
+      } else if (Platform.isLinux) {
+        deviceSettings.muteVolumeForLinux();
+      }
+    }
+    if (settings["mute_audio"] == false) {
+      Map<String, dynamic> sendLog = {
+        "action": "player_logs",
+        "log": "Unmute Audio",
+        "name": "Player $globleTopic}",
+        "type": "info",
+        "date_time": DateTime.now().toIso8601String(),
+      };
+      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      if (Platform.isMacOS) {
+        deviceSettings.unmuteVolumeForMac();
+      } else if (Platform.isAndroid) {
+        deviceSettings.unmuteVolumeForAndroid();
+      } else if (Platform.isWindows) {
+        deviceSettings.unmuteVolumeForWindows();
+      } else if (Platform.isLinux) {
+        deviceSettings.unmuteVolumeForLinux();
+      }
+    }
+    if (settings["brightness"] != null && settings["brightness"]['value'] != null) {
+      Map<String, dynamic> sendLog = {
+        "action": "player_logs",
+        "log": "brightness",
+        "name": "Player ${deviceInfo?["hardware_details"]?["model"] ?? ""}",
+        "type": "info",
+        "date_time": DateTime.now().toIso8601String(),
+      };
+      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      if (Platform.isMacOS) {
+        print("No brightness For Mac");
+      } else if (Platform.isAndroid) {
+        var value = settings["brightness"]['value'];
+        deviceSettings.setAppBrightnessForAndroid(value);
+      } else if (Platform.isWindows) {
+        var res = settings["brightness"]['value'];
+        deviceSettings.adjustBrightnessForWindows(res);
+      } else if (Platform.isLinux) {
+        var res = settings["brightness"]['value'];
+        deviceSettings.changeBrightnessForLinux(res);
+      }
+    }
+    if (settings["volume"] != null) {
+      Map<String, dynamic> sendLog = {
+        "action": "player_logs",
+        "log": "Volume",
+        "name": "Player ${deviceInfo?["hardware_details"]?["model"] ?? ""}",
+        "type": "info",
+        "date_time": DateTime.now().toIso8601String(),
+      };
+      _mqttClientService.publish(topic, jsonEncode(sendLog));
+      if (Platform.isMacOS) {
+        var res = settings["volume"];
+        deviceSettings.setVolumeForMac(res);
+      } else if (Platform.isAndroid) {
+        var value = settings["volume"];
+        deviceSettings.setVolumeForAndroid(value);
+      } else if (Platform.isWindows) {
+        var res = settings["volume"];
+        deviceSettings.changeVolumeForWindows(res is int ? res : int.tryParse(res.toString()) ?? 50);
+      } else if (Platform.isLinux) {
+        var res = settings["volume"];
+        deviceSettings.changeVolumeForLinux(res.toString());
+      }
+    }
+    // Screen Rotation / Show touch feedback / Hide helpful messages --
+    // field names (screen_rotation, touch_feedback,
+    // hide_no_campaign_messages) confirmed against the working Android
+    // player's Setting model. These are pure Flutter widget-tree concerns
+    // (a RotatedBox around the whole app, a tap-feedback overlay, a
+    // no-campaign-screen gate), so they apply the same way on every
+    // platform rather than needing a per-platform native call like
+    // volume/brightness do.
+    if (settings["screen_rotation"] != null) {
+      final raw = settings["screen_rotation"].toString();
+      final normalized = raw.toLowerCase() == "landscape" ? "0" : raw;
+      final degrees = int.tryParse(normalized);
+      if (degrees != null) {
+        screenRotationDegrees.value = ((degrees % 360) + 360) % 360;
+        _debugLog('screen_rotation applied: $degrees degrees');
+      }
+    }
+    if (settings["touch_feedback"] != null) {
+      touchFeedbackEnabled.value = settings["touch_feedback"] == true;
+    }
+    if (settings["hide_no_campaign_messages"] != null) {
+      hideNoCampaignMessages.value = settings["hide_no_campaign_messages"] == true;
+    }
+  }
+
   void _handleIncomingMessage(String message) async {
     print('Received message in ViewModel: $message');
 
     print('Received message in store state: $storeState');
     print('i am in recive msgss:');
 // await restartApp();
-    final jsonObj = jsonDecode(message);
+    Map<String, dynamic> jsonObj;
+    try {
+      jsonObj = jsonDecode(message) as Map<String, dynamic>;
+    } catch (e) {
+      _debugLog('_handleIncomingMessage: FAILED to decode JSON -- $e');
+      return;
+    }
 
     print('Saving JSON Object: $jsonObj');
 
     // Check if message has an action field
     if (jsonObj["action"] == null) {
+      // A real captured payload on this player's own device-info topic
+      // showed the backend echoing back the full player record with
+      // volume/brightness/screen_rotation/mute_audio as flat top-level
+      // fields and no "action" wrapper at all -- apply those instead of
+      // dropping the message just because "action" is missing.
+      if (_settingsKeys.any((k) => jsonObj[k] != null)) {
+        await _applySettingsMap(jsonObj);
+        return;
+      }
       // Message doesn't have an action field - likely device info or other data
       // Just log it and return, don't process it as a command
       print('MQTT_LOGS:: Received message without action field - ignoring');
@@ -2104,11 +2257,6 @@ EOF
         deviceSettings.rebootDeviceForLinux();
       }
     } else if (jsonObj["action"] == "action_setup_player") {
-      // Full payload, for confirming the field names of any Player
-      // Configuration option that isn't wired up yet (autostart-on-boot,
-      // auto-update, legacy webview, safe-mode video, volume timeout, etc.
-      // have no confirmed backend key -- this is how to find them).
-      _debugLog('action_setup_player settings: ${jsonEncode(jsonObj["settings"])}');
       Map<String, dynamic> sendLog = {
         "action": "Action Setup Player",
         "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
@@ -2122,140 +2270,7 @@ EOF
           await _checkPairingStatus();
         }
       }
-      // print("action mute${jsonObj["settings"]?["mute_audio"]}");
-      // The Player Configuration form in the CMS submits mute_audio,
-      // brightness, and volume together in a single settings payload --
-      // these used to be one big if/else-if chain, so whichever setting was
-      // checked first (mute_audio, then brightness) "won" and silently
-      // swallowed the rest. That's why brightness worked but volume never
-      // applied: brightness's branch matched first and volume's branch
-      // never even ran. Independent ifs so every setting present in the
-      // payload actually gets applied.
-      if (jsonObj["settings"] != null &&
-          jsonObj["settings"]["mute_audio"] == true) {
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "Mute Audio",
-          "name": "Player ${deviceInfo!["hardware_details"]["model"]}",
-          "type": "info",
-          "date_time": DateTime.now().toIso8601String(),
-        };
-
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
-        if (Platform.isMacOS) {
-          deviceSettings.muteVolumeForMac();
-        } else if (Platform.isAndroid) {
-          print("i am here for andorind");
-          deviceSettings.muteVolumeForAndroid();
-        } else if (Platform.isWindows) {
-          deviceSettings.muteVolumeForWindows();
-        } else if (Platform.isLinux) {
-          deviceSettings.muteVolumeForLinux();
-        }
-      }
-      if (jsonObj["settings"] != null &&
-          jsonObj["settings"]["mute_audio"] == false) {
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "Unmute Audio",
-          "name": "Player $globleTopic}",
-          "type": "info",
-          "date_time": DateTime.now().toIso8601String(),
-        };
-
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
-        if (Platform.isMacOS) {
-          deviceSettings.unmuteVolumeForMac();
-        } else if (Platform.isAndroid) {
-          print("i am here for andorind");
-          deviceSettings.unmuteVolumeForAndroid();
-        } else if (Platform.isWindows) {
-          deviceSettings.unmuteVolumeForWindows();
-        } else if (Platform.isLinux) {
-          deviceSettings.unmuteVolumeForLinux();
-        }
-      }
-      if (jsonObj["settings"] != null &&
-          jsonObj["settings"]["brightness"] != null &&
-          jsonObj["settings"]["brightness"]['value'] != null) {
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "brightness",
-          "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-          "type": "info",
-          "date_time": DateTime.now().toIso8601String(),
-        };
-
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
-        if (Platform.isMacOS) {
-          print("No brightness For Mac");
-          deviceSettings.unmuteVolumeForMac();
-        } else if (Platform.isAndroid) {
-          print("i am here for andorind");
-          var value = jsonObj["settings"]["brightness"]['value'];
-          deviceSettings.setAppBrightnessForAndroid(value);
-        } else if (Platform.isWindows) {
-          var res = jsonObj["settings"]["brightness"]['value'];
-          deviceSettings.adjustBrightnessForWindows(res);
-        } else if (Platform.isLinux) {
-          var res = jsonObj["settings"]["brightness"]['value'];
-          deviceSettings.changeBrightnessForLinux(res);
-        }
-      }
-      if (jsonObj["settings"] != null &&
-          jsonObj["settings"]["volume"] != null) {
-        Map<String, dynamic> sendLog = {
-          "action": "player_logs",
-          "log": "Volume",
-          "name": "Player ${deviceInfo!["hardware_details"]["model"]}",
-          "type": "info",
-          "date_time": DateTime.now().toIso8601String(),
-        };
-
-        _mqttClientService.publish(topic, jsonEncode(sendLog));
-        if (Platform.isMacOS) {
-          print("No Volue For Mac");
-          var res = jsonObj["settings"]["volume"];
-          deviceSettings.setVolumeForMac(res);
-        } else if (Platform.isAndroid) {
-          print("i am here for andorind");
-          var value = jsonObj["settings"]["volume"];
-          deviceSettings.setVolumeForAndroid(value);
-        } else if (Platform.isWindows) {
-          var res = jsonObj["settings"]["volume"];
-          deviceSettings.changeVolumeForWindows(res);
-        } else if (Platform.isLinux) {
-          var res = jsonObj["settings"]["volume"];
-          deviceSettings.changeVolumeForLinux(res.toString());
-        }
-      }
-      // Screen Rotation / Show touch feedback / Hide helpful messages --
-      // field names (screen_rotation, touch_feedback,
-      // hide_no_campaign_messages) confirmed against the working Android
-      // player's Setting model. These are pure Flutter widget-tree concerns
-      // (a RotatedBox around the whole app, a tap-feedback overlay, a
-      // no-campaign-screen gate), so they apply the same way on every
-      // platform rather than needing a per-platform native call like
-      // volume/brightness do.
-      if (jsonObj["settings"] != null &&
-          jsonObj["settings"]["screen_rotation"] != null) {
-        final raw = jsonObj["settings"]["screen_rotation"].toString();
-        final normalized = raw.toLowerCase() == "landscape" ? "0" : raw;
-        final degrees = int.tryParse(normalized);
-        if (degrees != null) {
-          screenRotationDegrees.value = ((degrees % 360) + 360) % 360;
-          _debugLog('screen_rotation applied: $degrees degrees');
-        }
-      }
-      if (jsonObj["settings"] != null &&
-          jsonObj["settings"]["touch_feedback"] != null) {
-        touchFeedbackEnabled.value = jsonObj["settings"]["touch_feedback"] == true;
-      }
-      if (jsonObj["settings"] != null &&
-          jsonObj["settings"]["hide_no_campaign_messages"] != null) {
-        hideNoCampaignMessages.value =
-            jsonObj["settings"]["hide_no_campaign_messages"] == true;
-      }
+      await _applySettingsMap(jsonObj["settings"] as Map<String, dynamic>?);
       var data = {"success": true};
       publishMessage(globleTopic, jsonEncode(data));
     } else if (jsonObj["action"] == "action click") {

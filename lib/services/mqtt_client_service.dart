@@ -254,8 +254,16 @@ class MqttClientService {
       print('MQTT_LOGS:: Cannot subscribe - topic is empty');
       return;
     }
-    print('MQTT_LOGS:: Subscribing to the topic: $topic');
-    _client.subscribe(topic, MqttQos.atMostOnce);
+    // Subscribe with the multi-level wildcard, matching the working Android
+    // player's MqttClientHelper.subscribe ("$topic/#") -- subscribing to
+    // the bare topic only receives messages published to that exact topic,
+    // not to sub-topics like "$topic/remote" (where Remote View's
+    // press_home/press_back/send_text/click commands actually arrive), so
+    // this player was silently never receiving those at all.
+    final wildcardTopic = '$topic/#';
+    print('MQTT_LOGS:: Subscribing to the topic: $wildcardTopic');
+    _client.subscribe(wildcardTopic, MqttQos.atMostOnce);
+    _debugLog('subscribe($wildcardTopic)');
 
     _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
       _handleReceivedMessage(c);
