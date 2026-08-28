@@ -804,6 +804,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       final effectiveDuration = _effectiveMediaDurationSeconds(currentMedia);
       print(
           '$green▶️  MEDIA: Loading and playing media (duration: $effectiveDuration seconds)$reset');
+      _debugLog(
+          'zone=${widget.zoneId} playing mediaType=${currentMedia.mediaType} '
+          'id=${currentMedia.id} url=${currentMedia.mediaUrl ?? "N/A"} duration=$effectiveDuration');
       if (!currentMedia.isAd) {
         _startMediaLoop(effectiveDuration.toString(), currentMedia);
       }
@@ -815,6 +818,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       _loadMedia(currentMedia);
     } else {
       print('$red⏭️  MEDIA: Skipping media (restrictions did not pass)$reset');
+      _debugLog(
+          'zone=${widget.zoneId} SKIPPING mediaType=${currentMedia.mediaType} '
+          'id=${currentMedia.id} url=${currentMedia.mediaUrl ?? "N/A"} reason=restrictions_failed');
       _sendAdProofOfPlay(
         currentMedia,
         status: 'failed',
@@ -1095,22 +1101,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final localPath =
         isNetwork ? null : (_normalizeLocalMediaPath(mediaUrl) ?? mediaUrl);
 
-    // #region agent log
-    _agentDebugLog(
-      'campaign_view.dart:_initializeNextVideo',
-      'creating video controller',
-      {
-        'isNetwork': isNetwork,
-        'mediaUrlSample': mediaUrl.length > 100
-            ? '${mediaUrl.substring(0, 100)}...'
-            : mediaUrl,
-        'localPathSample': localPath != null && localPath.length > 100
-            ? '${localPath.substring(0, 100)}...'
-            : localPath,
-      },
-      'A',
-    );
-    // #endregion
+    _debugLog(
+        'zone=${widget.zoneId} _initializeNextVideo isNetwork=$isNetwork '
+        'url=$mediaUrl localPath=${localPath ?? "N/A"} '
+        'fileExists=${localPath != null ? File(localPath).existsSync() : "N/A"}');
 
     _videoController?.dispose();
     final VideoPlayerController controller = isNetwork
@@ -1130,18 +1124,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
           print("Target play duration: $targetDuration seconds");
           print("Video length: $videoLength seconds");
-
-          // #region agent log
-          _agentDebugLog(
-            'campaign_view.dart:_initializeNextVideo',
-            'video init success',
-            {
-              'isNetwork': isNetwork,
-              'durationSec': videoLength,
-            },
-            'A',
-          );
-          // #endregion
+          _debugLog(
+              'zone=${widget.zoneId} video INIT SUCCESS isNetwork=$isNetwork '
+              'targetDuration=$targetDuration videoLength=$videoLength url=$mediaUrl');
 
           setState(() {
             _videoController!.setVolume(volume.clamp(0.0, 1.0));
@@ -1173,17 +1158,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           }
         }
       }).catchError((error) {
-        // #region agent log
-        _agentDebugLog(
-          'campaign_view.dart:_initializeNextVideo',
-          'video init failed',
-          {
-            'isNetwork': isNetwork,
-            'error': error.toString(),
-          },
-          'A',
-        );
-        // #endregion
+        _debugLog(
+            'zone=${widget.zoneId} video INIT FAILED isNetwork=$isNetwork '
+            'url=$mediaUrl error=$error');
         print("[LOG] Error initializing video: $error");
         print("[LOG] Video URL: ${nextMedia.mediaUrl}");
         if (!_isDisposed && mounted) {
@@ -1317,14 +1294,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
   @override
   void dispose() {
-    // #region agent log
-    _agentDebugLog(
-      'campaign_view.dart:dispose',
-      'VideoPlaylistWidget disposing',
-      {'cancelledRestrictionTimer': _restrictionCheckTimer != null},
-      'B',
-    );
-    // #endregion
+    _debugLog(
+        'zone=${widget.zoneId} VideoPlaylistWidget DISPOSING '
+        'campaignId=${widget.campaignId ?? "N/A"} mediaIndex=$_currentMediaIndex '
+        'hadVideoController=${_videoController != null}');
     _isDisposed = true;
     _timer?.cancel();
     _restrictionCheckTimer?.cancel();
