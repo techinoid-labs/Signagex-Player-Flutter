@@ -1,6 +1,7 @@
 import 'dart:convert';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
+import 'package:digital_signage/utils/debug_log.dart';
 
 int? _asInt(dynamic value) {
   if (value == null) return null;
@@ -891,6 +892,19 @@ class MediaItem {
       final scaledRaw = (scaleX == 1.0 && scaleY == 1.0)
           ? raw
           : {...raw, 'width': effectiveWidth, 'height': effectiveHeight};
+
+      // TEMP diagnostic: dump the raw object's own fields verbatim so we can
+      // see actual scaleX/scaleY/rotation/offset values instead of guessing
+      // -- the last two attempts at this compensation (add it, remove it)
+      // were both based on indirect evidence, not the raw JSON itself.
+      debugLog(
+        'CompositionObject',
+        'zone=$zoneIndex type=${raw['type']} name=${raw['name']} '
+        'x=${raw['x']} y=${raw['y']} width=${raw['width']} height=${raw['height']} '
+        'scaleX=${raw['scaleX']} scaleY=${raw['scaleY']} rotation=${raw['rotation']} '
+        'offsetX=${raw['offsetX']} offsetY=${raw['offsetY']} '
+        'effectiveWidth=$effectiveWidth effectiveHeight=$effectiveHeight',
+      );
 
       final media = _mediaItemFromCompositionObject(scaledRaw, zoneIndex);
       if (media == null) continue;
