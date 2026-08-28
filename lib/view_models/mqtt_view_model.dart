@@ -1887,7 +1887,15 @@ EOF
 
         _stopPeriodicReporting();
         _state = MqttState.pairedScreen;
+
+        _pairingPollTimer ??=
+            Timer.periodic(const Duration(seconds: 10), (_) async {
+          await _checkPairingStatus();
+        });
       } else if (response["paired"] == true) {
+        _pairingPollTimer?.cancel();
+        _pairingPollTimer = null;
+
         // Persist paired=true so the action_setup_player handler's
         // `storeState == false` gate (mqtt_view_model.dart ~2280) stops
         // re-running this whole pairing check on every subsequent
@@ -1996,6 +2004,16 @@ EOF
   // Retry counter for pairing status check
   int _pairingRetryCount = 0;
   static const int _maxPairingRetries = 3;
+
+  // Polls _checkPairingStatus while stuck on the pairing/QR screen instead of
+  // relying solely on the backend pushing an action_setup_player MQTT
+  // message once the device is paired in the CMS. That push is a single,
+  // unacknowledged, best-effort message -- if it's ever missed (subscribe
+  // timing, broker hiccup, or the pairing action landing on a different
+  // environment's backend than this build talks to), the device sat on the
+  // pairing screen forever with no way to recover except an app restart,
+  // which looked identical to "player not connecting" from the CMS side.
+  Timer? _pairingPollTimer;
 
   void setTapPosition(double x, double y) {
     tapX = x;
@@ -2930,6 +2948,7 @@ EOF
   void dispose() {
     _timerOfCampaign?.cancel();
     _timer?.cancel();
+    _pairingPollTimer?.cancel();
     _stopPeriodicReporting();
     super.dispose();
   }
