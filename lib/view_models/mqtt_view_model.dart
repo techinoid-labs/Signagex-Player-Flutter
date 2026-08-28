@@ -156,31 +156,38 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> loadDeviceInfoFromSharedPreferences() async {
+    // Real device stats get freshly (re-)collected by
+    // getSystemDataForWindows/getDeviceInfoAndroid/etc. within a couple
+    // seconds of every single launch, on every platform -- so there was
+    // never a good reason to seed the live map from an old disk-cached copy
+    // in the first place. Doing so actively caused two different bugs on
+    // top of each other:
+    //
+    // 1. This used to REASSIGN the `deviceInfoMap` variable to a brand new
+    //    object (`deviceInfoMap = Map.from(...)`). `devicesinfo` (what
+    //    every population/publish call in this file actually reads and
+    //    writes) was bound to the *original* object at construction time
+    //    and doesn't follow that reassignment -- from that point on the two
+    //    names silently pointed at two different maps for the rest of the
+    //    app's lifetime, and every write to devicesinfo (manufacturer, app
+    //    version, everything) was landing on an object nothing ever
+    //    published again.
+    // 2. Fixing #1 by clearing-and-merging into the existing object instead
+    //    (so the two names can't diverge) turned out to just be a
+    //    differently-shaped version of the same problem: whatever had
+    //    *already* been written into devicesinfo by a fast-completing async
+    //    call (e.g. _populateAppVersion, which can finish before this does)
+    //    got wiped by the clear() and was never restored, since nothing
+    //    re-sets those fields a second time. Observed in a real debug log:
+    //    player_version and the static "action" field vanishing from every
+    //    published payload after being confirmed set moments earlier, and a
+    //    network_name of literally "Loading..." (a value nothing in the
+    //    current codebase even writes) resurfacing from a disk cache that
+    //    predates this field existing.
+    //
+    // Simplest correct fix: don't load stale data into the live map at all.
     SharedPreferences prefs = await SharedPreferences.getInstance();
-    String? jsonString = prefs.getString('deviceInfoMap');
     prefs.clear();
-    if (jsonString != null) {
-      // `devicesinfo` (the field every population/publish call in this
-      // class actually uses) was assigned `= deviceInfoMap` once, at
-      // construction time -- it's a reference to that same map object.
-      // Reassigning the *variable* `deviceInfoMap` here (as this used to
-      // do) only repoints the global, it does not change what `devicesinfo`
-      // points to. From that moment on, every devicesinfo["..."] = ...
-      // write anywhere in this file (Windows/Mac/Linux/Android device
-      // stats, app/player version, manufacturer, everything) lands on an
-      // object that publishMessage(globleTopic, jsonEncode(deviceInfoMap))
-      // never reads from again -- silently discarded for the rest of the
-      // app's lifetime. This is why device-info fields stayed stuck at
-      // whatever was sent on the very first-ever pairing, no matter what
-      // got fixed afterward. Merge into the existing object in place
-      // instead, so the two names keep referring to the same map.
-      deviceInfoMap
-        ..clear()
-        ..addAll(Map<String, dynamic>.from(jsonDecode(jsonString)));
-      print('Loaded device info from SharedPreferences: $deviceInfoMap');
-    } else {
-      print('No device info found in SharedPreferences.');
-    }
   }
 
   // Diagnostic-only file logger. print()/debugPrint() are invisible on a
@@ -1815,7 +1822,6 @@ EOF
 
       globleTopic = _topic;
       subsibeMessage(_topic);
-      await prefs.setString('deviceInfoMap', jsonEncode(deviceInfoMap));
       _debugLog('_checkPairingStatus: publishing deviceInfoMap to $globleTopic: ${jsonEncode(deviceInfoMap)}');
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
 
