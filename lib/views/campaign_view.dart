@@ -1108,7 +1108,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     _videoController?.dispose();
     final VideoPlayerController controller = isNetwork
-        ? VideoPlayerController.networkUrl(Uri.parse(mediaUrl))
+        ? VideoPlayerController.network(mediaUrl)
         : VideoPlayerController.file(File(localPath!));
 
     _videoController = controller
@@ -1928,7 +1928,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         : (_normalizeLocalMediaPath(widget.filePath) ?? widget.filePath);
 
     final VideoPlayerController controller = _isNetworkUrl
-        ? VideoPlayerController.networkUrl(Uri.parse(resolvedPath))
+        ? VideoPlayerController.network(resolvedPath)
         : VideoPlayerController.file(File(resolvedPath));
     _controller = controller
       ..initialize().then(
