@@ -1303,6 +1303,7 @@ EOF
         if (mediaType == 'web_app_instance' || mediaType == 'text/html') {
           print(
               'Skipping download for web media type: $mediaType, url: $mediaUrl');
+          _mediaPath[playlist.id]!.add(mediaUrl);
           completedDownloads++;
           _updateOverallProgress(completedDownloads);
           continue;
@@ -1434,7 +1435,6 @@ EOF
           },
         );
 
-        _mediaPath[playlistId]?.add(filePath);
         print('Download complete: $filePath');
         return; // Exit on successful download
       } catch (e) {

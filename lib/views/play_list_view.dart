@@ -7,8 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
-import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
+import 'package:media_kit/media_kit.dart' as media_kit;
+import 'package:media_kit_video/media_kit_video.dart' as media_kit_video;
 
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/view_models/mqtt_view_model.dart';
@@ -228,8 +228,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           _isCurrentDayAllowed(nextMedia.schedule.period!.days, now);
       print("Is current day allowed: $isDayAllowed");
 
-      String? timeFrom = nextMedia.schedule.period!.time.from;
-      String? timeTo = nextMedia.schedule.period!.time.to;
+      final timeFrom = nextMedia.schedule.period!.time.from;
+      final timeTo = nextMedia.schedule.period!.time.to;
 
       DateTime currentTime = DateTime.now();
       DateTime fromTime = DateTime.now().copyWith(
@@ -605,8 +605,8 @@ class VideoPlayerWidget extends StatefulWidget {
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     with SingleTickerProviderStateMixin {
-  late final Player _player;
-  late final VideoController _videoController;
+  late final media_kit.Player _player;
+  late final media_kit_video.VideoController _videoController;
   StreamSubscription<bool>? _completedSubscription;
   StreamSubscription<String>? _errorSubscription;
   bool _isLoading = true;
@@ -618,8 +618,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   @override
   void initState() {
     super.initState();
-    _player = Player();
-    _videoController = VideoController(_player);
+    _player = media_kit.Player();
+    _videoController = media_kit_video.VideoController(_player);
     _completedSubscription = _player.stream.completed.listen((completed) {
       if (completed && !_isVideoEnded) {
         _isVideoEnded = true;
@@ -656,8 +656,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     try {
       _isVideoEnded = false;
       _isFirstFrameRendered = false;
-      await _player.setPlaylistMode(PlaylistMode.loop);
-      await _player.open(Media(file.path), play: false);
+      await _player.setPlaylistMode(media_kit.PlaylistMode.loop);
+      await _player.open(media_kit.Media(file.path), play: false);
       await _player.setVolume(widget.currentVolume.clamp(0.0, 1.0) * 100);
       await _player.play();
       if (!mounted) return;
@@ -703,7 +703,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     return Stack(
       fit: StackFit.expand,
       children: [
-        Video(controller: _videoController, controls: NoVideoControls),
+        media_kit_video.Video(
+          controller: _videoController,
+          controls: media_kit_video.NoVideoControls,
+        ),
         if (!_isFirstFrameRendered)
           const ColoredBox(
             color: Colors.white,
