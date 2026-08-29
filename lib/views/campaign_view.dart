@@ -2122,21 +2122,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         ),
       );
     } else {
-      final videoSize = _controller!.value.size;
       videoWidget = SizedBox.expand(
-        child: ClipRect(
-          child: ColoredBox(
-            color: Colors.black,
-            child: FittedBox(
-              fit: BoxFit.contain,
-              child: SizedBox(
-                width: videoSize.width,
-                height: videoSize.height,
-                child: VideoPlayer(_controller!),
-              ),
-            ),
-          ),
-        ),
+        child: VideoPlayer(_controller!),
       );
     }
 
