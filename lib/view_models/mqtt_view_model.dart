@@ -1706,22 +1706,31 @@ EOF
     }
 
     final dio = Dio();
-    print('Downloading from URL: $downloadUrl to $filePath');
-    try {
-      await dio.download(
-        downloadUrl,
-        filePath,
-        onReceiveProgress: (received, total) {
-          if (total > 0) onProgress?.call(received, total);
-        },
-      );
-      print('Download complete: $filePath');
-      return filePath;
-    } catch (e) {
-      print('Error downloading $downloadUrl: $e');
-      // If download fails, return the original URL so widget can try to handle it
-      return fullUrl;
+    const maxAttempts = 3;
+    for (var attempt = 1; attempt <= maxAttempts; attempt++) {
+      print(
+          'Downloading from URL: $downloadUrl to $filePath (attempt $attempt/$maxAttempts)');
+      try {
+        await dio.download(
+          downloadUrl,
+          filePath,
+          onReceiveProgress: (received, total) {
+            if (total > 0) onProgress?.call(received, total);
+          },
+        );
+        print('Download complete: $filePath');
+        return filePath;
+      } catch (e) {
+        print('Error downloading $downloadUrl (attempt $attempt/$maxAttempts): $e');
+        if (attempt >= maxAttempts) {
+          // Out of retries -- return the original URL so the widget can try
+          // to stream it directly as a last resort.
+          return fullUrl;
+        }
+        await Future.delayed(const Duration(seconds: 2));
+      }
     }
+    return fullUrl;
   }
 
   Future<void> requestStoragePermission() async {

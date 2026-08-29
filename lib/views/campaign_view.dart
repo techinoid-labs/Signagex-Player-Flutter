@@ -402,6 +402,7 @@ class _CampaignViewState extends State<CampaignView> {
                 campaignSchedule: campaign.campaignSchedule,
                 coordinateBaseWidth: campaignWidth,
                 coordinateBaseHeight: campaignHeight,
+                fontScale: scaleY,
               ),
             );
           }).toList(),
@@ -421,6 +422,11 @@ class VideoPlaylistWidget extends StatefulWidget {
 
   final double coordinateBaseWidth;
   final double coordinateBaseHeight;
+  // Canvas-design-to-device ratio (deviceHeight/campaignHeight) -- text
+  // font size is an absolute design-canvas pixel value like zone x/y/width/
+  // height, so it needs the same scaling or it overflows/clips whenever the
+  // device resolution differs from the composition's design canvas.
+  final double fontScale;
 
   const VideoPlaylistWidget({
     super.key,
@@ -432,6 +438,7 @@ class VideoPlaylistWidget extends StatefulWidget {
     required this.campaignSchedule,
     required this.coordinateBaseWidth,
     required this.coordinateBaseHeight,
+    this.fontScale = 1.0,
   });
 
   @override
@@ -675,6 +682,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   campaignSchedule: widget.campaignSchedule,
                   coordinateBaseWidth: nestedCoordinateBaseWidth,
                   coordinateBaseHeight: nestedCoordinateBaseHeight,
+                  fontScale: scaleY,
                 ),
               );
             }).toList(),
@@ -1704,6 +1712,18 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       print("[LOG] _buildMediaWidget - Building TextWidget");
       final cacheKey = _mediaWidgetCacheKey('text', media, mediaUrl);
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
+        // fontSize/strokeWidth/shadowBlur are design-canvas pixel values --
+        // scale them with the zone box or they overflow/clip on any device
+        // resolution that differs from the composition's design canvas.
+        final scaledFontSize = media.settings?.fontSize != null
+            ? (media.settings!.fontSize! * widget.fontScale).round()
+            : null;
+        final scaledStrokeWidth = media.settings?.strokeWidth != null
+            ? (media.settings!.strokeWidth! * widget.fontScale).round()
+            : null;
+        final scaledShadowBlur = media.settings?.shadowBlur != null
+            ? (media.settings!.shadowBlur! * widget.fontScale).round()
+            : null;
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
@@ -1713,11 +1733,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   text: media.settings?.text ?? '',
                   onTextEnd: _onMediaEnd,
                   transitionType: media.settings?.transition ?? 'none',
-                  fontSize: media.settings?.fontSize,
+                  fontSize: scaledFontSize,
                   fontFamily: media.settings?.fontFamily,
                   fill: media.settings?.fill,
-                  strokeWidth: media.settings?.strokeWidth,
-                  shadowBlur: media.settings?.shadowBlur,
+                  strokeWidth: scaledStrokeWidth,
+                  shadowBlur: scaledShadowBlur,
                 ),
               ),
             );
@@ -1927,6 +1947,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         setState(() {
           _hasError = true;
           _errorDescription = error;
+        });
+        // Don't leave the zone frozen on a broken video forever -- move on
+        // so the rest of the rotation still plays.
+        Future.delayed(const Duration(seconds: 5), () {
+          if (mounted && _hasError && !_isVideoEnded) {
+            _isVideoEnded = true;
+            widget.onVideoEnd();
+          }
         });
       }
     });

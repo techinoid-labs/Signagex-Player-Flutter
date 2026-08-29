@@ -208,7 +208,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         print("Always play is true for media: ${nextMedia.mediaUrl}");
         String duration = nextMedia.settings.duration.toString();
         print("Loading duration at index $_currentIndex: $duration");
-        _startMediaLoop(duration);
+        // Videos advance via VideoPlayerWidget's onVideoEnd (real playback
+        // completion) -- a CMS duration timer here races that and, when the
+        // configured duration is short/zero, wins first and advances past
+        // the video before it ever paints a frame.
+        if (!_isVideoMedia(nextMedia)) {
+          _startMediaLoop(duration);
+        }
         _loadMedia(nextMedia);
         return;
       }
@@ -251,7 +257,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       if (isDateInRange && isDayAllowed && isTimeInRange) {
         String duration = nextMedia.settings.duration.toString();
         print("Loading duration at index $_currentIndex: $duration");
-        _startMediaLoop(duration);
+        if (!_isVideoMedia(nextMedia)) {
+          _startMediaLoop(duration);
+        }
         _loadMedia(nextMedia);
       } else {
         print("Skipping media not allowed by schedule.");
@@ -542,7 +550,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           },
           child: _isVideoMedia(currentMedia)
               ? VideoPlayerWidget(
-                  key: ValueKey(currentMedia.mediaUrl),
+                  // Stable key (not per-URL) so consecutive video items reuse
+                  // the same player/State via didUpdateWidget instead of a
+                  // full teardown/recreate, which is what caused the blank
+                  // gap between videos.
+                  key: const ValueKey('playlist_video'),
                   filePath: currentMedia.mediaUrl,
                   currentVolume:
                       double.parse(currentMedia.settings.volume.toString()),
