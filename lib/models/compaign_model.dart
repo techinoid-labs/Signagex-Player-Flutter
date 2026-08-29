@@ -346,6 +346,16 @@ class CampaignZone {
 
   factory CampaignZone.fromJson(Map<String, dynamic> json) {
     final mediaRaw = json["mediaItems"] ?? json["media_items"];
+    // TEMP diagnostic: a zone reported as "a playlist with multiple frames"
+    // showed only 1 mediaItem -- dump every key on the zone and each raw
+    // media item so we can see the CMS's actual field name for embedded
+    // playlist data instead of guessing at it.
+    debugLog(
+      'CampaignZoneRaw',
+      'zoneId=${json["id"]} keys=${json.keys.toList()} '
+      'mediaItemsCount=${mediaRaw is List ? mediaRaw.length : "n/a"} '
+      'mediaItemKeys=${mediaRaw is List ? mediaRaw.map((m) => m is Map ? m.keys.toList() : m.runtimeType.toString()).toList() : "n/a"}',
+    );
     // Same Konva behavior as zonesFromCompositionMap's "objects" path:
     // resizing a zone changes scaleX/scaleY, not width/height directly --
     // this "zones"-keyed payload path skipped that compensation entirely,
@@ -1235,7 +1245,21 @@ class MediaItem {
   }
 
   factory MediaItem.fromJson(Map<String, dynamic> json) {
-    final mediaType = _mediaTypeFromJson(json);
+    var mediaType = _mediaTypeFromJson(json);
+    // A linked playlist/nested composition sometimes arrives tagged with a
+    // generic mediaType (e.g. 'content') plus a content_id/composition_id
+    // reference rather than literally typed 'composition' -- without this
+    // it gets flattened to a single static frame instead of resolving into
+    // its real (possibly multi-frame) linked content.
+    if (mediaType?.toLowerCase() != 'composition' &&
+        mediaType?.toLowerCase() != 'campaign') {
+      final propsForDetection = json['properties'] is Map<String, dynamic>
+          ? json['properties'] as Map<String, dynamic>
+          : <String, dynamic>{};
+      if (objectLooksLikeNestedComposition(json, propsForDetection)) {
+        mediaType = 'composition';
+      }
+    }
     Settings? settings = json["settings"] == null
         ? null
         : Settings.fromJson(json["settings"]);
