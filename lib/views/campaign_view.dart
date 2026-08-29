@@ -580,8 +580,25 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   }
 
   String _mediaWidgetCacheKey(String kind, MediaItem media, String mediaUrl) {
+    // Include a settings fingerprint so republishing the SAME media id with
+    // different fontSize/fill/text/shape properties (e.g. iterating on a
+    // composition in the CMS) invalidates the cached widget instead of
+    // silently reusing the stale one.
+    final settings = media.settings;
+    final settingsFingerprint = settings == null
+        ? ''
+        : [
+            settings.text,
+            settings.html,
+            settings.fontSize,
+            settings.fontFamily,
+            settings.fill,
+            settings.strokeWidth,
+            settings.shadowBlur,
+            settings.kind,
+          ].join('|').hashCode;
     return '${widget.campaignId ?? ''}_${widget.zoneId}_${kind}_'
-        '${media.id ?? ''}_${_currentMediaIndex}_${mediaUrl.hashCode}';
+        '${media.id ?? ''}_${_currentMediaIndex}_${mediaUrl.hashCode}_$settingsFingerprint';
   }
 
   MediaItem _resolvedMediaAt(int index) {
@@ -816,6 +833,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           'zone=${widget.zoneId} playing mediaType=${currentMedia.mediaType} '
           'id=${currentMedia.id} url=${currentMedia.mediaUrl ?? "N/A"} duration=$effectiveDuration');
       if (!currentMedia.isAd && !_isVideoMedia(currentMedia)) {
+        _startMediaLoop(effectiveDuration.toString(), currentMedia);
+      } else if (currentMedia.isAd && _isNestedCampaign(currentMedia)) {
+        // Ad creatives normally get their duration timer from
+        // _ensureAdSlotProofOfPlaySession inside _loadMedia's ad branch, but
+        // a nested-composition ad creative returns below before ever
+        // reaching _loadMedia -- without this, nothing ever schedules a
+        // timer and the zone freezes on it forever.
         _startMediaLoop(effectiveDuration.toString(), currentMedia);
       }
 
@@ -1758,7 +1782,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       }
       print(
           '[LOG] _buildMediaWidget - Shape zone=${widget.zoneId} svgLen=${svgContent.length}');
-      final cacheKey = '${widget.zoneId}_shape_${media.id ?? ''}';
+      final cacheKey = _mediaWidgetCacheKey('shape', media, svgContent);
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/utils/debug_log.dart';
@@ -639,12 +640,110 @@ class MediaItem {
         final p = '0,$h ${w / 2},0 $w,$h';
         return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
             'viewBox="0 0 $w $h"><polygon points="$p" fill="$fill"$strokeAttr/></svg>';
+      case 'pentagon':
+        return _regularPolygonSvg(5, w, h, fill, strokeAttr);
+      case 'hexagon':
+        return _regularPolygonSvg(6, w, h, fill, strokeAttr);
+      case 'heptagon':
+        return _regularPolygonSvg(7, w, h, fill, strokeAttr);
+      case 'octagon':
+        return _regularPolygonSvg(8, w, h, fill, strokeAttr);
+      case 'nonagon':
+        return _regularPolygonSvg(9, w, h, fill, strokeAttr);
+      case 'decagon':
+        return _regularPolygonSvg(10, w, h, fill, strokeAttr);
+      case 'polygon':
+      case 'regularpolygon':
+        final sides = _asInt(props['sides'] ?? props['sidesCount']) ?? 6;
+        return _regularPolygonSvg(sides, w, h, fill, strokeAttr);
+      case 'star':
+        final numPoints = _asInt(props['numPoints']) ?? 5;
+        final innerRadiusPct = _asDouble(props['innerRadius']) ?? 0.5;
+        return _starSvg(numPoints, innerRadiusPct, w, h, fill, strokeAttr);
+      case 'ring':
+        final outerRadius = (w < h ? w : h) / 2;
+        final innerRadiusPct = _asDouble(props['innerRadius']) ?? 0.5;
+        return _ringSvg(outerRadius, innerRadiusPct, w, h, fill);
       case 'rect':
       case 'rectangle':
       default:
         return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
             'viewBox="0 0 $w $h"><rect width="$w" height="$h" fill="$fill"$strokeAttr/></svg>';
     }
+  }
+
+  /// Matches Konva.RegularPolygon: first vertex points straight up, vertices
+  /// evenly spaced clockwise, centered in the given box.
+  static String _regularPolygonSvg(
+    int sides,
+    int w,
+    int h,
+    String fill,
+    String strokeAttr,
+  ) {
+    if (sides < 3) sides = 3;
+    final cx = w / 2;
+    final cy = h / 2;
+    final radius = (w < h ? w : h) / 2;
+    final points = <String>[];
+    for (var i = 0; i < sides; i++) {
+      final angle = (-math.pi / 2) + (2 * math.pi * i / sides);
+      final x = cx + radius * math.cos(angle);
+      final y = cy + radius * math.sin(angle);
+      points.add('${x.toStringAsFixed(2)},${y.toStringAsFixed(2)}');
+    }
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
+        'viewBox="0 0 $w $h"><polygon points="${points.join(' ')}" '
+        'fill="$fill"$strokeAttr/></svg>';
+  }
+
+  /// Matches Konva.Star: alternating outer/inner vertices, first outer
+  /// vertex straight up.
+  static String _starSvg(
+    int numPoints,
+    double innerRadiusPct,
+    int w,
+    int h,
+    String fill,
+    String strokeAttr,
+  ) {
+    if (numPoints < 2) numPoints = 5;
+    final cx = w / 2;
+    final cy = h / 2;
+    final outerRadius = (w < h ? w : h) / 2;
+    final innerRadius = outerRadius * innerRadiusPct.clamp(0.01, 0.99);
+    final points = <String>[];
+    final totalVertices = numPoints * 2;
+    for (var i = 0; i < totalVertices; i++) {
+      final radius = i.isEven ? outerRadius : innerRadius;
+      final angle = (-math.pi / 2) + (math.pi * i / numPoints);
+      final x = cx + radius * math.cos(angle);
+      final y = cy + radius * math.sin(angle);
+      points.add('${x.toStringAsFixed(2)},${y.toStringAsFixed(2)}');
+    }
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
+        'viewBox="0 0 $w $h"><polygon points="${points.join(' ')}" '
+        'fill="$fill"$strokeAttr/></svg>';
+  }
+
+  /// Matches Konva.Ring: an annulus (donut) via evenodd fill between two
+  /// concentric circles.
+  static String _ringSvg(
+    double outerRadius,
+    double innerRadiusPct,
+    int w,
+    int h,
+    String fill,
+  ) {
+    final cx = w / 2;
+    final cy = h / 2;
+    final innerRadius = outerRadius * innerRadiusPct.clamp(0.01, 0.99);
+    return '<svg xmlns="http://www.w3.org/2000/svg" width="$w" height="$h" '
+        'viewBox="0 0 $w $h"><path fill-rule="evenodd" fill="$fill" d="'
+        'M${cx - outerRadius},$cy a$outerRadius,$outerRadius 0 1,0 ${outerRadius * 2},0 '
+        'a$outerRadius,$outerRadius 0 1,0 -${outerRadius * 2},0 Z '
+        'M${cx - innerRadius},$cy a$innerRadius,$innerRadius 0 1,0 ${innerRadius * 2},0 '
+        'a$innerRadius,$innerRadius 0 1,0 -${innerRadius * 2},0 Z"/></svg>';
   }
 
   static MediaItem? _mediaItemFromCompositionObject(
@@ -887,8 +986,11 @@ class MediaItem {
       final scaleY = _asDouble(raw['scaleY']) ?? 1.0;
       final baseWidth = _asInt(raw['width']) ?? 0;
       final baseHeight = _asInt(raw['height']) ?? 0;
-      final effectiveWidth = (baseWidth * scaleX).round();
-      final effectiveHeight = (baseHeight * scaleY).round();
+      // A 0-width/height zone (missing width/height in the raw Konva object)
+      // is never intentional -- it just makes the zone's content invisible
+      // or force-clipped, so floor it instead of trusting a literal 0.
+      final effectiveWidth = math.max((baseWidth * scaleX).round(), 50);
+      final effectiveHeight = math.max((baseHeight * scaleY).round(), 50);
       final scaledRaw = (scaleX == 1.0 && scaleY == 1.0)
           ? raw
           : {...raw, 'width': effectiveWidth, 'height': effectiveHeight};
