@@ -187,15 +187,9 @@ class MqttViewModel extends ChangeNotifier {
     //    current codebase even writes) resurfacing from a disk cache that
     //    predates this field existing.
     //
-    // Simplest correct fix: don't load stale data into the live map at all.
-    SharedPreferences prefs = await SharedPreferences.getInstance();
-    // Preserve the environment marker so future launches can detect a
-    // staging ↔ production switch and clear stale player codes.
-    final env = prefs.getString('app_environment');
-    prefs.clear();
-    if (env != null) {
-      await prefs.setString('app_environment', env);
-    }
+    // Don't load stale device details into the live map. Pairing and content
+    // preferences must remain intact; _monitorConnectivity clears them only
+    // when the build environment changes.
   }
 
   // Diagnostic-only file logger. print()/debugPrint() are invisible on a
