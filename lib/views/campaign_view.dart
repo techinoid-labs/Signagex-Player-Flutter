@@ -2127,11 +2127,20 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         ),
       );
     } else {
-      videoWidget = SizedBox.expand(
-        child: Platform.isWindows
-            ? windows_video.WinVideoPlayer(_controller!)
-            : VideoPlayer(_controller!),
-      );
+      videoWidget = Platform.isWindows
+          ? Container(
+              color: Colors.black,
+              alignment: Alignment.center,
+              child: AspectRatio(
+                aspectRatio: _controller!.value.aspectRatio,
+                child: windows_video.WinVideoPlayer(_controller!),
+              ),
+            )
+          : SizedBox.expand(child: VideoPlayer(_controller!));
+    }
+
+    if (Platform.isWindows) {
+      return videoWidget;
     }
 
     return AnimatedSwitcher(
