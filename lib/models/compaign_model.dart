@@ -356,16 +356,17 @@ class CampaignZone {
       'mediaItemsCount=${mediaRaw is List ? mediaRaw.length : "n/a"} '
       'mediaItemKeys=${mediaRaw is List ? mediaRaw.map((m) => m is Map ? m.keys.toList() : m.runtimeType.toString()).toList() : "n/a"}',
     );
-    // Same Konva behavior as zonesFromCompositionMap's "objects" path:
-    // resizing a zone changes scaleX/scaleY, not width/height directly --
-    // this "zones"-keyed payload path skipped that compensation entirely,
-    // which is why zone sizes didn't match the CMS.
-    final scaleX = _asDouble(json['scaleX']) ?? 1.0;
-    final scaleY = _asDouble(json['scaleY']) ?? 1.0;
+    // Confirmed against the working Android reference (CampaignZone data
+    // class in CampaignResponse.kt): it reads x/y/width/height directly with
+    // no scaleX/scaleY multiplication anywhere -- the CMS already sends
+    // final pixel values for this "zones"-keyed payload shape, unlike the
+    // separate raw-Konva-editor "objects" shape. Multiplying by scaleX/
+    // scaleY here was double-scaling and shrinking zones that were already
+    // correct.
     final baseWidth = _asInt(json["width"]) ?? 0;
     final baseHeight = _asInt(json["height"]) ?? 0;
-    final effectiveWidth = (baseWidth * scaleX).round();
-    final effectiveHeight = (baseHeight * scaleY).round();
+    final effectiveWidth = baseWidth;
+    final effectiveHeight = baseHeight;
     List<MediaItem>? mediaItems;
     if (mediaRaw is List) {
       mediaItems = mediaRaw.map((raw) {

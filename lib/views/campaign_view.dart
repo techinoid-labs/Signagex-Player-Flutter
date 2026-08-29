@@ -832,7 +832,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       _debugLog(
           'zone=${widget.zoneId} playing mediaType=${currentMedia.mediaType} '
           'id=${currentMedia.id} url=${currentMedia.mediaUrl ?? "N/A"} duration=$effectiveDuration');
-      if (!currentMedia.isAd && !_isVideoMedia(currentMedia)) {
+      // Matches the proven Android reference (ZoneFragment.playNextMedia):
+      // a single-item zone displays once and never re-triggers itself; a
+      // multi-item zone always uses the flat CMS duration for every media
+      // type, including video -- relying on the video's own completion
+      // event instead left the zone permanently frozen whenever that event
+      // failed to fire (e.g. a stalled/erroring network stream).
+      if (!currentMedia.isAd && widget.mediaItems.length > 1) {
         _startMediaLoop(effectiveDuration.toString(), currentMedia);
       } else if (currentMedia.isAd && _isNestedCampaign(currentMedia)) {
         // Ad creatives normally get their duration timer from
