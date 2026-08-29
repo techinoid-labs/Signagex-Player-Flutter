@@ -1229,7 +1229,10 @@ EOF
       await _mqttClientService.connect();
       _state = MqttState.connectionScreen;
       notifyListeners();
-      if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
+      if (Platform.isAndroid ||
+          Platform.isIOS ||
+          Platform.isMacOS ||
+          Platform.isWindows) {
         await _checkPairingStatus();
       }
     } catch (error) {
