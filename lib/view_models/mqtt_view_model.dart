@@ -1889,6 +1889,21 @@ EOF
       }
 
       globleTopic = _topic;
+
+      // The MQTT socket is normally connected by the InternetConnectionChecker
+      // listener in _monitorConnectivity(), but that's an independent async
+      // race against this pairing check -- on Windows, getSystemDataForWindows()
+      // calls _checkPairingStatus() directly from the constructor path with no
+      // guarantee that listener has fired yet. If it hasn't, subsibeMessage()
+      // below calls into a client that was never told to connect, which
+      // throws and gets swallowed by the catch block as if the pairing
+      // request itself had failed -- leaving the state stuck on
+      // "connecting" even though this HTTP response came back fine.
+      if (!_mqttClientService.isConnected) {
+        _debugLog('_checkPairingStatus: MQTT not connected yet, connecting before subscribe');
+        await _mqttClientService.connect();
+      }
+
       subsibeMessage(_topic);
       _debugLog('_checkPairingStatus: publishing deviceInfoMap to $globleTopic: ${jsonEncode(deviceInfoMap)}');
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
