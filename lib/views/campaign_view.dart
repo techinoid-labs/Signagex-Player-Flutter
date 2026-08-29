@@ -11,6 +11,8 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:video_player/video_player.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
@@ -1886,10 +1888,24 @@ class VideoPlayerWidget extends StatefulWidget {
   _VideoPlayerWidgetState createState() => _VideoPlayerWidgetState();
 }
 
-class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
-    with SingleTickerProviderStateMixin {
-  VideoPlayerController? _controller;
+class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
+  // video_player_win's native Windows texture never actually painted on the
+  // test hardware -- the controller reported isInitialized/isPlaying true
+  // and hasError false the whole time (confirmed in signagex_debug.log)
+  // while the actual rendered frame (captured via RenderRepaintBoundary,
+  // the same path Remote View screenshots use) was solid white. Tried both
+  // its generic video_player-compatible API and its own native
+  // WinVideoPlayer API -- identical symptom either way, pointing at a
+  // native texture/driver-level failure in that plugin rather than
+  // anything fixable by changing how it's called. media_kit (libmpv-backed)
+  // replaces it here.
+  late final Player _player;
+  late final VideoController _videoController;
+  StreamSubscription<bool>? _completedSub;
+  StreamSubscription<String>? _errorSub;
   bool _isLoading = true;
+  bool _hasError = false;
+  String? _errorDescription;
   bool _isVideoEnded = false;
   int _initAttempts = 0;
   static const int _maxInitAttempts = 5;
@@ -1897,6 +1913,24 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   @override
   void initState() {
     super.initState();
+    _player = Player();
+    _videoController = VideoController(_player);
+    _completedSub = _player.stream.completed.listen((completed) {
+      if (completed && !_isVideoEnded) {
+        _isVideoEnded = true;
+        _debugLog("VideoPlayerWidget: playback completed");
+        widget.onVideoEnd();
+      }
+    });
+    _errorSub = _player.stream.error.listen((error) {
+      _debugLog("VideoPlayerWidget: ERROR - $error");
+      if (mounted) {
+        setState(() {
+          _hasError = true;
+          _errorDescription = error;
+        });
+      }
+    });
     _initializeVideo();
   }
 
@@ -1904,7 +1938,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       widget.filePath.startsWith('http://') ||
       widget.filePath.startsWith('https://');
 
-  void _initializeVideo() async {
+  Future<void> _initializeVideo() async {
     _debugLog("VideoPlayerWidget: Initializing video: ${widget.filePath}");
 
     if (!_isNetworkUrl) {
@@ -1918,167 +1952,56 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         if (_initAttempts <= _maxInitAttempts) {
           await Future.delayed(const Duration(seconds: 1));
           if (!mounted) return;
-          _initializeVideo();
+          await _initializeVideo();
           return;
         } else {
           _debugLog(
               "VideoPlayerWidget: Giving up after $_maxInitAttempts attempts – video will show as not initialized.");
-          setState(() {
-            _isLoading = false;
-          });
+          if (mounted) setState(() => _isLoading = false);
           return;
         }
       }
     }
 
-    _debugLog(
-        "VideoPlayerWidget: ${_isNetworkUrl ? "Network URL" : "File exists"}, creating controller path=${_isNetworkUrl ? widget.filePath : (_normalizeLocalMediaPath(widget.filePath) ?? widget.filePath)}");
-
-    // Dispose any previous controller before re-initializing
-    if (_controller != null) {
-      try {
-        _controller!.dispose();
-      } catch (_) {}
-      _controller = null;
-    }
-
-    // Normalize Windows local paths (mixed separators confuse WMF)
     final resolvedPath = _isNetworkUrl
         ? widget.filePath
         : (_normalizeLocalMediaPath(widget.filePath) ?? widget.filePath);
 
-    // Reverted from video_player_win's own WinVideoPlayerController/
-    // WinVideoPlayer classes back to the standard video_player API this
-    // app has always used (since the original May implementation, commit
-    // 03d713d) -- video_player_win registers itself as the Windows
-    // platform implementation for the generic VideoPlayerController, so
-    // switching to its separate native classes was an unnecessary
-    // departure from what was actually a known-working setup, not a fix.
-    final VideoPlayerController controller = _isNetworkUrl
-        ? VideoPlayerController.network(resolvedPath)
-        : VideoPlayerController.file(File(resolvedPath));
-    _controller = controller
-      ..initialize().then(
-        (_) {
-          if (!mounted || _controller == null) return;
+    _debugLog(
+        "VideoPlayerWidget: ${_isNetworkUrl ? "Network URL" : "File exists"}, opening path=$resolvedPath");
 
-          _debugLog(
-              "VideoPlayerWidget: Video initialized successfully "
-              "duration=${_controller!.value.duration} size=${_controller!.value.size} "
-              "isInitialized=${_controller!.value.isInitialized}");
-
-          if (!_controller!.value.isInitialized ||
-              _controller!.value.hasError) {
-            _initAttempts++;
-            _debugLog(
-                "VideoPlayerWidget: ERROR after initialize() (attempt $_initAttempts/$_maxInitAttempts) "
-                "- hasError=${_controller!.value.hasError}, desc=${_controller!.value.errorDescription}");
-            if (_initAttempts <= _maxInitAttempts) {
-              Future.delayed(const Duration(seconds: 1), () {
-                if (!mounted) return;
-                _initializeVideo();
-              });
-              return;
-            } else {
-              setState(() {
-                _isLoading = false;
-              });
-              return;
-            }
-          }
-
-          setState(
-            () {
-              _isLoading = false;
-              _controller!.setVolume(widget.volume.clamp(0.0, 1.0));
-              // Looping suppressed the onVideoEnd signal entirely (the
-              // position listener below only fires it when !isLooping), so
-              // the parent playlist never learned the video actually
-              // finished and relied on a separate CMS-duration timer that
-              // rarely matches the video's real length -- see
-              // _isVideoMedia in the parent for the full story. Let the
-              // video play once and report its own end.
-              _controller!.setLooping(false);
-              _controller!.play();
-              _debugLog("VideoPlayerWidget: Video play() called");
-            },
-          );
-
-          Future.delayed(const Duration(milliseconds: 500), () {
-            if (mounted && _controller != null) {
-              _debugLog(
-                  "VideoPlayerWidget: After 500ms - IsPlaying: ${_controller!.value.isPlaying}, "
-                  "HasError: ${_controller!.value.hasError}, "
-                  "Position: ${_controller!.value.position}");
-              if (_controller!.value.hasError) {
-                _debugLog(
-                    "VideoPlayerWidget: ERROR after play() - ${_controller!.value.errorDescription}");
-              }
-              if (!_controller!.value.isPlaying &&
-                  _controller!.value.isInitialized) {
-                _debugLog(
-                    "VideoPlayerWidget: WARNING - Video not playing after play() call, trying again...");
-                _controller!.play();
-              }
-            }
-          });
-
-          _controller!.addListener(
-            () {
-              if (_controller == null) return;
-
-              if (!_controller!.value.isLooping &&
-                  _controller!.value.position >= _controller!.value.duration &&
-                  !_isVideoEnded) {
-                _isVideoEnded = true;
-                widget.onVideoEnd();
-              }
-
-              if (_controller!.value.position.inSeconds % 5 == 0 &&
-                  _controller!.value.position.inMilliseconds > 0) {
-                _debugLog(
-                    "VideoPlayerWidget: Playing - Position: ${_controller!.value.position}, "
-                    "IsPlaying: ${_controller!.value.isPlaying}, "
-                    "HasError: ${_controller!.value.hasError}");
-                if (_controller!.value.hasError) {
-                  _debugLog(
-                      "VideoPlayerWidget: ERROR - ${_controller!.value.errorDescription}");
-                }
-              }
-            },
-          );
-        },
-      ).catchError(
-        (error, stackTrace) async {
-          _initAttempts++;
-          _debugLog(
-              "VideoPlayerWidget: ERROR initializing video (attempt $_initAttempts/$_maxInitAttempts): $error\n$stackTrace");
-
-          if (_initAttempts <= _maxInitAttempts) {
-            await Future.delayed(const Duration(seconds: 1));
-            if (!mounted) return;
-            _initializeVideo();
-          } else {
-            setState(
-              () {
-                _isLoading = false;
-              },
-            );
-          }
-        },
-      );
-  }
-
-  void _checkVideoEnd() {
-    if (_controller != null &&
-        _controller!.value.isInitialized &&
-        !_controller!.value.isPlaying &&
-        _controller!.value.position >= _controller!.value.duration &&
-        !_isVideoEnded) {
-      setState(() {
-        _isVideoEnded = true;
-      });
-      widget.onVideoEnd();
+    try {
+      _isVideoEnded = false;
+      // PlaylistMode.none: play once and let the completed stream fire, so
+      // the parent playlist learns the video actually finished instead of
+      // racing a separate CMS-duration timer that rarely matches the
+      // video's real length (see _isVideoMedia in the parent).
+      await _player.setPlaylistMode(PlaylistMode.none);
+      await _player.open(Media(resolvedPath), play: false);
+      await _player.setVolume(widget.volume.clamp(0.0, 1.0) * 100);
+      await _player.play();
+      _debugLog("VideoPlayerWidget: Video play() called");
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _hasError = false;
+        });
+      }
+    } catch (error, stackTrace) {
+      _initAttempts++;
+      _debugLog(
+          "VideoPlayerWidget: ERROR initializing video (attempt $_initAttempts/$_maxInitAttempts): $error\n$stackTrace");
+      if (_initAttempts <= _maxInitAttempts) {
+        await Future.delayed(const Duration(seconds: 1));
+        if (!mounted) return;
+        await _initializeVideo();
+      } else if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _hasError = true;
+          _errorDescription = error.toString();
+        });
+      }
     }
   }
 
@@ -2086,21 +2009,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   void didUpdateWidget(covariant VideoPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.filePath != widget.filePath) {
-      if (_controller != null) {
-        _controller!.removeListener(_checkVideoEnd);
-        _controller!.dispose();
-        _controller = null;
-      }
+      _initAttempts = 0;
       _initializeVideo();
-    } else if (_isVideoEnded &&
-        _controller != null &&
-        _controller!.value.isInitialized) {
+    } else if (_isVideoEnded) {
       // A single-item zone replays the same media item (same key, same
-      // filePath) once it ends -- setLooping(false) means the controller
-      // sits on its last frame until told to play again.
+      // filePath) once it ends -- PlaylistMode.none means playback just
+      // stops at the end instead of looping natively.
       _isVideoEnded = false;
-      _controller!.seekTo(Duration.zero);
-      _controller!.play();
+      _player.seek(Duration.zero);
+      _player.play();
     }
   }
 
@@ -2110,9 +2027,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
 
     if (_isLoading) {
       videoWidget = const Center(child: CircularProgressIndicator());
-    } else if (_controller == null || !_controller!.value.isInitialized) {
-      _debugLog("VideoPlayerWidget: Building - Controller not initialized! "
-          "hasError=${_controller?.value.hasError}, desc=${_controller?.value.errorDescription}");
+    } else if (_hasError) {
+      _debugLog(
+          "VideoPlayerWidget: Building - Controller not initialized! error=$_errorDescription");
       videoWidget = Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
@@ -2122,14 +2039,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
             const Text("Video not initialized", style: TextStyle(fontSize: 16)),
             Text("File: ${widget.filePath}",
                 style: const TextStyle(fontSize: 12)),
-            if (_controller != null && _controller!.value.hasError)
-              Text("Error: ${_controller!.value.errorDescription}",
+            if (_errorDescription != null)
+              Text("Error: $_errorDescription",
                   style: const TextStyle(fontSize: 12, color: Colors.red)),
           ],
         ),
       );
     } else {
-      videoWidget = SizedBox.expand(child: VideoPlayer(_controller!));
+      videoWidget = SizedBox.expand(
+        child: Video(controller: _videoController, controls: NoVideoControls),
+      );
     }
 
     return AnimatedSwitcher(
@@ -2140,10 +2059,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
 
   @override
   void dispose() {
-    if (_controller != null) {
-      _controller!.removeListener(_checkVideoEnd);
-      _controller!.dispose();
-    }
+    _completedSub?.cancel();
+    _errorSub?.cancel();
+    _player.dispose();
     super.dispose();
   }
 }

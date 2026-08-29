@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import 'package:flutter_phoenix/flutter_phoenix.dart';
+import 'package:media_kit/media_kit.dart';
 
 import 'package:digital_signage/provider/main_provider.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
@@ -19,6 +20,7 @@ class MyHttpOverrides extends HttpOverrides {
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   HttpOverrides.global = MyHttpOverrides();
   runApp(Phoenix(
     child: MaterialApp(
