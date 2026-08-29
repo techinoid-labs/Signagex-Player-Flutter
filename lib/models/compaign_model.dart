@@ -636,7 +636,15 @@ class MediaItem {
         : rawFill;
     final stroke =
         props['stroke']?.toString() ?? props['strokeColor']?.toString() ?? '';
-    final strokeWidth = _asInt(props['strokeWidth'] ?? props['stroke_width']) ?? 0;
+    // A stroke wider than the shape itself (seen from real composition data:
+    // strokeWidth=50 on an 80x80 octagon) paints over the entire fill,
+    // turning a valid polygon into an unrecognizable solid blob -- cap it so
+    // the shape's own fill always stays visible regardless of what value the
+    // CMS sends.
+    final rawStrokeWidth = _asInt(props['strokeWidth'] ?? props['stroke_width']) ?? 0;
+    final strokeWidth = rawStrokeWidth > 0
+        ? math.min(rawStrokeWidth, (math.min(w, h) * 0.2).round())
+        : 0;
     final path = props['path']?.toString() ?? props['d']?.toString() ?? '';
     final points = props['points']?.toString() ?? '';
 
