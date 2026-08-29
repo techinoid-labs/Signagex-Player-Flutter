@@ -7,6 +7,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/view_models/mqtt_view_model.dart';
@@ -182,24 +184,15 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     if (_timer.isActive) _timer.cancel();
     if (!_isDisposed) {
       setState(() {
-        _opacity = 0.0;
-      });
-
-      Future.delayed(const Duration(milliseconds: 500), () {
-        if (!_isDisposed) {
-          setState(() {
-            if (widget.playlist.playback!.order == "shuffle") {
-              print(".......i am in shuffle .....");
-              _currentIndex = Random().nextInt(widget.mediaPaths.length);
-            } else if (_currentIndex < widget.mediaPaths.length - 1) {
-              _currentIndex++;
-            } else {
-              _currentIndex = 0;
-            }
-            _opacity = 1.0;
-            _initializeNextMedia();
-          });
+        if (widget.playlist.playback!.order == "shuffle") {
+          print(".......i am in shuffle .....");
+          _currentIndex = Random().nextInt(widget.mediaPaths.length);
+        } else if (_currentIndex < widget.mediaPaths.length - 1) {
+          _currentIndex++;
+        } else {
+          _currentIndex = 0;
         }
+        _initializeNextMedia();
       });
     }
   }
@@ -276,7 +269,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   void _loadMedia(Media nextMedia) {
     print("[LOG] Loading media: ${nextMedia.mediaUrl}");
     if (isVideoFile(nextMedia.mediaUrl)) {
-      _initializeNextVideo(nextMedia);
+      setState(() {});
     } else if (isWebFile(nextMedia.mediaUrl)) {
       // Ensure you are not reinitializing the WebView if the file is the same
       if (_currentIndex > 0 &&
@@ -612,15 +605,30 @@ class VideoPlayerWidget extends StatefulWidget {
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     with SingleTickerProviderStateMixin {
-  VideoPlayerController? _controller;
+  late final Player _player;
+  late final VideoController _videoController;
+  StreamSubscription<bool>? _completedSubscription;
+  StreamSubscription<String>? _errorSubscription;
   bool _isLoading = true;
   bool _isVideoEnded = false;
+  bool _isFirstFrameRendered = false;
   int _initAttempts = 0;
   static const int _maxInitAttempts = 5;
 
   @override
   void initState() {
     super.initState();
+    _player = Player();
+    _videoController = VideoController(_player);
+    _completedSubscription = _player.stream.completed.listen((completed) {
+      if (completed && !_isVideoEnded) {
+        _isVideoEnded = true;
+        widget.onVideoEnd();
+      }
+    });
+    _errorSubscription = _player.stream.error.listen((error) {
+      print('Playlist VideoPlayerWidget: media_kit error: $error');
+    });
     _initializeVideo();
   }
 
@@ -645,133 +653,71 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       }
     }
 
-    // Dispose any previous controller before re-initializing
-    if (_controller != null) {
-      try {
-        _controller!.dispose();
-      } catch (_) {}
-      _controller = null;
+    try {
+      _isVideoEnded = false;
+      _isFirstFrameRendered = false;
+      await _player.setPlaylistMode(PlaylistMode.loop);
+      await _player.open(Media(file.path), play: false);
+      await _player.setVolume(widget.currentVolume.clamp(0.0, 1.0) * 100);
+      await _player.play();
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+      await _videoController.waitUntilFirstFrameRendered;
+      if (mounted) setState(() => _isFirstFrameRendered = true);
+    } catch (error) {
+      _initAttempts++;
+      print(
+          "Playlist VideoPlayerWidget: error initializing video (attempt $_initAttempts/$_maxInitAttempts): $error");
+      if (_initAttempts <= _maxInitAttempts) {
+        await Future.delayed(const Duration(seconds: 1));
+        if (!mounted) return;
+        _initializeVideo();
+      } else if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
-
-    _controller = VideoPlayerController.file(file)
-      ..initialize().then(
-        (_) {
-          if (!mounted || _controller == null) return;
-
-          if (!_controller!.value.isInitialized ||
-              _controller!.value.hasError) {
-            _initAttempts++;
-            print(
-                "Playlist VideoPlayerWidget: controller not initialized/has error after initialize (attempt $_initAttempts/$_maxInitAttempts), "
-                "hasError=${_controller!.value.hasError}, desc=${_controller!.value.errorDescription}");
-            if (_initAttempts <= _maxInitAttempts) {
-              Future.delayed(const Duration(seconds: 1), () {
-                if (!mounted) return;
-                _initializeVideo();
-              });
-              return;
-            } else {
-              setState(() {
-                _isLoading = false;
-              });
-              return;
-            }
-          }
-
-          setState(
-            () {
-              _isLoading = false;
-              _controller!.setVolume(widget.currentVolume);
-              _controller!.setLooping(true);
-              _controller!.play();
-            },
-          );
-
-          _controller!.addListener(
-            () {
-              if (_controller == null) return;
-              if (_controller!.value.position >= _controller!.value.duration &&
-                  !_isVideoEnded) {
-                _isVideoEnded = true;
-                widget.onVideoEnd();
-              }
-            },
-          );
-        },
-      ).catchError(
-        (error) async {
-          _initAttempts++;
-          print(
-              "Playlist VideoPlayerWidget: error initializing video (attempt $_initAttempts/$_maxInitAttempts): $error");
-          if (_initAttempts <= _maxInitAttempts) {
-            await Future.delayed(const Duration(seconds: 1));
-            if (!mounted) return;
-            _initializeVideo();
-          } else {
-            setState(
-              () {
-                _isLoading = false;
-              },
-            );
-          }
-        },
-      );
   }
 
   void _checkVideoEnd() {
-    if (_controller != null &&
-        _controller!.value.isInitialized &&
-        !_controller!.value.isPlaying &&
-        _controller!.value.position >= _controller!.value.duration &&
-        !_isVideoEnded) {
-      setState(() {
-        _isVideoEnded = true;
-      });
-      widget.onVideoEnd();
-    }
+    // Playlist progression is controlled by the existing CMS duration timer.
   }
 
   @override
   void didUpdateWidget(covariant VideoPlayerWidget oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.filePath != widget.filePath) {
-      if (_controller != null) {
-        _controller!.removeListener(_checkVideoEnd);
-        _controller!.dispose();
-        _controller = null;
-      }
+      _initAttempts = 0;
       _initializeVideo();
     }
   }
 
   @override
   Widget build(BuildContext context) {
-    Widget videoWidget;
     if (_isLoading) {
-      videoWidget = const Center(child: CircularProgressIndicator());
-    } else if (_controller == null || !_controller!.value.isInitialized) {
-      videoWidget = const Center(child: CircularProgressIndicator());
-    } else {
-      videoWidget = SizedBox.expand(
-        child: AspectRatio(
-          aspectRatio: widget.aspectRatio,
-          child: VideoPlayer(_controller!),
-        ),
+      return const ColoredBox(
+        color: Colors.white,
+        child: Center(child: CircularProgressIndicator()),
       );
     }
 
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 500),
-      child: videoWidget,
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Video(controller: _videoController, controls: NoVideoControls),
+        if (!_isFirstFrameRendered)
+          const ColoredBox(
+            color: Colors.white,
+            child: Center(child: CircularProgressIndicator()),
+          ),
+      ],
     );
   }
 
   @override
   void dispose() {
-    if (_controller != null) {
-      _controller!.removeListener(_checkVideoEnd);
-      _controller!.dispose();
-    }
+    _completedSubscription?.cancel();
+    _errorSubscription?.cancel();
+    _player.dispose();
     super.dispose();
   }
 }

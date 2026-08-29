@@ -1907,6 +1907,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   bool _hasError = false;
   String? _errorDescription;
   bool _isVideoEnded = false;
+  bool _isFirstFrameRendered = false;
   int _initAttempts = 0;
   static const int _maxInitAttempts = 5;
 
@@ -1972,6 +1973,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
     try {
       _isVideoEnded = false;
+      _isFirstFrameRendered = false;
       // PlaylistMode.none: play once and let the completed stream fire, so
       // the parent playlist learns the video actually finished instead of
       // racing a separate CMS-duration timer that rarely matches the
@@ -1985,6 +1987,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         setState(() {
           _isLoading = false;
           _hasError = false;
+        });
+      }
+      await _videoController.waitUntilFirstFrameRendered;
+      if (mounted) {
+        setState(() {
+          _isFirstFrameRendered = true;
         });
       }
     } catch (error, stackTrace) {
@@ -2023,14 +2031,17 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   @override
   Widget build(BuildContext context) {
-    Widget videoWidget;
-
     if (_isLoading) {
-      videoWidget = const Center(child: CircularProgressIndicator());
-    } else if (_hasError) {
+      return const ColoredBox(
+        color: Colors.white,
+        child: Center(child: CircularProgressIndicator()),
+      );
+    }
+
+    if (_hasError) {
       _debugLog(
           "VideoPlayerWidget: Building - Controller not initialized! error=$_errorDescription");
-      videoWidget = Center(
+      return Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -2045,15 +2056,18 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           ],
         ),
       );
-    } else {
-      videoWidget = SizedBox.expand(
-        child: Video(controller: _videoController, controls: NoVideoControls),
-      );
     }
 
-    return AnimatedSwitcher(
-      duration: const Duration(milliseconds: 500),
-      child: videoWidget,
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Video(controller: _videoController, controls: NoVideoControls),
+        if (!_isFirstFrameRendered)
+          const ColoredBox(
+            color: Colors.white,
+            child: Center(child: CircularProgressIndicator()),
+          ),
+      ],
     );
   }
 
