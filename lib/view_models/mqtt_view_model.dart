@@ -1905,6 +1905,12 @@ EOF
       }
 
       subsibeMessage(_topic);
+      _mqttClientService.publish(
+        '$globleTopic/player_status',
+        jsonEncode({'status': 'online'}),
+      );
+      _debugLog(
+          '_checkPairingStatus: published online presence to $globleTopic/player_status');
       _debugLog('_checkPairingStatus: publishing deviceInfoMap to $globleTopic: ${jsonEncode(deviceInfoMap)}');
       publishMessage(globleTopic, jsonEncode(deviceInfoMap));
 
