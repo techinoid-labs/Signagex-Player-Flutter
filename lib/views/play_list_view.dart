@@ -266,9 +266,14 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     return webExtensions.any((ext) => path.endsWith(ext));
   }
 
+  bool _isVideoMedia(Media media) {
+    return media.mediaType.toLowerCase().contains('video') ||
+        isVideoFile(media.mediaUrl);
+  }
+
   void _loadMedia(Media nextMedia) {
     print("[LOG] Loading media: ${nextMedia.mediaUrl}");
-    if (isVideoFile(nextMedia.mediaUrl)) {
+    if (_isVideoMedia(nextMedia)) {
       setState(() {});
     } else if (isWebFile(nextMedia.mediaUrl)) {
       // Ensure you are not reinitializing the WebView if the file is the same
@@ -535,7 +540,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                 return FadeTransition(opacity: animation, child: child);
             }
           },
-          child: isVideoFile(currentMedia.mediaUrl)
+          child: _isVideoMedia(currentMedia)
               ? VideoPlayerWidget(
                   key: ValueKey(currentMedia.mediaUrl),
                   filePath: currentMedia.mediaUrl,
@@ -609,9 +614,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   late final media_kit_video.VideoController _videoController;
   StreamSubscription<bool>? _completedSubscription;
   StreamSubscription<String>? _errorSubscription;
-  bool _isLoading = true;
   bool _isVideoEnded = false;
-  bool _isFirstFrameRendered = false;
   int _initAttempts = 0;
   static const int _maxInitAttempts = 5;
 
@@ -646,24 +649,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       } else {
         print(
             "Playlist VideoPlayerWidget: giving up after $_maxInitAttempts attempts – video will not initialize.");
-        setState(() {
-          _isLoading = false;
-        });
         return;
       }
     }
 
     try {
       _isVideoEnded = false;
-      _isFirstFrameRendered = false;
       await _player.setPlaylistMode(media_kit.PlaylistMode.loop);
       await _player.open(media_kit.Media(file.path), play: false);
       await _player.setVolume(widget.currentVolume.clamp(0.0, 1.0) * 100);
       await _player.play();
-      if (!mounted) return;
-      setState(() => _isLoading = false);
-      await _videoController.waitUntilFirstFrameRendered;
-      if (mounted) setState(() => _isFirstFrameRendered = true);
     } catch (error) {
       _initAttempts++;
       print(
@@ -672,8 +667,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         await Future.delayed(const Duration(seconds: 1));
         if (!mounted) return;
         _initializeVideo();
-      } else if (mounted) {
-        setState(() => _isLoading = false);
       }
     }
   }
@@ -693,26 +686,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const ColoredBox(
-        color: Colors.white,
-        child: Center(child: CircularProgressIndicator()),
-      );
-    }
-
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        media_kit_video.Video(
-          controller: _videoController,
-          controls: media_kit_video.NoVideoControls,
-        ),
-        if (!_isFirstFrameRendered)
-          const ColoredBox(
-            color: Colors.white,
-            child: Center(child: CircularProgressIndicator()),
-          ),
-      ],
+    return media_kit_video.Video(
+      controller: _videoController,
+      controls: media_kit_video.NoVideoControls,
     );
   }
 

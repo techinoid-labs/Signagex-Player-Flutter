@@ -1903,11 +1903,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   late final VideoController _videoController;
   StreamSubscription<bool>? _completedSub;
   StreamSubscription<String>? _errorSub;
-  bool _isLoading = true;
   bool _hasError = false;
   String? _errorDescription;
   bool _isVideoEnded = false;
-  bool _isFirstFrameRendered = false;
   int _initAttempts = 0;
   static const int _maxInitAttempts = 5;
 
@@ -1958,7 +1956,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         } else {
           _debugLog(
               "VideoPlayerWidget: Giving up after $_maxInitAttempts attempts – video will show as not initialized.");
-          if (mounted) setState(() => _isLoading = false);
           return;
         }
       }
@@ -1973,7 +1970,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
     try {
       _isVideoEnded = false;
-      _isFirstFrameRendered = false;
       // PlaylistMode.none: play once and let the completed stream fire, so
       // the parent playlist learns the video actually finished instead of
       // racing a separate CMS-duration timer that rarely matches the
@@ -1985,14 +1981,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       _debugLog("VideoPlayerWidget: Video play() called");
       if (mounted) {
         setState(() {
-          _isLoading = false;
           _hasError = false;
-        });
-      }
-      await _videoController.waitUntilFirstFrameRendered;
-      if (mounted) {
-        setState(() {
-          _isFirstFrameRendered = true;
         });
       }
     } catch (error, stackTrace) {
@@ -2005,7 +1994,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         await _initializeVideo();
       } else if (mounted) {
         setState(() {
-          _isLoading = false;
           _hasError = true;
           _errorDescription = error.toString();
         });
@@ -2031,13 +2019,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   @override
   Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const ColoredBox(
-        color: Colors.white,
-        child: Center(child: CircularProgressIndicator()),
-      );
-    }
-
     if (_hasError) {
       _debugLog(
           "VideoPlayerWidget: Building - Controller not initialized! error=$_errorDescription");
@@ -2058,17 +2039,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       );
     }
 
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        Video(controller: _videoController, controls: NoVideoControls),
-        if (!_isFirstFrameRendered)
-          const ColoredBox(
-            color: Colors.white,
-            child: Center(child: CircularProgressIndicator()),
-          ),
-      ],
-    );
+    return Video(controller: _videoController, controls: NoVideoControls);
   }
 
   @override
@@ -2207,92 +2178,6 @@ class _SvgWidgetState extends State<SvgWidget> {
         child: Text('Error loading SVG'),
       );
     }
-  }
-}
-
-class TextWidget extends StatefulWidget {
-  final String html;
-  final String text;
-  final VoidCallback onTextEnd;
-  final String transitionType;
-  final int? fontSize;
-  final String? fontFamily;
-  final String? fill;
-  final int? strokeWidth;
-  final int? shadowBlur;
-
-  const TextWidget({
-    super.key,
-    required this.html,
-    required this.text,
-    required this.onTextEnd,
-    required this.transitionType,
-    this.fontSize,
-    this.fontFamily,
-    this.fill,
-    this.strokeWidth,
-    this.shadowBlur,
-  });
-
-  @override
-  _TextWidgetState createState() => _TextWidgetState();
-}
-
-class _TextWidgetState extends State<TextWidget> {
-  String _normalizeHtmlCss(String html) {
-    return html
-        .replaceAll('fontSize:', 'font-size:')
-        .replaceAll('fontFamily:', 'font-family:')
-        .replaceAll('textAlign:', 'text-align:')
-        .replaceAll('textShadow:', 'text-shadow:');
-  }
-
-  String _getBodyInner() {
-    if (widget.html.isNotEmpty) {
-      return _normalizeHtmlCss(widget.html);
-    }
-    final fontSize = widget.fontSize ?? 16;
-    final fontFamily = widget.fontFamily ?? 'Arial, sans-serif';
-    final color = widget.fill ?? 'black';
-    final strokeWidth = widget.strokeWidth ?? 0;
-    final shadowBlur = widget.shadowBlur ?? 0;
-    final styles = <String>[
-      'font-size: ${fontSize}px',
-      'font-family: $fontFamily',
-      'color: $color',
-      if (strokeWidth > 0) '-webkit-text-stroke-width: ${strokeWidth}px',
-      if (strokeWidth > 0) 'text-stroke-width: ${strokeWidth}px',
-      if (shadowBlur > 0) 'text-shadow: 0 0 ${shadowBlur}px rgba(0,0,0,0.5)',
-      'width: 100%',
-      'height: 100%',
-      'display: flex',
-      'align-items: center',
-      'justify-content: center',
-      'text-align: center',
-    ];
-    return '<p style="${styles.join('; ')}">${widget.text.isNotEmpty ? widget.text : ''}</p>';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final data = _getBodyInner();
-    return SizedBox.expand(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final w =
-              constraints.maxWidth.isFinite ? constraints.maxWidth : 400.0;
-          final h =
-              constraints.maxHeight.isFinite ? constraints.maxHeight : 100.0;
-          return SizedBox(
-            width: w,
-            height: h,
-            child: HtmlWidget(
-                  '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;text-align:center;margin:0;padding:0;">$data</div>',
-                ),
-          );
-        },
-      ),
-    );
   }
 }
 

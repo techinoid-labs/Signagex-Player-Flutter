@@ -6,11 +6,11 @@ class TextWidget extends StatelessWidget {
   final String text;
   final VoidCallback onTextEnd;
   final String transitionType;
-  final double? fontSize;
+  final int? fontSize;
   final String? fontFamily;
   final String? fill;
-  final double? strokeWidth;
-  final double? shadowBlur;
+  final int? strokeWidth;
+  final int? shadowBlur;
 
   const TextWidget({
     super.key,
@@ -30,10 +30,10 @@ class TextWidget extends StatelessWidget {
     final color = _parseColor(fill) ?? Colors.white;
     final style = TextStyle(
       color: color,
-      fontSize: fontSize ?? 24,
+      fontSize: (fontSize ?? 24).toDouble(),
       fontFamily: fontFamily,
       shadows: shadowBlur != null && shadowBlur! > 0
-          ? [Shadow(color: Colors.black54, blurRadius: shadowBlur!)]
+          ? [Shadow(color: Colors.black54, blurRadius: shadowBlur!.toDouble())]
           : null,
     );
     final content = html.trim().isNotEmpty ? html : text;
