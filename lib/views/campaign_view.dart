@@ -1748,6 +1748,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         final scaledShadowBlur = media.settings?.shadowBlur != null
             ? (media.settings!.shadowBlur! * widget.fontScale).round()
             : null;
+        _debugLog(
+            'zone=${widget.zoneId} text id=${media.id ?? ""} '
+            'rawFontSize=${media.settings?.fontSize} fontScale=${widget.fontScale} '
+            'scaledFontSize=$scaledFontSize text=${media.settings?.text}');
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
               child: SizedBox.expand(

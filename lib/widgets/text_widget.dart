@@ -40,16 +40,21 @@ class TextWidget extends StatelessWidget {
 
     return SizedBox.expand(
       child: Center(
-        child: html.trim().isNotEmpty
-            ? HtmlWidget(
-                content,
-                textStyle: style,
-              )
-            : Text(
-                content,
-                textAlign: TextAlign.center,
-                style: style,
-              ),
+        child: FittedBox(
+          // Never let a computed fontSize (however it was scaled upstream)
+          // overflow/clip its zone box -- shrink to fit, never enlarge.
+          fit: BoxFit.scaleDown,
+          child: html.trim().isNotEmpty
+              ? HtmlWidget(
+                  content,
+                  textStyle: style,
+                )
+              : Text(
+                  content,
+                  textAlign: TextAlign.center,
+                  style: style,
+                ),
+        ),
       ),
     );
   }
