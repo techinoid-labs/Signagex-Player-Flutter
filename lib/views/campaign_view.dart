@@ -11,7 +11,6 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:video_player/video_player.dart';
-import 'package:video_player_win/video_player_win.dart' as windows_video;
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
@@ -1889,7 +1888,7 @@ class VideoPlayerWidget extends StatefulWidget {
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     with SingleTickerProviderStateMixin {
-  dynamic _controller;
+  VideoPlayerController? _controller;
   bool _isLoading = true;
   bool _isVideoEnded = false;
   int _initAttempts = 0;
@@ -1948,13 +1947,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         ? widget.filePath
         : (_normalizeLocalMediaPath(widget.filePath) ?? widget.filePath);
 
-    final dynamic controller = Platform.isWindows
-      ? (_isNetworkUrl
-        ? windows_video.WinVideoPlayerController.network(resolvedPath)
-        : windows_video.WinVideoPlayerController.file(File(resolvedPath)))
-      : (_isNetworkUrl
+    // Reverted from video_player_win's own WinVideoPlayerController/
+    // WinVideoPlayer classes back to the standard video_player API this
+    // app has always used (since the original May implementation, commit
+    // 03d713d) -- video_player_win registers itself as the Windows
+    // platform implementation for the generic VideoPlayerController, so
+    // switching to its separate native classes was an unnecessary
+    // departure from what was actually a known-working setup, not a fix.
+    final VideoPlayerController controller = _isNetworkUrl
         ? VideoPlayerController.network(resolvedPath)
-        : VideoPlayerController.file(File(resolvedPath)));
+        : VideoPlayerController.file(File(resolvedPath));
     _controller = controller
       ..initialize().then(
         (_) {
@@ -2127,20 +2129,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         ),
       );
     } else {
-      videoWidget = Platform.isWindows
-          ? Container(
-              color: Colors.black,
-              alignment: Alignment.center,
-              child: AspectRatio(
-                aspectRatio: _controller!.value.aspectRatio,
-                child: windows_video.WinVideoPlayer(_controller!),
-              ),
-            )
-          : SizedBox.expand(child: VideoPlayer(_controller!));
-    }
-
-    if (Platform.isWindows) {
-      return videoWidget;
+      videoWidget = SizedBox.expand(child: VideoPlayer(_controller!));
     }
 
     return AnimatedSwitcher(
