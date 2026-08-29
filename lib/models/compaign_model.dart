@@ -346,16 +346,36 @@ class CampaignZone {
 
   factory CampaignZone.fromJson(Map<String, dynamic> json) {
     final mediaRaw = json["mediaItems"] ?? json["media_items"];
+    // Same Konva behavior as zonesFromCompositionMap's "objects" path:
+    // resizing a zone changes scaleX/scaleY, not width/height directly --
+    // this "zones"-keyed payload path skipped that compensation entirely,
+    // which is why zone sizes didn't match the CMS.
+    final scaleX = _asDouble(json['scaleX']) ?? 1.0;
+    final scaleY = _asDouble(json['scaleY']) ?? 1.0;
+    final baseWidth = _asInt(json["width"]) ?? 0;
+    final baseHeight = _asInt(json["height"]) ?? 0;
+    final effectiveWidth = (baseWidth * scaleX).round();
+    final effectiveHeight = (baseHeight * scaleY).round();
+    List<MediaItem>? mediaItems;
+    if (mediaRaw is List) {
+      mediaItems = mediaRaw.map((raw) {
+        final itemJson = Map<String, dynamic>.from(raw as Map<String, dynamic>);
+        // A shape item's own json rarely repeats the zone's box size --
+        // without this the fallback SVG always defaults to a square
+        // 100x100, distorting a regular polygon once BoxFit.fill stretches
+        // it to the real (Konva-scaled) non-square zone box.
+        itemJson['width'] ??= effectiveWidth;
+        itemJson['height'] ??= effectiveHeight;
+        return MediaItem.fromJson(itemJson);
+      }).toList();
+    }
     return CampaignZone(
       id: _asInt(json["id"]),
       x: _asInt(json["x"]),
       y: _asInt(json["y"]),
-      width: _asInt(json["width"]),
-      height: _asInt(json["height"]),
-      mediaItems: mediaRaw == null
-          ? null
-          : List<MediaItem>.from(
-              (mediaRaw as List).map((x) => MediaItem.fromJson(x))),
+      width: effectiveWidth,
+      height: effectiveHeight,
+      mediaItems: mediaItems,
     );
   }
 
@@ -594,7 +614,15 @@ class MediaItem {
 
     final w = width ?? _asInt(props['width']) ?? 100;
     final h = height ?? _asInt(props['height']) ?? 100;
-    final fill = props['fill']?.toString() ?? '#cccccc';
+    final rawFill = props['fill']?.toString();
+    // Missing/empty/'transparent' means the CMS shape is outline-only --
+    // defaulting that to a solid gray fill was rendering shapes filled when
+    // the CMS shows them unfilled.
+    final fill = (rawFill == null ||
+            rawFill.isEmpty ||
+            rawFill.toLowerCase() == 'transparent')
+        ? 'none'
+        : rawFill;
     final stroke =
         props['stroke']?.toString() ?? props['strokeColor']?.toString() ?? '';
     final strokeWidth = _asInt(props['strokeWidth'] ?? props['stroke_width']) ?? 0;
