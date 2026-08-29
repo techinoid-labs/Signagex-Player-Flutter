@@ -308,16 +308,34 @@ class MqttClientService {
     }
   }
 
+  // The backend distinguishes messages by origin via this field -- the CMS
+  // web dashboard tags its own outgoing messages "signagex_web", and expects
+  // every message the player publishes back to be tagged "windows" so it can
+  // resolve the MQTT round trip (pairing confirmation, remote actions, etc.)
+  // against the right sender. Centralized here so every publish() call site
+  // gets this right without having to remember to set it individually.
+  String _withSenderTag(String message) {
+    try {
+      final decoded = jsonDecode(message);
+      if (decoded is Map<String, dynamic>) {
+        decoded['sender'] = 'windows';
+        return jsonEncode(decoded);
+      }
+    } catch (_) {}
+    return message;
+  }
+
   void publish(String topic, String message) {
     if (topic.isEmpty || topic.trim().isEmpty) {
       print('MQTT_LOGS:: Cannot publish - topic is empty');
       _debugLog('publish($topic): SKIPPED, topic is empty');
       return;
     }
+    final taggedMessage = _withSenderTag(message);
     if (_client.connectionStatus?.state == MqttConnectionState.connected) {
       // Convert string to Uint8Buffer
       final Uint8Buffer buffer = Uint8Buffer();
-      buffer.addAll(utf8.encode(message));
+      buffer.addAll(utf8.encode(taggedMessage));
 
       _client.publishMessage(
         topic,
@@ -325,9 +343,9 @@ class MqttClientService {
         buffer,
         retain: true,
       );
-      print('MQTT_LOGS:: Published message to topic $topic: $message');
+      print('MQTT_LOGS:: Published message to topic $topic: $taggedMessage');
       successRequests++;
-      _debugLog('publish($topic): SENT, ${message.length} bytes');
+      _debugLog('publish($topic): SENT, ${taggedMessage.length} bytes');
     } else {
       print('MQTT_LOGS:: Cannot publish - client not connected');
       failedRequests++;
