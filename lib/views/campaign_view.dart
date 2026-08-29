@@ -1948,7 +1948,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         ? widget.filePath
         : (_normalizeLocalMediaPath(widget.filePath) ?? widget.filePath);
 
-    final controller = Platform.isWindows
+    final dynamic controller = Platform.isWindows
       ? (_isNetworkUrl
         ? windows_video.WinVideoPlayerController.network(resolvedPath)
         : windows_video.WinVideoPlayerController.file(File(resolvedPath)))
