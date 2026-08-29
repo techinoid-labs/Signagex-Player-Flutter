@@ -2372,6 +2372,14 @@ EOF
 // Deserialize the JSON into the model
       // await _checkPairingStatus();
       _playListModel = playListModelFromJson(jsonEncode(jsonObj));
+      final hasPlaylistMedia = _playListModel!.data.playlist.any(
+        (playlist) => playlist.media?.isNotEmpty ?? false,
+      );
+      if (!hasPlaylistMedia) {
+        _state = MqttState.noContent;
+        notifyListeners();
+        return;
+      }
       // Ensure any listening UI updates immediately
       notifyListeners();
       // if (_playListModel!.data.playlist.isEmpty) {
@@ -2422,11 +2430,15 @@ EOF
       _debugLog(
           'publish_campaign received: $count campaign(s) currentIndex=$_currentIndexOfCapmaign '
           '${campaigns?.map((c) => "[id=${c.campaignId} name=${c.campaignName} composition=${c.isCompositionLayout}]").join(" ")}');
-      if (count == 0 &&
-          _campaignHasPlayableMediaItems(
-              _campaignModel?.data?.playerCampaigns ?? const <Campaign>[])) {
+      if (count == 0) {
+        _campaignModel = incomingCampaignModel;
+        _timerOfCampaign?.cancel();
+        _timerOfCampaign = null;
+        _currentIndexOfCapmaign = 0;
+        _state = MqttState.noContent;
         _debugLog(
-            'Ignoring transient empty publish_campaign because playable content is active');
+            'publish_campaign contains no campaigns; showing no-content screen');
+        notifyListeners();
         return;
       }
       _campaignModel = incomingCampaignModel;
