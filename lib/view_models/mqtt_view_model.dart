@@ -2398,15 +2398,23 @@ EOF
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       _msg = jsonObj["action"];
-      _campaignModel = normalizeCampaignResponse(
+      final incomingCampaignModel = normalizeCampaignResponse(
         campaignModelFromJson(jsonEncode(jsonObj)),
         jsonObj,
       );
-      final campaigns = _campaignModel?.data?.playerCampaigns;
+      final campaigns = incomingCampaignModel.data?.playerCampaigns;
       final count = campaigns?.length ?? 0;
       _debugLog(
           'publish_campaign received: $count campaign(s) currentIndex=$_currentIndexOfCapmaign '
           '${campaigns?.map((c) => "[id=${c.campaignId} name=${c.campaignName} composition=${c.isCompositionLayout}]").join(" ")}');
+      if (count == 0 &&
+          _campaignHasPlayableMediaItems(
+              _campaignModel?.data?.playerCampaigns ?? const <Campaign>[])) {
+        _debugLog(
+            'Ignoring transient empty publish_campaign because playable content is active');
+        return;
+      }
+      _campaignModel = incomingCampaignModel;
       for (var i = 0; i < count; i++) {
         final c = campaigns![i];
         print(
@@ -2494,13 +2502,8 @@ EOF
       print("i am in ccccccc");
 
       // await _checkPairingStatus();
-      for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
-        for (var zone in campaign.zones ?? []) {
-          for (var media in zone.mediaItems ?? []) {
-            print("Media URL: ${media.mediaUrl}");
-            _startDownloadingForCampaign();
-          }
-        }
+      if (count > 0) {
+        _startDownloadingForCampaign();
       }
     } else if (jsonObj["action"] == "publish_interactivity") {
       _interactivityModel = interactivityModelFromJson(jsonEncode(jsonObj));

@@ -51,7 +51,7 @@ dependencies:
   # 2.9.2, just deprecated) and is the one video-rendering-relevant
   # dependency change between the last known-working build and the blank
   # video reports.
-  video_player: ^2.5.1
+  video_player: 2.5.1
   video_player_win: ^3.2.2
   geolocator: ^9.0.1
   battery_plus: ^6.0.3

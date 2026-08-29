@@ -11,6 +11,7 @@ import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:video_player/video_player.dart';
+import 'package:video_player_win/video_player_win.dart' as windows_video;
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
@@ -1888,7 +1889,7 @@ class VideoPlayerWidget extends StatefulWidget {
 
 class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     with SingleTickerProviderStateMixin {
-  VideoPlayerController? _controller;
+  dynamic _controller;
   bool _isLoading = true;
   bool _isVideoEnded = false;
   int _initAttempts = 0;
@@ -1947,9 +1948,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
         ? widget.filePath
         : (_normalizeLocalMediaPath(widget.filePath) ?? widget.filePath);
 
-    final VideoPlayerController controller = _isNetworkUrl
+    final controller = Platform.isWindows
+      ? (_isNetworkUrl
+        ? windows_video.WinVideoPlayerController.network(resolvedPath)
+        : windows_video.WinVideoPlayerController.file(File(resolvedPath)))
+      : (_isNetworkUrl
         ? VideoPlayerController.network(resolvedPath)
-        : VideoPlayerController.file(File(resolvedPath));
+        : VideoPlayerController.file(File(resolvedPath)));
     _controller = controller
       ..initialize().then(
         (_) {
@@ -2123,7 +2128,9 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       );
     } else {
       videoWidget = SizedBox.expand(
-        child: VideoPlayer(_controller!),
+        child: Platform.isWindows
+            ? windows_video.WinVideoPlayer(_controller!)
+            : VideoPlayer(_controller!),
       );
     }
 
