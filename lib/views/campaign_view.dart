@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:math' show pi;
+import 'dart:math' show pi, min;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -347,8 +347,20 @@ class _CampaignViewState extends State<CampaignView> {
     final campaignHeight =
         campaign.resolution?.height?.toDouble() ?? deviceHeight;
 
-    final scaleX = deviceWidth / campaignWidth;
-    final scaleY = deviceHeight / campaignHeight;
+    // A single uniform scale (the smaller of the two independent axis
+    // ratios) keeps every zone/shape's proportions correct -- matching the
+    // CMS exactly -- instead of stretching x and y independently, which
+    // distorts circles into ellipses and squares into rectangles whenever
+    // the campaign's designed resolution doesn't share the device's aspect
+    // ratio. Any leftover space is centered as letterbox/pillarbox bars.
+    final uniformScale = min(
+      deviceWidth / campaignWidth,
+      deviceHeight / campaignHeight,
+    );
+    final scaleX = uniformScale;
+    final scaleY = uniformScale;
+    final offsetX = (deviceWidth - campaignWidth * uniformScale) / 2;
+    final offsetY = (deviceHeight - campaignHeight * uniformScale) / 2;
 
     print("Campaign resolution: ${campaignWidth}x${campaignHeight}");
     print("Device resolution: ${deviceWidth}x${deviceHeight}");
@@ -383,8 +395,8 @@ class _CampaignViewState extends State<CampaignView> {
         },
         child: Stack(
           children: (campaign.zones ?? []).map((zone) {
-            final scaledX = (zone.x ?? 0) * scaleX;
-            final scaledY = (zone.y ?? 0) * scaleY;
+            final scaledX = (zone.x ?? 0) * scaleX + offsetX;
+            final scaledY = (zone.y ?? 0) * scaleY + offsetY;
             final scaledWidth = (zone.width ?? 0) * scaleX;
             final scaledHeight = (zone.height ?? 0) * scaleY;
 
@@ -680,8 +692,21 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
             ? resH
             : (maxY > 0 ? maxY : constraints.maxHeight);
 
-        final scaleX = constraints.maxWidth / nestedCoordinateBaseWidth;
-        final scaleY = constraints.maxHeight / nestedCoordinateBaseHeight;
+        // Same reasoning as the top-level _buildZones: a single uniform
+        // scale keeps every nested zone/shape's proportions correct instead
+        // of stretching x and y independently, which distorts circles into
+        // ellipses etc. whenever the linked composition's own resolution
+        // doesn't share the parent zone box's aspect ratio.
+        final nestedUniformScale = min(
+          constraints.maxWidth / nestedCoordinateBaseWidth,
+          constraints.maxHeight / nestedCoordinateBaseHeight,
+        );
+        final scaleX = nestedUniformScale;
+        final scaleY = nestedUniformScale;
+        final nestedOffsetX =
+            (constraints.maxWidth - nestedCoordinateBaseWidth * nestedUniformScale) / 2;
+        final nestedOffsetY =
+            (constraints.maxHeight - nestedCoordinateBaseHeight * nestedUniformScale) / 2;
 
         print("═══════════════════════════════════════════════════════════");
         print("Nested zones in zone ${widget.zoneId}:");
@@ -696,8 +721,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           child: Stack(
             fit: StackFit.expand,
             children: zones.map((z) {
-              final left = (z.x ?? 0) * scaleX;
-              final top = (z.y ?? 0) * scaleY;
+              final left = (z.x ?? 0) * scaleX + nestedOffsetX;
+              final top = (z.y ?? 0) * scaleY + nestedOffsetY;
               final width = (z.width ?? 0) * scaleX;
               final height = (z.height ?? 0) * scaleY;
               final zoneMedia = (z.mediaItems ?? const <MediaItem>[])
