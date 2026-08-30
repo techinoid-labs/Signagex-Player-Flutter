@@ -357,11 +357,26 @@ class CampaignZone {
     // showed only 1 mediaItem -- dump every key on the zone and each raw
     // media item so we can see the CMS's actual field name for embedded
     // playlist data instead of guessing at it.
+    // Zone box + per-item type/kind, not just field names -- need the
+    // actual numbers to tell apart "wrong size/position" from "multiple
+    // stacked design layers being rotated through one-at-a-time instead of
+    // shown simultaneously" from "a shape's own SVG synthesis producing the
+    // wrong markup", all of which look like "shapes render differently" from
+    // a screenshot alone.
     debugLog(
       'CampaignZoneRaw',
-      'zoneId=${json["id"]} keys=${json.keys.toList()} '
+      'zoneId=${json["id"]} x=${json["x"]} y=${json["y"]} '
+      'width=${json["width"]} height=${json["height"]} rotation=${json["rotation"]} '
       'mediaItemsCount=${mediaRaw is List ? mediaRaw.length : "n/a"} '
-      'mediaItemKeys=${mediaRaw is List ? mediaRaw.map((m) => m is Map ? m.keys.toList() : m.runtimeType.toString()).toList() : "n/a"}',
+      'items=${mediaRaw is List ? mediaRaw.map((m) {
+        if (m is! Map) return m.runtimeType.toString();
+        final s = m['settings'];
+        final kind = s is Map ? (s['kind'] ?? s['shapeType'] ?? s['shape']) : null;
+        final fill = s is Map ? s['fill'] : null;
+        final url = m['mediaUrl']?.toString();
+        return '{id=${m['id']} type=${m['mediaType']} kind=$kind fill=$fill '
+            'urlLen=${url?.length ?? 0} urlStart=${url == null ? '' : url.substring(0, url.length < 40 ? url.length : 40)}}';
+      }).toList() : "n/a"}',
     );
     // Confirmed against the working Android reference (CampaignZone data
     // class in CampaignResponse.kt): it reads x/y/width/height directly with
