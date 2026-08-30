@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' show pi;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -387,23 +388,31 @@ class _CampaignViewState extends State<CampaignView> {
             final scaledWidth = (zone.width ?? 0) * scaleX;
             final scaledHeight = (zone.height ?? 0) * scaleY;
 
+            final zoneWidget = VideoPlaylistWidget(
+              key: ValueKey('${campaign.campaignId}_${zone.id ?? 0}'),
+              zoneId: (zone.id ?? 0).toString(),
+              mediaItems: zone.mediaItems ?? [],
+              campaignId: campaign.campaignId,
+              playerCampaigns: playerCampaigns,
+              campaignCanPlay: campaignCanPlay,
+              campaignSchedule: campaign.campaignSchedule,
+              coordinateBaseWidth: campaignWidth,
+              coordinateBaseHeight: campaignHeight,
+              fontScale: scaleY,
+            );
+
             return Positioned(
               left: scaledX,
               top: scaledY,
               width: scaledWidth,
               height: scaledHeight,
-              child: VideoPlaylistWidget(
-                key: ValueKey('${campaign.campaignId}_${zone.id ?? 0}'),
-                zoneId: (zone.id ?? 0).toString(),
-                mediaItems: zone.mediaItems ?? [],
-                campaignId: campaign.campaignId,
-                playerCampaigns: playerCampaigns,
-                campaignCanPlay: campaignCanPlay,
-                campaignSchedule: campaign.campaignSchedule,
-                coordinateBaseWidth: campaignWidth,
-                coordinateBaseHeight: campaignHeight,
-                fontScale: scaleY,
-              ),
+              child: (zone.rotation == null || zone.rotation == 0)
+                  ? zoneWidget
+                  : Transform.rotate(
+                      angle: zone.rotation! * pi / 180,
+                      alignment: Alignment.topLeft,
+                      child: zoneWidget,
+                    ),
             );
           }).toList(),
         ),
@@ -703,24 +712,37 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               print(
                   "  Zone ${z.id}: design=(${z.x}, ${z.y}) size=(${z.width}x${z.height}) -> screen=(${left.toStringAsFixed(1)}, ${top.toStringAsFixed(1)}) size=(${width.toStringAsFixed(1)}x${height.toStringAsFixed(1)})");
 
+              final zoneWidget = VideoPlaylistWidget(
+                key: ValueKey(
+                    '${widget.campaignId ?? ''}_${widget.zoneId}.${z.id ?? 0}'),
+                zoneId: '${widget.zoneId}.${z.id ?? 0}',
+                mediaItems: zoneMedia,
+                campaignId: widget.campaignId,
+                playerCampaigns: widget.playerCampaigns,
+                campaignCanPlay: widget.campaignCanPlay,
+                campaignSchedule: widget.campaignSchedule,
+                coordinateBaseWidth: nestedCoordinateBaseWidth,
+                coordinateBaseHeight: nestedCoordinateBaseHeight,
+                fontScale: scaleY,
+              );
+
               return Positioned(
                 left: left,
                 top: top,
                 width: width,
                 height: height,
-                child: VideoPlaylistWidget(
-                  key: ValueKey(
-                      '${widget.campaignId ?? ''}_${widget.zoneId}.${z.id ?? 0}'),
-                  zoneId: '${widget.zoneId}.${z.id ?? 0}',
-                  mediaItems: zoneMedia,
-                  campaignId: widget.campaignId,
-                  playerCampaigns: widget.playerCampaigns,
-                  campaignCanPlay: widget.campaignCanPlay,
-                  campaignSchedule: widget.campaignSchedule,
-                  coordinateBaseWidth: nestedCoordinateBaseWidth,
-                  coordinateBaseHeight: nestedCoordinateBaseHeight,
-                  fontScale: scaleY,
-                ),
+                // Konva rotates a node around its own x/y (top-left) origin,
+                // in degrees -- this was never applied anywhere before, so
+                // every rotated composition element (shape, text, image,
+                // anything) rendered completely unrotated on the player
+                // regardless of what the CMS editor showed.
+                child: (z.rotation == null || z.rotation == 0)
+                    ? zoneWidget
+                    : Transform.rotate(
+                        angle: z.rotation! * pi / 180,
+                        alignment: Alignment.topLeft,
+                        child: zoneWidget,
+                      ),
               );
             }).toList(),
           ),

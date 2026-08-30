@@ -333,6 +333,12 @@ class CampaignZone {
   int? y;
   int? width;
   int? height;
+  // Konva node rotation in degrees, around the node's own x/y (top-left)
+  // origin -- never read anywhere in the render path before, so every
+  // rotated composition element (shape, text, image, anything) rendered
+  // completely unrotated on the player regardless of what the CMS editor
+  // showed. See _buildNestedZones for where this actually gets applied.
+  double? rotation;
   List<MediaItem>? mediaItems;
 
   CampaignZone({
@@ -341,6 +347,7 @@ class CampaignZone {
     this.y,
     this.width,
     this.height,
+    this.rotation,
     this.mediaItems,
   });
 
@@ -386,6 +393,7 @@ class CampaignZone {
       y: _asInt(json["y"]),
       width: effectiveWidth,
       height: effectiveHeight,
+      rotation: _asDouble(json["rotation"]),
       mediaItems: mediaItems,
     );
   }
@@ -396,6 +404,7 @@ class CampaignZone {
         "y": y,
         "width": width,
         "height": height,
+        "rotation": rotation,
         "mediaItems": mediaItems == null
             ? null
             : List<dynamic>.from(mediaItems!.map((x) => x.toJson())),
@@ -1064,6 +1073,7 @@ class MediaItem {
           y: _asInt(raw['y']),
           width: effectiveWidth,
           height: effectiveHeight,
+          rotation: _asDouble(raw['rotation']),
           mediaItems: [media],
         ),
       );
