@@ -455,6 +455,26 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   int? _targetDuration;
   MqttViewModel? _mqttViewModel;
 
+  // One native libmpv Player/VideoController shared by every video this zone
+  // plays, instead of a fresh one per media item. Creating a new one is
+  // expensive -- NativeVideoController.create() auto-detects hwdec and
+  // queries the available decoders on every call, plus a
+  // WidgetsBinding.addPostFrameCallback gate -- and campaign_view.dart used
+  // to build a brand new VideoPlayerWidget (hence a brand new Player) keyed
+  // per media.id, so *every* switch to a different video item paid that
+  // full native-init cost again. That's the actual source of the 7-8s
+  // black-screen delay reported in QA (confirmed: Player.open()/play()
+  // themselves complete in well under a second once the native controller
+  // already exists, per signagex_debug.log timestamps). Lazily created on
+  // first use so zones with no video never pay for a libmpv instance.
+  Player? _sharedVideoPlayer;
+  VideoController? _sharedVideoPlayerController;
+
+  Player get sharedVideoPlayer => _sharedVideoPlayer ??= Player();
+
+  VideoController get sharedVideoPlayerController =>
+      _sharedVideoPlayerController ??= VideoController(sharedVideoPlayer);
+
   final Map<String, Widget Function()> _webViewWidgetBuilders = {};
   bool _adProofReported = false;
   String? _adPlaybackSessionKey;
@@ -1364,6 +1384,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     _videoController?.removeListener(_checkVideoPlaybackDuration);
     _videoController?.dispose();
     _videoController = null;
+    _sharedVideoPlayer?.dispose();
+    _sharedVideoPlayer = null;
+    _sharedVideoPlayerController = null;
     super.dispose();
   }
 
@@ -1831,6 +1854,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           "[LOG] _buildMediaWidget - Building VideoPlayerWidget for video type: $mediaType");
       return VideoPlayerWidget(
         key: ValueKey('${media.id ?? ''}_${_currentMediaIndex}'),
+        player: sharedVideoPlayer,
+        controller: sharedVideoPlayerController,
         filePath: mediaUrl,
         onVideoEnd: () {
           if (!(_timer?.isActive ?? false)) {
@@ -1868,6 +1893,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       if (kind.contains('video') || isVideoFile(mediaUrl)) {
         return VideoPlayerWidget(
           key: ValueKey('${media.id ?? ''}_${_currentMediaIndex}'),
+          player: sharedVideoPlayer,
+          controller: sharedVideoPlayerController,
           filePath: mediaUrl,
           onVideoEnd: () {
             if (!(_timer?.isActive ?? false)) {
@@ -1891,6 +1918,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     if (isVideoFile(mediaUrl)) {
       return VideoPlayerWidget(
         key: ValueKey('${media.id ?? ''}_${_currentMediaIndex}'),
+        player: sharedVideoPlayer,
+        controller: sharedVideoPlayerController,
         filePath: mediaUrl,
         onVideoEnd: () {
           if (!(_timer?.isActive ?? false)) {
@@ -1929,12 +1958,19 @@ class VideoPlayerWidget extends StatefulWidget {
   final VoidCallback onVideoEnd;
   final String transitionType;
   final double volume;
+  // Owned by the parent VideoPlaylistWidget and shared across every video
+  // this zone plays -- see _VideoPlaylistWidgetState.sharedVideoPlayer for
+  // why. This widget only ever calls player.open() on it, never disposes it.
+  final Player player;
+  final VideoController controller;
 
   const VideoPlayerWidget({
     super.key,
     required this.filePath,
     required this.onVideoEnd,
     required this.transitionType,
+    required this.player,
+    required this.controller,
     this.volume = 1.0,
   });
 
@@ -1953,8 +1989,15 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   // native texture/driver-level failure in that plugin rather than
   // anything fixable by changing how it's called. media_kit (libmpv-backed)
   // replaces it here.
-  late final Player _player;
-  late final VideoController _videoController;
+  //
+  // _player/_videoController are widget.player/widget.controller -- owned
+  // and disposed by the parent VideoPlaylistWidget, shared across every
+  // video item in the zone. This widget only calls open()/play()/seek() on
+  // them; see sharedVideoPlayer's doc comment for why creating a fresh
+  // native player per media item was the actual source of the multi-second
+  // black-screen delay reported in QA.
+  Player get _player => widget.player;
+  VideoController get _videoController => widget.controller;
   StreamSubscription<bool>? _completedSub;
   StreamSubscription<String>? _errorSub;
   bool _hasError = false;
@@ -1966,8 +2009,6 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   @override
   void initState() {
     super.initState();
-    _player = Player();
-    _videoController = VideoController(_player);
     _completedSub = _player.stream.completed.listen((completed) {
       if (completed && !_isVideoEnded) {
         _isVideoEnded = true;
@@ -2106,9 +2147,11 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
 
   @override
   void dispose() {
+    // Cancel only this widget instance's subscriptions -- the player/
+    // controller themselves are owned by the parent VideoPlaylistWidget and
+    // outlive this widget (it gets recreated per media item via its key).
     _completedSub?.cancel();
     _errorSub?.cancel();
-    _player.dispose();
     super.dispose();
   }
 }
