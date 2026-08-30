@@ -1827,6 +1827,24 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     if (mediaType == 'shape') {
       var svgContent = mediaUrl.isNotEmpty ? _decodeSvgContent(mediaUrl) : '';
       if (!isSvgContent(svgContent)) {
+        // The CMS renders the shape server-side to a real SVG file; once
+        // downloaded (see _collectCampaignMediaItemsForDownload in
+        // mqtt_view_model.dart) settings.remoteSrc holds the local cached
+        // path -- use that real, exact SVG before falling back to
+        // reconstructing an approximation from fill/stroke/shapeType.
+        final localShapePath =
+            _normalizeLocalMediaPath(media.settings?.remoteSrc ?? '');
+        if (localShapePath != null) {
+          final file = File(localShapePath);
+          if (file.existsSync()) {
+            try {
+              final fileSvg = file.readAsStringSync();
+              if (isSvgContent(fileSvg)) svgContent = fileSvg;
+            } catch (_) {}
+          }
+        }
+      }
+      if (!isSvgContent(svgContent)) {
         final built = MediaItem.svgFromShapeProperties({
           if (media.settings?.fill != null) 'fill': media.settings!.fill,
           if (media.settings?.strokeWidth != null)

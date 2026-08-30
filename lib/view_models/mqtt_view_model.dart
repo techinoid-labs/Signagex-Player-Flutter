@@ -1514,7 +1514,8 @@ EOF
 
     for (final media in downloadTargets) {
       String? originalUrl;
-      if (media.mediaType?.toLowerCase() == 'sticker') {
+      final dlMediaType = media.mediaType?.toLowerCase();
+      if (dlMediaType == 'sticker' || dlMediaType == 'shape') {
         originalUrl = media.settings?.remoteSrc ?? media.mediaUrl;
       } else {
         originalUrl = media.mediaUrl;
@@ -1537,8 +1538,8 @@ EOF
           onProgress: _updateCurrentFileProgress,
         );
         // Update the appropriate URL field
-        if (media.mediaType?.toLowerCase() == 'sticker') {
-          // Stickers: always store local path in settings.remoteSrc so the UI uses it at render time
+        if (dlMediaType == 'sticker' || dlMediaType == 'shape') {
+          // Stickers/shapes: always store local path in settings.remoteSrc so the UI uses it at render time
           media.settings ??= Settings();
           media.settings!.remoteSrc = localPath;
           media.mediaUrl = localPath; // keep mediaUrl in sync for fallback
@@ -1599,33 +1600,34 @@ EOF
           final mediaType = (media.mediaType ?? '').toLowerCase();
           if (mediaType == 'web_app_instance' ||
               mediaType == 'text/html' ||
-              mediaType == 'text' ||
-              mediaType == 'shape') {
+              mediaType == 'text') {
             continue;
           }
           if (mediaType == 'content' && mediaItemIsWebAppIframe(media)) {
-            continue;
-          }
-          final rawUrl = media.mediaUrl ?? '';
-          if (rawUrl.contains('<svg')) {
             continue;
           }
           if (_isNestedCampaignMediaItem(media)) {
             visitZones(media.zones ?? const <CampaignZone>[]);
             continue;
           }
-          // For stickers, prefer remoteSrc; for ads, prefer creative URL
+          // For stickers and shapes, prefer settings.remoteSrc (the CMS's
+          // real pre-rendered asset URL, populated from download_url/
+          // downloadUrl) over mediaUrl -- for shapes, mediaUrl is often
+          // already-synthesized inline SVG markup with nothing left to
+          // download, so the inline-svg check below must run against
+          // whichever URL is actually selected here, not raw mediaUrl.
           String? url;
           if (media.isAd || idLooksLikeAdSlot(media.id)) {
             url = media.adCreativeUrl;
-          } else if (media.mediaType?.toLowerCase() == 'sticker') {
+          } else if (mediaType == 'sticker' || mediaType == 'shape') {
             url = media.settings?.remoteSrc ?? media.mediaUrl;
           } else {
             url = media.mediaUrl;
           }
-          if (url != null && url.isNotEmpty) {
-            result.add(media);
+          if (url == null || url.isEmpty || url.contains('<svg')) {
+            continue;
           }
+          result.add(media);
         }
       }
     }

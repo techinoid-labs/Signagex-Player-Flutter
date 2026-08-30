@@ -954,6 +954,33 @@ class MediaItem {
           width: zoneW,
           height: zoneH,
         );
+        // svgFromShapeProperties only accepts download_url/downloadUrl/
+        // svgUrl/mediaUrl as a source when they already ARE inline <svg>
+        // markup -- when the CMS instead sends a fetchable URL to its
+        // server-rendered SVG file, that candidate is silently dropped and
+        // builtSvg falls back to a primitive fill/stroke reconstruction.
+        // Stash the real URL here so it can go through the same
+        // download-and-cache pipeline as stickers (see
+        // _collectCampaignMediaItemsForDownload in mqtt_view_model.dart)
+        // instead of always rendering the crude approximation.
+        String? shapeRemoteSrc;
+        for (final key in [
+          'download_url',
+          'downloadUrl',
+          'svgUrl',
+          'mediaUrl',
+          'media_url',
+          'url',
+        ]) {
+          final candidate = _cleanMediaUrl(mergedShape[key]?.toString());
+          if (candidate != null &&
+              !candidate.contains('<svg') &&
+              (candidate.startsWith('http://') ||
+                  candidate.startsWith('https://'))) {
+            shapeRemoteSrc = candidate;
+            break;
+          }
+        }
         mediaType = 'shape';
         mediaUrl = _cleanMediaUrl(
           builtSvg ??
@@ -970,6 +997,7 @@ class MediaItem {
                   mergedShape['type'])
               ?.toString(),
           duration: _asInt(mergedShape['duration']),
+          remoteSrc: shapeRemoteSrc,
         );
         break;
       default:
