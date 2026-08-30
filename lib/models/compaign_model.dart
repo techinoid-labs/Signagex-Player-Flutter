@@ -1394,9 +1394,24 @@ class MediaItem {
       );
     }
     if (typeLower == 'shape') {
-      final built = svgFromShapeProperties(_mergeShapeProps(json, {}));
-      if (built != null && built.isNotEmpty) {
-        mediaUrl = _cleanMediaUrl(built);
+      // The backend (campaign-player.service.ts) already puts the CMS's own
+      // rendered snapshot -- an exact inline <svg> of the shape at its
+      // current fill/stroke/size -- directly in json['mediaUrl'] (that's
+      // what _mediaUrlFromJson just read above). fill/strokeWidth/shapeType
+      // live under json['settings'], NOT at this map's top level, so a bare
+      // _mergeShapeProps(json, {}) call here found none of them and always
+      // rebuilt a blank/default shape, unconditionally discarding the
+      // already-correct CMS snapshot. Only reconstruct when that snapshot
+      // is actually missing, and read properties from settings so the
+      // fallback at least matches the real shape when it does run.
+      if (mediaUrl == null || !mediaUrl.contains('<svg')) {
+        final shapeProps = json['settings'] is Map<String, dynamic>
+            ? json['settings'] as Map<String, dynamic>
+            : <String, dynamic>{};
+        final built = svgFromShapeProperties(_mergeShapeProps(json, shapeProps));
+        if (built != null && built.isNotEmpty) {
+          mediaUrl = _cleanMediaUrl(built);
+        }
       }
     }
 
