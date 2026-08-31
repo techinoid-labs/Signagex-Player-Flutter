@@ -22,17 +22,26 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
       - name: Build production
         run: flutter build windows --release
 
       - name: Package production build
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath digital_signage-production.zip
 
+      - name: Build production installer
+        run: iscc windows\installer\setup.iss /DOutputBaseFilename=SignageX-Player-Setup
+
       - name: Build staging
         run: flutter build windows --release --dart-define=APP_ENV=staging
 
       - name: Package staging build
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath digital_signage-staging.zip
+
+      - name: Build staging installer
+        run: iscc windows\installer\setup.iss "/DAppSuffix= (Staging)" /DOutputBaseFilename=SignageX-Player-Setup-Staging
 
       - name: Upload production build
         uses: actions/upload-artifact@v4
@@ -45,3 +54,15 @@ jobs:
         with:
           name: digital_signage-staging
           path: digital_signage-staging.zip
+
+      - name: Upload production installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SignageX-Player-Setup
+          path: dist\SignageX-Player-Setup.exe
+
+      - name: Upload staging installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: SignageX-Player-Setup-Staging
+          path: dist\SignageX-Player-Setup-Staging.exe
