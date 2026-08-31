@@ -839,7 +839,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         status: 'failed',
         errorMessage: 'campaign_not_allowed',
       );
-      _onMediaEnd();
+      _skipMediaAfterDelay();
       return;
     }
 
@@ -858,7 +858,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         status: 'failed',
         errorMessage: 'outside_flight_window',
       );
-      _onMediaEnd();
+      _skipMediaAfterDelay();
       return;
     }
 
@@ -889,7 +889,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           status: 'failed',
           errorMessage: 'no_schedule_configured',
         );
-        _onMediaEnd();
+        _skipMediaAfterDelay();
         return;
       }
     }
@@ -936,7 +936,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         status: 'failed',
         errorMessage: 'restrictions_failed',
       );
-      _onMediaEnd();
+      _skipMediaAfterDelay();
     }
   }
 
@@ -1087,7 +1087,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           '${nextMedia.mediaType} → ${creative.mediaType} (${creative.id})');
       if (creativeUrl.isEmpty) {
         print("[LOG] Ad slot has no creative URL yet (${nextMedia.id})");
-        _onMediaEnd();
+        _debugLog(
+            'zone=${widget.zoneId} ad slot ${nextMedia.id} has no creative yet, '
+            'retrying in 3s instead of looping immediately');
+        _skipMediaAfterDelay();
         return;
       }
       _ensureAdSlotProofOfPlaySession(nextMedia);
@@ -1324,6 +1327,25 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   }
 
   bool _isDisposed = false;
+
+  // Skips to the next item after a short delay instead of immediately, for
+  // any "this item currently can't play" condition (campaign not allowed,
+  // ad outside its flight window, restrictions failed, no ad creative yet,
+  // etc.). Calling _onMediaEnd() immediately for a condition that doesn't
+  // change moment to moment creates a same-frame self-triggering loop
+  // whenever a zone's only item (or every item) hits the same skip
+  // condition every time it cycles back around -- confirmed via
+  // signagex_debug.log: one zone stuck re-triggering ~60 times/second for
+  // 50+ minutes straight on an ad slot with no creative assigned yet,
+  // starving the rest of the app (including other zones' WebViews/videos)
+  // of event-loop time.
+  void _skipMediaAfterDelay({Duration delay = const Duration(seconds: 3)}) {
+    _timer?.cancel();
+    _timer = Timer(delay, () {
+      if (!mounted) return;
+      _onMediaEnd();
+    });
+  }
 
   void _onMediaEnd() {
     _timer?.cancel();
