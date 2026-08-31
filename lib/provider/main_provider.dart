@@ -1,5 +1,7 @@
+import 'dart:ffi';
 import 'dart:io';
 
+import 'package:ffi/ffi.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -75,33 +77,74 @@ class _MqttProviderState extends State<MqttProvider> {
     );
   }
 
+  // win32_window.cpp's Create() always launches borderless, covering the
+  // full monitor -- this tracks that starting state so Escape knows which
+  // way to toggle.
+  bool _isFullscreen = true;
+
   void _onKey(RawKeyEvent event) {
     if (event is RawKeyDownEvent) {
-      // Kiosk/signage player: runs borderless and covering the whole
-      // monitor at all times (see win32_window.cpp's Create -- there's no
-      // title bar or maximize button to click, ever), so Escape is the only
-      // way to get it out of the way without touching the mouse. Minimizing
-      // rather than restoring to a windowed frame matches "get this off my
-      // screen for a second", not "let me resize it".
       if (event.logicalKey == LogicalKeyboardKey.escape) {
-        _minimizeWindow();
+        _toggleFullscreen();
       }
       print("Key pressed: ${event.logicalKey.debugName}");
     }
   }
 
-  void _minimizeWindow() {
+  // Escape toggles between the kiosk borderless-fullscreen window
+  // win32_window.cpp launches with and a normal bordered, movable window
+  // that stays visible on screen -- not minimized to the taskbar. Pressing
+  // Escape again returns to fullscreen. Done Dart-side via win32 FFI
+  // (already a dependency here -- see windows_screen_capture.dart) rather
+  // than in the native WndProc, since keyboard focus lives on the hosted
+  // Flutter child HWND and it's Flutter's own input pipeline, not the
+  // native top-level window, that actually delivers key events to this
+  // listener regardless of which HWND technically has focus.
+  void _toggleFullscreen() {
     if (!Platform.isWindows) return;
     try {
-      // GetForegroundWindow always resolves to the top-level window even
-      // though actual keyboard focus sits on the hosted Flutter child HWND
-      // (child windows can't be "foreground" in Win32), so this reliably
-      // targets our own window without needing to look it up by class name.
       final hwnd = win32.GetForegroundWindow();
-      if (hwnd != 0) {
-        win32.ShowWindow(hwnd, win32.SW_MINIMIZE);
+      if (hwnd == 0) return;
+      if (_isFullscreen) {
+        _exitFullscreen(hwnd);
+      } else {
+        _enterFullscreen(hwnd);
       }
+      _isFullscreen = !_isFullscreen;
     } catch (_) {}
+  }
+
+  void _exitFullscreen(int hwnd) {
+    win32.SetWindowLongPtr(
+        hwnd, win32.GWL_STYLE, win32.WS_OVERLAPPEDWINDOW | win32.WS_VISIBLE);
+    // Centered, reasonably sized windowed frame -- matches the size
+    // main.cpp originally requested before this app became kiosk-fullscreen.
+    final screenWidth = win32.GetSystemMetrics(win32.SM_CXSCREEN);
+    final screenHeight = win32.GetSystemMetrics(win32.SM_CYSCREEN);
+    const width = 1280;
+    const height = 720;
+    final x = ((screenWidth - width) / 2).round();
+    final y = ((screenHeight - height) / 2).round();
+    win32.SetWindowPos(hwnd, 0, x, y, width, height,
+        win32.SWP_FRAMECHANGED | win32.SWP_NOZORDER);
+  }
+
+  void _enterFullscreen(int hwnd) {
+    win32.SetWindowLongPtr(
+        hwnd, win32.GWL_STYLE, win32.WS_POPUP | win32.WS_VISIBLE);
+    final monitor =
+        win32.MonitorFromWindow(hwnd, win32.MONITOR_DEFAULTTONEAREST);
+    final info = calloc<win32.MONITORINFO>();
+    try {
+      info.ref.cbSize = sizeOf<win32.MONITORINFO>();
+      if (win32.GetMonitorInfo(monitor, info) != 0) {
+        final rc = info.ref.rcMonitor;
+        win32.SetWindowPos(hwnd, 0, rc.left, rc.top, rc.right - rc.left,
+            rc.bottom - rc.top, win32.SWP_FRAMECHANGED | win32.SWP_NOZORDER);
+      }
+    } finally {
+      calloc.free(info);
+    }
   }
 
   Widget _getScreenForState(MqttState state) {

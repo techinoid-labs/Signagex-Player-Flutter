@@ -141,9 +141,10 @@ bool Win32Window::Create(const std::wstring& title,
   // deliberately so this covers the taskbar too. WS_POPUP has no caption/
   // border/system menu, which is what removes the title bar entirely --
   // "maximized" isn't a separate state to handle since the window always
-  // covers the full monitor already. Escape minimizing it back down to the
-  // taskbar is handled Dart-side (see main_provider.dart's _onKey), since
-  // keyboard focus lives on the hosted Flutter child window, not here.
+  // covers the full monitor already. Escape toggling this back to a normal
+  // bordered window (and back to fullscreen again) is handled Dart-side
+  // (see main_provider.dart's _toggleFullscreen), since keyboard focus
+  // lives on the hosted Flutter child window, not here.
   LONG window_x = Scale(origin.x, scale_factor);
   LONG window_y = Scale(origin.y, scale_factor);
   LONG window_width = Scale(size.width, scale_factor);
