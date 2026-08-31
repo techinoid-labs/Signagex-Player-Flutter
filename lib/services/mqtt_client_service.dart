@@ -78,23 +78,21 @@ class MqttClientService {
     _client.onSubscribed = _onSubscribed;
     _client.onAutoReconnect = _onAutoReconnect;
     _client.onAutoReconnected = _onAutoReconnected;
-
-    // _client.updates is a broadcast stream that lives for the lifetime of
-    // this _client instance (itself a singleton -- see MqttClientService's
-    // single call sites in main_provider.dart/system_apply_settings_vm.dart).
-    // It must be listened to exactly ONCE, here. connect() and subscribe()
-    // used to each add their own .listen() call, and since connect() runs on
-    // every manual/auto reconnect, every reconnect permanently added one more
-    // duplicate listener -- every subsequent incoming message (including
-    // publish_campaign) then got delivered to _handleReceivedMessage once per
-    // accumulated listener, growing worse the longer the app stayed up. This
-    // is why publish_campaign appeared to fire repeatedly in rapid bursts,
-    // and why restarting the app (resetting the listener count to one)
-    // temporarily "fixed" it.
-    _client.updates.listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
-      _handleReceivedMessage(c);
-    });
   }
+
+  // connect() and subscribe() used to each call _client.updates.listen(...)
+  // on every invocation, and connect() runs on every manual/auto reconnect,
+  // so every reconnect permanently added one more duplicate listener to that
+  // broadcast stream -- every subsequent incoming message (including
+  // publish_campaign) then got delivered to _handleReceivedMessage once per
+  // accumulated listener, growing worse the longer the app stayed up. This
+  // guard makes the listen() call in connect()'s success branch below a
+  // true one-time attach instead. (Deliberately NOT hoisted into
+  // _initializeClient()/the constructor -- accessing .updates before the
+  // client has ever connected isn't a call site this package's behavior has
+  // been verified for, and getting that wrong would break every app launch,
+  // not just repeated ones.)
+  bool _updatesListenerAttached = false;
 
   // ────────────────────────────────
   // Callbacks
@@ -201,9 +199,13 @@ class MqttClientService {
           print('MQTT_LOGS:: Connection status: ${_client.connectionStatus}');
           _debugLog('connect(): SUCCESS, will topic set for globleTopic="$globleTopic"');
 
-          // NOTE: _client.updates is listened to exactly once, in
-          // _initializeClient() -- do not add another .listen() call here.
-          // See the comment there for why (duplicate-delivery bug).
+          if (!_updatesListenerAttached) {
+            _updatesListenerAttached = true;
+            _client.updates
+                .listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
+              _handleReceivedMessage(c);
+            });
+          }
 
           // Explicit "online" companion to the will registered above --
           // the will only fires on an *unexpected* drop, so we still need
@@ -273,9 +275,10 @@ class MqttClientService {
     _client.subscribe(wildcardTopic, MqttQos.atMostOnce);
     _debugLog('subscribe($wildcardTopic)');
 
-    // NOTE: _client.updates is listened to exactly once, in
-    // _initializeClient() -- do not add another .listen() call here.
-    // See the comment there for why (duplicate-delivery bug).
+    // NOTE: _client.updates is listened to exactly once, guarded by
+    // _updatesListenerAttached in connect()'s success branch -- do not add
+    // another .listen() call here. See the comment on that field for why
+    // (duplicate-delivery bug).
   }
 
   void _handleReceivedMessage(
