@@ -22,6 +22,7 @@ import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/log_format.dart';
 
 import '../view_models/mqtt_view_model.dart';
+import '../views/downloading_screen.dart';
 import '../views/no_content_view.dart';
 import '../widgets/center_image_widget.dart';
 import '../widgets/text_widget.dart';
@@ -58,6 +59,14 @@ bool _isWebAppMediaItem(MediaItem media) {
       type == 'web_app_instance' ||
       (type == 'content' && mediaItemIsWebAppIframe(playback));
 }
+
+// Stable IDs (see _webAppStableId) of web app/HTML items whose WebView has
+// actually finished loading at least once -- set from WBViewWidget's own
+// onLoadStop, by whichever instance (the offstage prefetch one or the real
+// visible one) reaches it first. _CampaignViewState checks this before
+// switching to a web-app-only campaign, so a page that's still mid-load
+// doesn't get shown blank/white -- see _campaignWebAppsReady.
+final Set<String> _readyWebAppStableIds = {};
 
 // #region agent log
 void _agentDebugLog(
@@ -239,6 +248,42 @@ class _CampaignViewState extends State<CampaignView> {
   late FocusNode _focusNode;
   Timer? _restrictionCheckTimer;
 
+  // "Keep playing previous content while a solo web app loads, or show a
+  // downloading screen if there's nothing to fall back to" -- tracks the
+  // last campaign that was actually safe to show (not gated), so a
+  // still-loading web-app-only campaign can keep rendering it instead of
+  // switching to a blank/white WebView. _restrictionCheckTimer's existing
+  // periodic setState (every 8s) doubles as the recheck trigger once the
+  // gated campaign's web app(s) finish loading (onPageReady's own setState
+  // in _buildGlobalWebAppPrefetchLayer also triggers an immediate recheck).
+  Widget? _lastGoodContent;
+  String? _lastGoodCampaignId;
+
+  bool _campaignIsWebAppOnly(Campaign campaign) {
+    final zones = campaign.zones;
+    if (zones == null || zones.isEmpty) return false;
+    var hasAnyItem = false;
+    for (final zone in zones) {
+      for (final media in zone.mediaItems ?? const <MediaItem>[]) {
+        hasAnyItem = true;
+        if (!_isWebAppMediaItem(media)) return false;
+      }
+    }
+    return hasAnyItem;
+  }
+
+  bool _campaignWebAppsReady(Campaign campaign) {
+    for (final zone in campaign.zones ?? const <CampaignZone>[]) {
+      final zoneId = (zone.id ?? 0).toString();
+      for (final media in zone.mediaItems ?? const <MediaItem>[]) {
+        final playback = media.isAd ? media.playbackMedia : media;
+        final stableId = _webAppStableId(campaign.campaignId, zoneId, playback);
+        if (!_readyWebAppStableIds.contains(stableId)) return false;
+      }
+    }
+    return true;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -326,10 +371,26 @@ class _CampaignViewState extends State<CampaignView> {
         '$cyan═══════════════════════════════════════════════════════════$reset');
 
     if (campaignCanPlay) {
+      // A solo web-app campaign that hasn't finished loading yet (its
+      // background prefetch is still in flight, or hasn't had time to run
+      // -- e.g. right after a fresh pairing) would otherwise show blank/
+      // white the instant rotation reaches it. Keep whatever was last
+      // safely shown instead, or fall back to the existing DownloadingView
+      // if this is the very first thing the player has ever shown.
+      if (_campaignIsWebAppOnly(campaign) && !_campaignWebAppsReady(campaign)) {
+        _debugLog(
+            'campaign ${campaign.campaignId} is web-app-only and not ready yet, '
+            '${_lastGoodContent != null ? "keeping $_lastGoodCampaignId on screen" : "showing downloading screen"}');
+        return _lastGoodContent ?? const DownloadingView();
+      }
+
       final zonesContent = _buildZones(campaign, campaigns, campaignCanPlay);
       final prefetch = _buildGlobalWebAppPrefetchLayer(campaigns, campaign);
-      if (prefetch == null) return zonesContent;
-      return Stack(children: [zonesContent, prefetch]);
+      final content =
+          prefetch == null ? zonesContent : Stack(children: [zonesContent, prefetch]);
+      _lastGoodContent = content;
+      _lastGoodCampaignId = campaign.campaignId;
+      return content;
     } else {
       return Scaffold(
         backgroundColor: Colors.white,
@@ -421,6 +482,11 @@ class _CampaignViewState extends State<CampaignView> {
                   key: _webAppKeyForStableId(stableId),
                   media: mediaUrl,
                   onMediaEnd: () {},
+                  onPageReady: () {
+                    if (_readyWebAppStableIds.add(stableId) && mounted) {
+                      setState(() {});
+                    }
+                  },
                 ),
               ),
             ),
@@ -1936,6 +2002,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType == 'text/html') {
       print("[LOG] _buildMediaWidget - Building WBViewWidget for text/html");
+      final stableId = _webAppStableId(widget.campaignId, widget.zoneId, media);
       final cacheKey =
           _mediaWidgetCacheKey('html', media, mediaUrl, indexOverride: itemIndex);
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
@@ -1943,10 +2010,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
                 child: WBViewWidget(
-                  key: _webAppKeyForStableId(
-                      _webAppStableId(widget.campaignId, widget.zoneId, media)),
+                  key: _webAppKeyForStableId(stableId),
                   media: mediaUrl,
                   onMediaEnd: _onMediaEnd,
+                  onPageReady: () => _readyWebAppStableIds.add(stableId),
                 ),
               ),
             );
@@ -1957,6 +2024,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     if (mediaType == 'web_app_instance') {
       print(
           "[LOG] _buildMediaWidget - Building WBViewWidget for web_app_instance");
+      final stableId = _webAppStableId(widget.campaignId, widget.zoneId, media);
       final cacheKey = _mediaWidgetCacheKey('webapp', media, mediaUrl,
           indexOverride: itemIndex);
       final cacheHit = _webViewWidgetBuilders.containsKey(cacheKey);
@@ -1980,10 +2048,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
                 child: WBViewWidget(
-                  key: _webAppKeyForStableId(
-                      _webAppStableId(widget.campaignId, widget.zoneId, media)),
+                  key: _webAppKeyForStableId(stableId),
                   media: mediaUrl,
                   onMediaEnd: _onMediaEnd,
+                  onPageReady: () => _readyWebAppStableIds.add(stableId),
                 ),
               ),
             );
@@ -2117,6 +2185,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType == 'content' && mediaItemIsWebAppIframe(media)) {
       final iframeUrl = mediaItemWebAppIframeUrl(media);
+      final stableId = _webAppStableId(widget.campaignId, widget.zoneId, media);
       print(
           '[LOG] _buildMediaWidget - Building WBViewWidget for web-app iframe: '
           '$iframeUrl');
@@ -2127,10 +2196,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
                 child: WBViewWidget(
-                  key: _webAppKeyForStableId(
-                      _webAppStableId(widget.campaignId, widget.zoneId, media)),
+                  key: _webAppKeyForStableId(stableId),
                   media: iframeUrl,
                   onMediaEnd: _onMediaEnd,
+                  onPageReady: () => _readyWebAppStableIds.add(stableId),
                 ),
               ),
             );
@@ -2813,11 +2882,18 @@ class _SvgFileWidgetState extends State<SvgFileWidget> {
 class WBViewWidget extends StatefulWidget {
   final String media;
   final VoidCallback onMediaEnd;
+  // Fired once the page actually finishes loading (onLoadStop) -- lets
+  // callers (the prefetch layers, and _CampaignViewState's readiness gate)
+  // know this specific web app is now safe to show without a blank/white
+  // flash. Optional since most call sites (e.g. the same-zone prefetch,
+  // which doesn't gate anything itself) don't need it.
+  final VoidCallback? onPageReady;
 
   const WBViewWidget({
     Key? key,
     required this.media,
     required this.onMediaEnd,
+    this.onPageReady,
   }) : super(key: key);
 
   @override
@@ -2910,6 +2986,7 @@ class _WBViewWidgetState extends State<WBViewWidget> {
                 });
               },
               onLoadStop: (controller, url) {
+                widget.onPageReady?.call();
                 if (!mounted) return;
                 _debugLog(
                     'WBViewWidget page finished loading after ${DateTime.now().difference(_createdAt).inMilliseconds}ms: $url');
