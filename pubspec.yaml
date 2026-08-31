@@ -100,6 +100,11 @@ dependencies:
   image: ^4.5.2
   qr_flutter: ^4.1.0
   flutter_svg: ^2.0.10+1
+  # Real OS-level screen capture for Windows Remote View (GDI BitBlt) --
+  # RenderRepaintBoundary can only capture this app's own render tree, not
+  # the actual desktop/other windows. See lib/utils/windows_screen_capture.dart.
+  win32: ^5.10.1
+  ffi: ^2.1.3
 
 dev_dependencies:
   flutter_test:

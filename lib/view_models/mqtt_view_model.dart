@@ -29,6 +29,8 @@ import 'package:digital_signage/models/intractivity_model.dart'
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/globle_variable.dart';
+import 'package:digital_signage/utils/windows_screen_capture.dart'
+    as windows_capture;
 import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 
 import '../data/api_repository/api_repository.dart';
@@ -231,54 +233,82 @@ class MqttViewModel extends ChangeNotifier {
 
   Future<void> captureAndSendScreenshot(String topic) async {
     try {
-      RenderRepaintBoundary boundary = boundaryKey.currentContext!
-          .findRenderObject() as RenderRepaintBoundary;
+      Uint8List? imageBytes;
 
-      if (boundary.debugNeedsPaint) {
-        debugPrint("Widget not rendered yet. Waiting for rendering...");
-        await Future.delayed(const Duration(milliseconds: 100));
+      // Real OS-level capture, reflecting the actual desktop -- other
+      // windows, the taskbar, whatever press_home's MinimizeAll() actually
+      // did -- none of which RenderRepaintBoundary below can ever see,
+      // since it only captures this Flutter app's own render tree. Falls
+      // through to that if GDI capture fails for any reason (e.g. running
+      // on a platform/session without a desktop DC available).
+      if (Platform.isWindows) {
+        try {
+          final desktop = windows_capture.captureWindowsDesktop();
+          if (desktop != null) {
+            imageBytes = Uint8List.fromList(img.encodePng(desktop));
+            _debugLog(
+                'captureAndSendScreenshot: captured via Windows GDI, ${desktop.width}x${desktop.height}');
+          } else {
+            _debugLog(
+                'captureAndSendScreenshot: Windows GDI capture returned null, falling back to RenderRepaintBoundary');
+          }
+        } catch (error, st) {
+          _debugLog(
+              'captureAndSendScreenshot: Windows GDI capture threw, falling back to RenderRepaintBoundary -- $error\n$st');
+        }
       }
 
-      // The working Android player captures Remote View screenshots at full
-      // native screen resolution with JPEG quality 80 (ScreenCaptureManager
-      // .convertBitmapToBase64) and sends that uncapped -- our previous
-      // pixelRatio: 0.5 plus a 400px-wide quality-40 JPEG recompression was
-      // far below that, which is what made Remote View look "very bad".
-      final image = await boundary.toImage(pixelRatio: 1.0);
+      if (imageBytes == null) {
+        RenderRepaintBoundary boundary = boundaryKey.currentContext!
+            .findRenderObject() as RenderRepaintBoundary;
 
-      final ByteData? byteData =
-          await image.toByteData(format: ImageByteFormat.png);
+        if (boundary.debugNeedsPaint) {
+          debugPrint("Widget not rendered yet. Waiting for rendering...");
+          await Future.delayed(const Duration(milliseconds: 100));
+        }
 
-      if (byteData != null) {
-        final Uint8List imageBytes = byteData.buffer.asUint8List();
-        debugPrint("Original image size: ${imageBytes.length}");
+        // The working Android player captures Remote View screenshots at
+        // full native screen resolution with JPEG quality 80
+        // (ScreenCaptureManager.convertBitmapToBase64) and sends that
+        // uncapped -- our previous pixelRatio: 0.5 plus a 400px-wide
+        // quality-40 JPEG recompression was far below that, which is what
+        // made Remote View look "very bad".
+        final image = await boundary.toImage(pixelRatio: 1.0);
 
-        // Compress the image further
-        final compressedImageBytes = await _compressImage(imageBytes);
-        debugPrint("Compressed image size: ${compressedImageBytes.length}");
-
-        // Convert to Base64 string
-        final base64String = base64Encode(compressedImageBytes);
-
-        // Remote View reads this from <topic>/remote as a single JSON
-        // message with an img_url field -- this used to publish two
-        // unrelated messages (a metadata blob, then raw base64 bytes with
-        // no JSON wrapper) to the plain topic instead, which the backend
-        // had no way to parse as a screenshot at all. Match the working
-        // Android player's exact contract.
-        Map<String, dynamic> sendLog = {
-          "action": "image",
-          "img_url": base64String,
-          "sender": "windows",
-        };
-
-        _mqttClientService.publish('$topic/remote', jsonEncode(sendLog));
-        _debugLog(
-            'captureAndSendScreenshot: published to $topic/remote, ${compressedImageBytes.length} bytes');
-      } else {
-        debugPrint("Failed to capture screenshot: ByteData is null.");
-        _debugLog('captureAndSendScreenshot: FAILED -- byteData is null');
+        final ByteData? byteData =
+            await image.toByteData(format: ImageByteFormat.png);
+        if (byteData == null) {
+          debugPrint("Failed to capture screenshot: ByteData is null.");
+          _debugLog('captureAndSendScreenshot: FAILED -- byteData is null');
+          return;
+        }
+        imageBytes = byteData.buffer.asUint8List();
       }
+
+      debugPrint("Original image size: ${imageBytes.length}");
+
+      // Compress the image further
+      final compressedImageBytes = await _compressImage(imageBytes);
+      debugPrint("Compressed image size: ${compressedImageBytes.length}");
+
+      // Convert to Base64 string
+      final base64String = base64Encode(compressedImageBytes);
+
+      // Remote View reads this from <topic>/remote as a single JSON
+      // message with an img_url field -- this used to publish two
+      // unrelated messages (a metadata blob, then raw base64 bytes with
+      // no JSON wrapper) to the plain topic instead, which the backend
+      // had no way to parse as a screenshot at all. Match the working
+      // Android player's exact contract.
+      Map<String, dynamic> sendLog = {
+        "action": "image",
+        "img_url": base64String,
+        "sender": "windows",
+      };
+
+      _mqttClientService.publish('$topic/remote', jsonEncode(sendLog));
+      _debugLog(
+          'captureAndSendScreenshot: published to $topic/remote, ${compressedImageBytes.length} bytes');
     } catch (error, st) {
       debugPrint("Error capturing or sending screenshot: $error");
       _debugLog('captureAndSendScreenshot: FAILED -- $error\n$st');
