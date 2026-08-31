@@ -77,11 +77,6 @@ class _MqttProviderState extends State<MqttProvider> {
     );
   }
 
-  // win32_window.cpp's Create() always launches borderless, covering the
-  // full monitor -- this tracks that starting state so Escape knows which
-  // way to toggle.
-  bool _isFullscreen = true;
-
   void _onKey(RawKeyEvent event) {
     if (event is RawKeyDownEvent) {
       if (event.logicalKey == LogicalKeyboardKey.escape) {
@@ -100,17 +95,26 @@ class _MqttProviderState extends State<MqttProvider> {
   // Flutter child HWND and it's Flutter's own input pipeline, not the
   // native top-level window, that actually delivers key events to this
   // listener regardless of which HWND technically has focus.
+  //
+  // Current state is read directly from the window's style (WS_CAPTION
+  // present == windowed) rather than tracked in a Dart-side bool -- the
+  // native side can also flip windowed -> fullscreen on its own (clicking
+  // the OS maximize button / double-clicking the title bar, handled in
+  // win32_window.cpp's WM_SYSCOMMAND case), so a locally-tracked flag would
+  // go stale the moment that happens and Escape would need two presses to
+  // actually do anything.
   void _toggleFullscreen() {
     if (!Platform.isWindows) return;
     try {
       final hwnd = win32.GetForegroundWindow();
       if (hwnd == 0) return;
-      if (_isFullscreen) {
-        _exitFullscreen(hwnd);
-      } else {
+      final style = win32.GetWindowLongPtr(hwnd, win32.GWL_STYLE);
+      final isWindowed = (style & win32.WS_CAPTION) != 0;
+      if (isWindowed) {
         _enterFullscreen(hwnd);
+      } else {
+        _exitFullscreen(hwnd);
       }
-      _isFullscreen = !_isFullscreen;
     } catch (_) {}
   }
 

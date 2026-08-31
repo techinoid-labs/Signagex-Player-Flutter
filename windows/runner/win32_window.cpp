@@ -230,6 +230,31 @@ Win32Window::MessageHandler(HWND hwnd,
       return 0;
     }
 
+    case WM_SYSCOMMAND: {
+      // The low-order 4 bits of an SC_* command are reserved by Windows for
+      // system-menu context and must be masked off before comparing (see
+      // WM_SYSCOMMAND docs). Clicking the native maximize button, or
+      // double-clicking the title bar -- both arrive here as SC_MAXIMIZE --
+      // would otherwise just maximize to the work area with the title bar
+      // still showing. Redirect it into the same borderless, full-monitor
+      // kiosk state Create() launches with instead (mirrors
+      // main_provider.dart's _enterFullscreen, which handles the Dart-side
+      // Escape-triggered case).
+      if ((wparam & 0xFFF0) == SC_MAXIMIZE) {
+        HMONITOR monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO monitor_info = {};
+        monitor_info.cbSize = sizeof(MONITORINFO);
+        if (GetMonitorInfo(monitor, &monitor_info)) {
+          SetWindowLongPtr(hwnd, GWL_STYLE, WS_POPUP | WS_VISIBLE);
+          const RECT& rc = monitor_info.rcMonitor;
+          SetWindowPos(hwnd, nullptr, rc.left, rc.top, rc.right - rc.left,
+                       rc.bottom - rc.top, SWP_FRAMECHANGED | SWP_NOZORDER);
+        }
+        return 0;
+      }
+      break;
+    }
+
     case WM_ACTIVATE:
       if (child_content_ != nullptr) {
         SetFocus(child_content_);
