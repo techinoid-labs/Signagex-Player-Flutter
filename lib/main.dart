@@ -89,17 +89,37 @@ class _WebViewPrewarmerState extends State<_WebViewPrewarmer> {
   // (this prewarm not done yet, or not helping) or just that specific
   // page's own network/render time -- neither was logged anywhere before,
   // so there was no way to tell the two apart from a real test run.
-  final DateTime _createdAt = DateTime.now();
+  DateTime? _createdAt;
+  bool _armed = false;
 
   @override
   void initState() {
     super.initState();
-    debug.debugLog('WebViewPrewarmer', 'offstage WebView2 control creation starting at $_createdAt');
+    // Creating the native WebView2 control synchronously in the app's very
+    // first frame puts it in a race with Flutter's own Windows compositor
+    // (ANGLE/D3D) setting up its swapchain on the same UI thread -- on this
+    // hardware that showed up as either a permanently blank grey window (no
+    // crash, no further log output at all past this widget) or an outright
+    // process crash in coremessaging.dll (confirmed via Windows Event
+    // Viewer), both intermittent/timing-dependent. Waiting for the first
+    // real frame to be submitted before creating the WebView2 control means
+    // Flutter's compositor is already up and running by the time WebView2
+    // starts spinning up its own -- still well before any real content
+    // needs the runtime warm, which is all this was ever trying to save.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      setState(() {
+        _createdAt = DateTime.now();
+        _armed = true;
+      });
+      debug.debugLog('WebViewPrewarmer',
+          'offstage WebView2 control creation starting at $_createdAt (post first frame)');
+    });
   }
 
   @override
   Widget build(BuildContext context) {
-    if (!Platform.isWindows) return const SizedBox.shrink();
+    if (!Platform.isWindows || !_armed) return const SizedBox.shrink();
     // Not const: URLRequest/WebUri.uri(Uri.parse(...)) call real
     // constructors/methods at runtime, not const ones, so this whole
     // subtree can't be a const expression.
@@ -113,15 +133,15 @@ class _WebViewPrewarmerState extends State<_WebViewPrewarmer> {
               url: webview.WebUri.uri(Uri.parse('about:blank'))),
           onWebViewCreated: (controller) {
             debug.debugLog('WebViewPrewarmer',
-                'native WebView2 control created after ${DateTime.now().difference(_createdAt).inMilliseconds}ms');
+                'native WebView2 control created after ${DateTime.now().difference(_createdAt!).inMilliseconds}ms');
           },
           onLoadStop: (controller, url) {
             debug.debugLog('WebViewPrewarmer',
-                'about:blank finished loading after ${DateTime.now().difference(_createdAt).inMilliseconds}ms -- runtime is warm from here on');
+                'about:blank finished loading after ${DateTime.now().difference(_createdAt!).inMilliseconds}ms -- runtime is warm from here on');
           },
           onReceivedError: (controller, request, error) {
             debug.debugLog('WebViewPrewarmer',
-                'FAILED: ${error.description} after ${DateTime.now().difference(_createdAt).inMilliseconds}ms');
+                'FAILED: ${error.description} after ${DateTime.now().difference(_createdAt!).inMilliseconds}ms');
           },
         ),
       ),
