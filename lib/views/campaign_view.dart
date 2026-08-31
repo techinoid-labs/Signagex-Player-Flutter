@@ -31,6 +31,34 @@ bool _isNetworkMediaUrl(String url) =>
 
 Future<void> _debugLog(String message) => debug.debugLog('CampaignView', message);
 
+// Global (not per-zone-instance) registry of GlobalKeys for web app/HTML
+// WebViews, keyed by a stable identity derived from campaign+zone+media
+// IDs -- shared by both _CampaignViewState's cross-campaign prefetch layer
+// and _buildMediaWidget's normal per-zone render path, so whichever one
+// builds a given web app's WBViewWidget first, the other reuses the exact
+// same element (and its already-loaded native WebView) via Flutter's
+// GlobalKey element-relocation, instead of tearing it down and rebuilding
+// fresh. A plain ValueKey doesn't survive a widget moving between two
+// structurally different places in the tree (an offstage prefetch layer
+// vs. the normal visible zone slot) -- only a GlobalKey does.
+final Map<String, GlobalKey> _globalWebAppKeys = {};
+
+GlobalKey _webAppKeyForStableId(String stableId) =>
+    _globalWebAppKeys.putIfAbsent(stableId, () => GlobalKey());
+
+String _webAppStableId(String? campaignId, String zoneId, MediaItem media) {
+  final mediaId = media.id ?? media.mediaUrl ?? '';
+  return '${campaignId ?? ''}|$zoneId|$mediaId';
+}
+
+bool _isWebAppMediaItem(MediaItem media) {
+  final playback = media.isAd ? media.playbackMedia : media;
+  final type = (playback.mediaType ?? '').toLowerCase();
+  return type == 'text/html' ||
+      type == 'web_app_instance' ||
+      (type == 'content' && mediaItemIsWebAppIframe(playback));
+}
+
 // #region agent log
 void _agentDebugLog(
   String location,
@@ -298,7 +326,10 @@ class _CampaignViewState extends State<CampaignView> {
         '$cyan═══════════════════════════════════════════════════════════$reset');
 
     if (campaignCanPlay) {
-      return _buildZones(campaign, campaigns, campaignCanPlay);
+      final zonesContent = _buildZones(campaign, campaigns, campaignCanPlay);
+      final prefetch = _buildGlobalWebAppPrefetchLayer(campaigns, campaign);
+      if (prefetch == null) return zonesContent;
+      return Stack(children: [zonesContent, prefetch]);
     } else {
       return Scaffold(
         backgroundColor: Colors.white,
@@ -332,6 +363,73 @@ class _CampaignViewState extends State<CampaignView> {
         ),
       );
     }
+  }
+
+  // Solo web app zones (no other item in their own rotation) get none of
+  // the same-zone prefetch in _VideoPlaylistWidgetState -- there's nothing
+  // else in their zone to load them behind. Confirmed via real timing logs
+  // (WebViewPrewarmer / WBViewWidget in signagex_debug.log) that the
+  // remaining delay for those is NOT WebView2 control creation (fixed
+  // separately by main.dart's app-launch prewarm -- confirmed down to
+  // ~77ms once warm) but the target page's own network+render time
+  // (12.9s observed for one real web app). Nothing player-side can make
+  // that faster, but it CAN happen in the background during whatever OTHER
+  // campaign is currently on screen instead of when this zone's own turn
+  // arrives. Walks every top-level zone of every campaign (not just the
+  // current one) and keeps every web app/HTML item mounted offstage for
+  // the player's whole session, so by the time rotation reaches it, it's
+  // already loaded. Does not currently recurse into nested-composition
+  // sub-zones -- only top-level campaign zones.
+  Widget? _buildGlobalWebAppPrefetchLayer(
+    List<Campaign> campaigns,
+    Campaign currentCampaign,
+  ) {
+    final children = <Widget>[];
+    for (final c in campaigns) {
+      final isCurrent = c.campaignId == currentCampaign.campaignId;
+      for (final zone in c.zones ?? const <CampaignZone>[]) {
+        final zoneId = (zone.id ?? 0).toString();
+        for (final media in zone.mediaItems ?? const <MediaItem>[]) {
+          if (!_isWebAppMediaItem(media)) continue;
+          // The current campaign's own zone already renders this item
+          // directly (or via VideoPlaylistWidget's same-zone prefetch) --
+          // skip it here to avoid a second simultaneous mount under the
+          // same GlobalKey.
+          if (isCurrent) continue;
+          // _buildMediaWidget's own `media` parameter is already resolved
+          // to the ad creative (playbackMedia) for ad items, not the raw
+          // ad-slot wrapper -- match that here too, or the stable ID (and
+          // hence the GlobalKey) computed here wouldn't match what the
+          // real render path looks up once this item's turn arrives.
+          final playback = media.isAd ? media.playbackMedia : media;
+          final stableId = _webAppStableId(c.campaignId, zoneId, playback);
+          final mediaUrl = playback.mediaType?.toLowerCase() == 'content' &&
+                  mediaItemIsWebAppIframe(playback)
+              ? mediaItemWebAppIframeUrl(playback)
+              : (playback.mediaUrl ?? '');
+          if (mediaUrl.isEmpty) continue;
+          final zoneWidth = zone.width?.toDouble() ?? 1920;
+          final zoneHeight = zone.height?.toDouble() ?? 1080;
+          children.add(
+            Offstage(
+              key: ValueKey('global_webapp_prefetch_$stableId'),
+              offstage: true,
+              child: SizedBox(
+                width: zoneWidth,
+                height: zoneHeight,
+                child: WBViewWidget(
+                  key: _webAppKeyForStableId(stableId),
+                  media: mediaUrl,
+                  onMediaEnd: () {},
+                ),
+              ),
+            ),
+          );
+        }
+      }
+    }
+    if (children.isEmpty) return null;
+    return IgnorePointer(child: Stack(children: children));
   }
 
   Widget _buildZones(
@@ -497,10 +595,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       _sharedVideoPlayerController ??= VideoController(sharedVideoPlayer);
 
   final Map<String, Widget Function()> _webViewWidgetBuilders = {};
-  // GlobalKeys (one per rotation position) for web app / html items -- see
-  // _buildWebAppPrefetchLayer for why these need to be globally, not just
-  // locally, keyed.
-  final Map<int, GlobalKey> _webAppGlobalKeys = {};
   bool _adProofReported = false;
   String? _adPlaybackSessionKey;
 
@@ -1651,9 +1745,6 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     ));
   }
 
-  GlobalKey _webAppKeyFor(int index) =>
-      _webAppGlobalKeys.putIfAbsent(index, () => GlobalKey());
-
   bool _isWebAppMediaType(MediaItem media) {
     final playback = media.isAd ? media.playbackMedia : media;
     final type = (playback.mediaType ?? '').toLowerCase();
@@ -1670,13 +1761,16 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   // in this zone's rotation mounted-but-invisible for the zone's whole
   // lifetime instead of only starting its WebView the moment its own turn
   // arrives, so by the time rotation reaches it, it's already loaded.
-  // _webAppKeyFor's GlobalKey (shared with the matching branch in
-  // _buildMediaWidget, via the same rotation-position index) is what lets
+  // _buildMediaWidget's web-app branches key their WBViewWidget via the
+  // shared global _webAppKeyForStableId (top of file), which is what lets
   // Flutter move the already-loaded WebView element into the visible slot
   // instead of tearing it down and rebuilding a fresh one once its turn
   // actually arrives -- a plain ValueKey doesn't survive moving between two
   // structurally different places in the tree (offstage layer vs. the
-  // normal AnimatedSwitcher slot), only a GlobalKey does.
+  // normal AnimatedSwitcher slot), only a GlobalKey does. The same shared
+  // registry is also used by _CampaignViewState's cross-campaign prefetch
+  // layer for solo web app zones, which this same-zone layer can't help
+  // (see _buildGlobalWebAppPrefetchLayer).
   Widget? _buildWebAppPrefetchLayer() {
     if (widget.mediaItems.length <= 1) return null;
     final children = <Widget>[];
@@ -1849,7 +1943,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
                 child: WBViewWidget(
-                  key: _webAppKeyFor(itemIndex),
+                  key: _webAppKeyForStableId(
+                      _webAppStableId(widget.campaignId, widget.zoneId, media)),
                   media: mediaUrl,
                   onMediaEnd: _onMediaEnd,
                 ),
@@ -1885,7 +1980,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
                 child: WBViewWidget(
-                  key: _webAppKeyFor(itemIndex),
+                  key: _webAppKeyForStableId(
+                      _webAppStableId(widget.campaignId, widget.zoneId, media)),
                   media: mediaUrl,
                   onMediaEnd: _onMediaEnd,
                 ),
@@ -2031,7 +2127,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
                 child: WBViewWidget(
-                  key: _webAppKeyFor(itemIndex),
+                  key: _webAppKeyForStableId(
+                      _webAppStableId(widget.campaignId, widget.zoneId, media)),
                   media: iframeUrl,
                   onMediaEnd: _onMediaEnd,
                 ),
