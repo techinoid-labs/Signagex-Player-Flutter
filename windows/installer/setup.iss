@@ -48,6 +48,16 @@ DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 ArchitecturesInstallIn64BitMode=x64
+; Without this, if the app is already running (e.g. re-running the installer
+; to update, or installing production over a staging test build), Windows
+; keeps flutter_windows.dll/icudtl.dat locked and Inno Setup silently skips
+; overwriting them -- leaving a stale engine DLL next to a newer app.so,
+; which makes the app open a permanently blank grey window (engine/AOT
+; snapshot version mismatch, never renders a frame). CloseApplications uses
+; the Restart Manager to detect and close the running app before copying;
+; RestartApplications relaunches it after install finishes.
+CloseApplications=yes
+RestartApplications=yes
 OutputDir=..\..\dist
 OutputBaseFilename={#OutputBaseFilename}
 SetupIconFile=..\runner\resources\app_icon.ico
@@ -64,7 +74,11 @@ Name: "startupicon"; Description: "Launch {#MyAppName} automatically when Window
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional options:"; Flags: unchecked
 
 [Files]
-Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; restartreplace: belt-and-suspenders fallback if CloseApplications above
+; still can't free a locked file (e.g. a second copy running under another
+; user session) -- Windows finishes the replace on next reboot instead of
+; silently leaving the old file in place.
+Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
