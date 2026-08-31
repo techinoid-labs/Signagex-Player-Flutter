@@ -73,7 +73,10 @@ class _WebViewPrewarmer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (!Platform.isWindows) return const SizedBox.shrink();
-    return const Offstage(
+    // Not const: URLRequest/WebUri.uri(Uri.parse(...)) call real
+    // constructors/methods at runtime, not const ones, so this whole
+    // subtree can't be a const expression.
+    return Offstage(
       offstage: true,
       child: SizedBox(
         width: 1,
