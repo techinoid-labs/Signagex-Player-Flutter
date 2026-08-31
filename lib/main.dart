@@ -2,7 +2,14 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
-import 'package:flutter_inappwebview/flutter_inappwebview.dart';
+// Prefixed: this package re-exports its own X509Certificate class (from
+// flutter_inappwebview_platform_interface), which collides with
+// dart:io's X509Certificate used in MyHttpOverrides below the moment both
+// are imported unprefixed into the same file -- confirmed via a CI build
+// failure ("A value of type 'bool Function(X509Certificate/*1*/ ...)
+// can't be assigned to ... X509Certificate/*2*/ ...").
+import 'package:flutter_inappwebview/flutter_inappwebview.dart'
+    as webview;
 import 'package:flutter_phoenix/flutter_phoenix.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -81,9 +88,9 @@ class _WebViewPrewarmer extends StatelessWidget {
       child: SizedBox(
         width: 1,
         height: 1,
-        child: InAppWebView(
-          initialUrlRequest:
-              URLRequest(url: WebUri.uri(Uri.parse('about:blank'))),
+        child: webview.InAppWebView(
+          initialUrlRequest: webview.URLRequest(
+              url: webview.WebUri.uri(Uri.parse('about:blank'))),
         ),
       ),
     );
