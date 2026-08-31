@@ -2083,11 +2083,28 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     });
     _errorSub = _player.stream.error.listen((error) {
       _debugLog("VideoPlayerWidget: ERROR - $error");
-      if (mounted) {
-        setState(() {
-          _hasError = true;
-          _errorDescription = error;
+      if (!mounted) return;
+      setState(() {
+        _hasError = true;
+        _errorDescription = error;
+      });
+      // media_kit reports failures that happen mid-playback (e.g. a dropped
+      // "tcp: ffurl_read" network read while streaming a video that wasn't
+      // cached locally) through this stream, not as an exception from
+      // open() -- unlike _initializeVideo's own try/catch, this had no
+      // retry at all, so a single transient network hiccup permanently
+      // failed the video for this rotation instead of just retrying the
+      // same way an open() failure already does.
+      if (_initAttempts < _maxInitAttempts) {
+        _initAttempts++;
+        _debugLog(
+            "VideoPlayerWidget: retrying after stream error (attempt $_initAttempts/$_maxInitAttempts)");
+        Future.delayed(const Duration(seconds: 1), () {
+          if (mounted && _hasError) {
+            _initializeVideo();
+          }
         });
+      } else {
         // Don't leave the zone frozen on a broken video forever -- move on
         // so the rest of the rotation still plays.
         Future.delayed(const Duration(seconds: 5), () {
