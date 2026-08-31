@@ -2546,20 +2546,30 @@ EOF
           _currentIndexOfCapmaign = 0;
         }
       }
-      // Ensure any listening UI updates immediately. This used to be
-      // followed by a Phoenix.rebirth() full-app restart on every single
-      // publish_campaign message (guarded only by a raw-payload diff) --
-      // but MqttProvider (main_provider.dart) sits *below* the Phoenix
-      // boundary and recreates a brand new MqttClientService()/MqttViewModel
-      // on every rebirth, so every CMS content edit/delete/pause was tearing
-      // down and reconnecting the MQTT client and wiping all in-memory state
-      // (_campaignModel included), forcing the player to reconnect and wait
-      // for the broker to push the campaign again before anything rendered.
-      // That's what caused the blank/white screen and stale-content-persists
-      // bugs reported by QA. CampaignView and PlaylistScreen already listen
-      // reactively via Provider.of<MqttViewModel>(context) (listen: true),
-      // so notifyListeners() alone is sufficient -- no restart needed.
-      notifyListeners();
+      // Deliberately NOT calling notifyListeners() here (before downloads
+      // for any newly-added media even start) -- CampaignView listens
+      // reactively via Provider.of<MqttViewModel>(context), so this would
+      // rebuild it with _campaignModel already pointing at zones/stickers
+      // whose files haven't been fetched yet. On a fresh app start that
+      // race can't happen: _startDownloadingForCampaign() gates the whole
+      // campaign behind MqttState.downloading until every file is on disk,
+      // and only then flips to campaignScreen. But for a LIVE update on an
+      // already-running player (e.g. adding stickers to a campaign that's
+      // already showing), this used to notify immediately and only call
+      // _startDownloadingForCampaign() several lines later, so newly-added
+      // zones rendered right away against not-yet-downloaded files --
+      // confirmed via signagex_debug.log as the cause of "downloaded 10
+      // stickers but only 5 displayed, fixed by restarting the app" (a
+      // fresh start doesn't hit this race; a live update did). Every branch
+      // inside _startDownloadingForCampaign() (below) already calls
+      // notifyListeners() itself once state is actually ready to show, so
+      // this one is redundant, not just early.
+      //
+      // (This call used to matter for a different reason -- avoiding a
+      // Phoenix.rebirth() full-app restart on every publish_campaign
+      // message, which used to tear down and reconnect the MQTT client on
+      // every CMS edit. That's still fixed; it just doesn't require an
+      // immediate notifyListeners() here specifically.)
       // Safely check media URL with proper null/empty checks
       String? mediaUrl = 'N/A';
       try {
