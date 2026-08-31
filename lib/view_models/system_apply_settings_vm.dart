@@ -136,6 +136,29 @@ class DeviceSettingsViewModel with ChangeNotifier {
     }
   }
 
+  /// Undoes pressHomeForLinux -- there was no way to bring the player back
+  /// into view remotely after Home minimized it. Can't reuse
+  /// getactivewindow here (the minimized window is no longer "active" by
+  /// definition), so this searches by the app's own window title instead
+  /// (set via gtk_window_set_title in linux/runner/my_application.cc,
+  /// "digital_signage") -- reliable regardless of what else is running on
+  /// the kiosk. xdotool's windowactivate both focuses AND de-iconifies
+  /// (un-minimizes) a window, per its own docs.
+  Future<String> pressBackForLinux() async {
+    try {
+      final result = await Process.run('xdotool',
+          ['search', '--name', 'digital_signage', 'windowactivate']);
+      if (result.exitCode != 0) {
+        print('MQTT_LOGS:: xdotool windowactivate (back) failed: ${result.stderr}');
+        return 'Error: ${result.stderr}';
+      }
+      return 'Window restored';
+    } catch (e) {
+      print('MQTT_LOGS:: xdotool windowactivate (back) exception: $e');
+      return 'Error: $e';
+    }
+  }
+
   Future<String> rebootDeviceForLinux() async {
     print("Attempting to restart the device...");
 

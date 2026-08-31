@@ -853,7 +853,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         status: 'failed',
         errorMessage: 'campaign_not_allowed',
       );
-      _onMediaEnd();
+      // _onMediaEnd() here retried same-frame with nothing to throttle it --
+      // a zone whose campaign stays not-allowed (e.g. outside its own
+      // schedule) would spin at the frame rate forever. Reuse the same
+      // delayed-recheck timer already used for the ad-slot schedule case
+      // below.
+      _scheduleAdSlotRecheck();
+      if (mounted) setState(() {});
       return;
     }
 
@@ -934,7 +940,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           status: 'failed',
           errorMessage: 'restrictions_failed',
         );
-        _onMediaEnd();
+        // Same same-frame-loop risk as the ad-slot branch above for a
+        // non-ad item that permanently fails its restrictions.
+        _scheduleAdSlotRecheck();
       }
       if (mounted) setState(() {});
     }
@@ -1079,7 +1087,15 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           '${nextMedia.mediaType} → ${creative.mediaType} (${creative.id})');
       if (creativeUrl.isEmpty) {
         print("[LOG] Ad slot has no creative URL yet (${nextMedia.id})");
-        _onMediaEnd();
+        // _onMediaEnd() here was a same-frame self-triggering loop: for a
+        // zone where this ad slot is the only item (or every item
+        // currently fails the same check), advancing wraps straight back
+        // to this same empty slot, hits this branch again, and calls
+        // _onMediaEnd() again -- nothing throttles it. Reuse the recheck
+        // timer this file already uses for the analogous
+        // "blocked by schedule" case instead of retrying same-frame.
+        _scheduleAdSlotRecheck();
+        if (mounted) setState(() {});
         return;
       }
       _ensureAdSlotProofOfPlaySession(nextMedia);

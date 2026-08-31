@@ -1633,7 +1633,18 @@ class MqttViewModel extends ChangeNotifier {
     }
 
     print("All files processed.");
-    _state = MqttState.campaignScreen;
+    // Land on a non-paused campaign now that downloads are done, instead of
+    // whatever _currentIndexOfCapmaign was left at -- otherwise a Paused
+    // campaign that happened to be selected before downloading kicked in
+    // would still be shown once playback actually starts.
+    _selectCompositionCampaignIndexIfPresent();
+    final campaignsAfterDownload = _campaignModel?.data?.playerCampaigns ?? const [];
+    if (campaignsAfterDownload.isNotEmpty &&
+        !_campaignIsPlayable(campaignsAfterDownload[_currentIndexOfCapmaign])) {
+      _state = MqttState.noContent;
+    } else {
+      _state = MqttState.campaignScreen;
+    }
     notifyListeners();
   }
 
@@ -2420,6 +2431,13 @@ class MqttViewModel extends ChangeNotifier {
       if (Platform.isLinux) {
         deviceSettings.pressHomeForLinux();
       }
+    } else if (jsonObj["action"] == "press_back") {
+      // Undoes press_home -- there was previously no way to bring the
+      // player back into view remotely after Home minimized it.
+      print("MQTT_LOGS:: press_back received: $jsonObj");
+      if (Platform.isLinux) {
+        deviceSettings.pressBackForLinux();
+      }
     } else if (jsonObj["action"] == "publish_playlist") {
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
@@ -2640,12 +2658,40 @@ class MqttViewModel extends ChangeNotifier {
 
   int _currentIndexOfCapmaign = 0;
 
+  // isPaused was parsed off every campaign but never actually checked
+  // anywhere the player decides what to show -- a Paused campaign rotated
+  // into view and played exactly like any other. (Unpublish was already
+  // handled separately, wherever this codebase drops to zero campaigns.)
+  bool _campaignIsPlayable(Campaign c) => c.isPaused != true;
+
+  /// Index of the next playable (non-paused) campaign at or after [start],
+  /// wrapping around at most once. Null if every campaign is paused.
+  int? _nextPlayableCampaignIndex(List<Campaign> campaigns, int start) {
+    final count = campaigns.length;
+    if (count == 0) return null;
+    for (var i = 0; i < count; i++) {
+      final idx = (start + i) % count;
+      if (_campaignIsPlayable(campaigns[idx])) return idx;
+    }
+    return null;
+  }
+
   void _selectCompositionCampaignIndexIfPresent() {
     final campaigns = _campaignModel?.data?.playerCampaigns;
     if (campaigns == null || campaigns.isEmpty) return;
 
     if (_currentIndexOfCapmaign >= campaigns.length) {
       _currentIndexOfCapmaign = 0;
+    }
+
+    if (!_campaignIsPlayable(campaigns[_currentIndexOfCapmaign])) {
+      final playableIdx =
+          _nextPlayableCampaignIndex(campaigns, _currentIndexOfCapmaign);
+      if (playableIdx != null) {
+        _currentIndexOfCapmaign = playableIdx;
+      }
+      // If every campaign is paused, leave the index as-is -- callers check
+      // playability themselves before committing to campaignScreen.
     }
 
     final current = campaigns[_currentIndexOfCapmaign];
@@ -2794,8 +2840,23 @@ class MqttViewModel extends ChangeNotifier {
 
     final playableCampaigns = campaigns!;
 
-    // Rotate through every published player campaign (compositions + solos).
-    _currentIndexOfCapmaign = (_currentIndexOfCapmaign + 1) % count;
+    // Rotate through every published player campaign (compositions + solos),
+    // skipping any that are currently Paused.
+    final nextIndex = _nextPlayableCampaignIndex(
+      playableCampaigns,
+      (_currentIndexOfCapmaign + 1) % count,
+    );
+    if (nextIndex == null) {
+      // Every campaign is currently paused.
+      debugPrint(
+          'MQTT_LOGS:: _updateIndexForCampain: every campaign is paused. Cancelling campaign timer.');
+      _timerOfCampaign?.cancel();
+      _timerOfCampaign = null;
+      _state = MqttState.noContent;
+      notifyListeners();
+      return;
+    }
+    _currentIndexOfCapmaign = nextIndex;
 
     final nextCampaign = playableCampaigns[_currentIndexOfCapmaign];
     print(
