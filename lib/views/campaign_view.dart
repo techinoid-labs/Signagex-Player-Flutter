@@ -1905,7 +1905,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final remoteSrc = media.settings?.remoteSrc?.trim() ?? '';
     final stickerHtml = media.settings?.html?.trim() ?? '';
     final mediaUrl = media.mediaUrl ?? '';
-    final effectiveStickerUrl = remoteSrc.isNotEmpty ? remoteSrc : mediaUrl;
+    var effectiveStickerUrl = remoteSrc.isNotEmpty ? remoteSrc : mediaUrl;
     print(
         '[LOG] _buildMediaWidget - Sticker zone=${widget.zoneId} '
         'remoteSrc=${formatForLog(remoteSrc)} '
@@ -1962,10 +1962,23 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       }
     }
 
+    // Nothing local was found for it -- effectiveStickerUrl can still be a
+    // bare server-relative path here (e.g. "/_next/static/media/Ball.
+    // 2a1d3c7c.svg", the CMS frontend's own bundled icon asset), which
+    // StickerHtmlWidget can't fetch directly (no scheme/host to resolve
+    // against). Resolve it the same way WBViewWidget already does for web
+    // apps. Only reached once the local-file check above has already had
+    // its chance, so this can't misfire on a genuine local path that
+    // happens to start with "/" (e.g. on macOS/Linux).
+    final remoteUrl = (effectiveStickerUrl.startsWith('/') &&
+            !effectiveStickerUrl.startsWith('//'))
+        ? 'https://$apiHost$effectiveStickerUrl'
+        : effectiveStickerUrl;
+
     return SizedBox.expand(
       child: StickerHtmlWidget(
         key: ValueKey('${widget.zoneId}_sticker_remote_${media.id}'),
-        svgUrl: effectiveStickerUrl,
+        svgUrl: remoteUrl,
         htmlContent: null,
         onSvgEnd: _onMediaEnd,
         transitionType: transition,
