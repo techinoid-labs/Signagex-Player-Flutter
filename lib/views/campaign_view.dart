@@ -497,6 +497,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       _sharedVideoPlayerController ??= VideoController(sharedVideoPlayer);
 
   final Map<String, Widget Function()> _webViewWidgetBuilders = {};
+  // GlobalKeys (one per rotation position) for web app / html items -- see
+  // _buildWebAppPrefetchLayer for why these need to be globally, not just
+  // locally, keyed.
+  final Map<int, GlobalKey> _webAppGlobalKeys = {};
   bool _adProofReported = false;
   String? _adPlaybackSessionKey;
 
@@ -620,7 +624,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     return hasZones || type == 'campaign' || type == 'composition';
   }
 
-  String _mediaWidgetCacheKey(String kind, MediaItem media, String mediaUrl) {
+  String _mediaWidgetCacheKey(String kind, MediaItem media, String mediaUrl,
+      {int? indexOverride}) {
     // Include a settings fingerprint so republishing the SAME media id with
     // different fontSize/fill/text/shape properties (e.g. iterating on a
     // composition in the CMS) invalidates the cached widget instead of
@@ -639,7 +644,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
             settings.kind,
           ].join('|').hashCode;
     return '${widget.campaignId ?? ''}_${widget.zoneId}_${kind}_'
-        '${media.id ?? ''}_${_currentMediaIndex}_${mediaUrl.hashCode}_$settingsFingerprint';
+        '${media.id ?? ''}_${indexOverride ?? _currentMediaIndex}_${mediaUrl.hashCode}_$settingsFingerprint';
   }
 
   MediaItem _resolvedMediaAt(int index) {
@@ -1463,14 +1468,14 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final mediaWidget = _buildMediaWidget(playbackMedia, sourceMedia: currentMedia);
 
     if (isWebViewWidget) {
-      return AnimatedOpacity(
+      return _wrapWithWebAppPrefetch(AnimatedOpacity(
         opacity: _opacity,
         duration: const Duration(milliseconds: 500),
         child: mediaWidget,
-      );
+      ));
     }
 
-    return AnimatedOpacity(
+    return _wrapWithWebAppPrefetch(AnimatedOpacity(
       opacity: _opacity,
       duration: const Duration(milliseconds: 500),
       child: AnimatedSwitcher(
@@ -1621,7 +1626,63 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         },
         child: mediaWidget,
       ),
-    );
+    ));
+  }
+
+  GlobalKey _webAppKeyFor(int index) =>
+      _webAppGlobalKeys.putIfAbsent(index, () => GlobalKey());
+
+  bool _isWebAppMediaType(MediaItem media) {
+    final playback = media.isAd ? media.playbackMedia : media;
+    final type = (playback.mediaType ?? '').toLowerCase();
+    return type == 'text/html' ||
+        type == 'web_app_instance' ||
+        (type == 'content' && mediaItemIsWebAppIframe(playback));
+  }
+
+  // Web app / html content needs a live WebView -- native control creation
+  // plus a real network page load (HTML/CSS/JS) -- unlike video/images,
+  // which can be predownloaded to disk. That "cold start" cost is what QA
+  // reported as a white-screen delay whenever one of these becomes the
+  // current item in a multi-item zone. Keep every OTHER web-eligible item
+  // in this zone's rotation mounted-but-invisible for the zone's whole
+  // lifetime instead of only starting its WebView the moment its own turn
+  // arrives, so by the time rotation reaches it, it's already loaded.
+  // _webAppKeyFor's GlobalKey (shared with the matching branch in
+  // _buildMediaWidget, via the same rotation-position index) is what lets
+  // Flutter move the already-loaded WebView element into the visible slot
+  // instead of tearing it down and rebuilding a fresh one once its turn
+  // actually arrives -- a plain ValueKey doesn't survive moving between two
+  // structurally different places in the tree (offstage layer vs. the
+  // normal AnimatedSwitcher slot), only a GlobalKey does.
+  Widget? _buildWebAppPrefetchLayer() {
+    if (widget.mediaItems.length <= 1) return null;
+    final children = <Widget>[];
+    for (var i = 0; i < widget.mediaItems.length; i++) {
+      if (i == _currentMediaIndex) continue;
+      final media = _resolvedMediaAt(i);
+      if (!_isWebAppMediaType(media)) continue;
+      final playback = media.isAd ? media.playbackMedia : media;
+      children.add(
+        Offstage(
+          key: ValueKey('webapp_prefetch_$i'),
+          offstage: true,
+          child: _buildMediaWidget(
+            playback,
+            sourceMedia: media,
+            indexOverride: i,
+          ),
+        ),
+      );
+    }
+    if (children.isEmpty) return null;
+    return IgnorePointer(child: Stack(children: children));
+  }
+
+  Widget _wrapWithWebAppPrefetch(Widget content) {
+    final prefetch = _buildWebAppPrefetchLayer();
+    if (prefetch == null) return content;
+    return Stack(children: [content, prefetch]);
   }
 
   bool isVideoFile(String path) {
@@ -1701,10 +1762,12 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     );
   }
 
-  Widget _buildMediaWidget(MediaItem media, {MediaItem? sourceMedia}) {
+  Widget _buildMediaWidget(MediaItem media,
+      {MediaItem? sourceMedia, int? indexOverride}) {
     final mediaType = (media.mediaType ?? '').toLowerCase();
     final mediaUrl = media.mediaUrl ?? '';
     final adSource = sourceMedia ?? media;
+    final itemIndex = indexOverride ?? _currentMediaIndex;
 
     print(
         '[LOG] _buildMediaWidget - Media ID: ${adSource.id}, '
@@ -1757,13 +1820,14 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType == 'text/html') {
       print("[LOG] _buildMediaWidget - Building WBViewWidget for text/html");
-      final cacheKey = _mediaWidgetCacheKey('html', media, mediaUrl);
+      final cacheKey =
+          _mediaWidgetCacheKey('html', media, mediaUrl, indexOverride: itemIndex);
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
                 child: WBViewWidget(
-                  key: ValueKey(cacheKey),
+                  key: _webAppKeyFor(itemIndex),
                   media: mediaUrl,
                   onMediaEnd: _onMediaEnd,
                 ),
@@ -1776,7 +1840,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     if (mediaType == 'web_app_instance') {
       print(
           "[LOG] _buildMediaWidget - Building WBViewWidget for web_app_instance");
-      final cacheKey = _mediaWidgetCacheKey('webapp', media, mediaUrl);
+      final cacheKey = _mediaWidgetCacheKey('webapp', media, mediaUrl,
+          indexOverride: itemIndex);
       final cacheHit = _webViewWidgetBuilders.containsKey(cacheKey);
       // #region agent log
       _agentDebugLog(
@@ -1785,7 +1850,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         {
           'cacheKey': cacheKey,
           'campaignId': widget.campaignId ?? '',
-          'mediaIndex': _currentMediaIndex,
+          'mediaIndex': itemIndex,
           'mediaUrlSample': mediaUrl.length > 80
               ? '${mediaUrl.substring(0, 80)}...'
               : mediaUrl,
@@ -1798,7 +1863,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
                 child: WBViewWidget(
-                  key: ValueKey(cacheKey),
+                  key: _webAppKeyFor(itemIndex),
                   media: mediaUrl,
                   onMediaEnd: _onMediaEnd,
                 ),
@@ -1937,13 +2002,14 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       print(
           '[LOG] _buildMediaWidget - Building WBViewWidget for web-app iframe: '
           '$iframeUrl');
-      final cacheKey = _mediaWidgetCacheKey('iframe', media, iframeUrl);
+      final cacheKey = _mediaWidgetCacheKey('iframe', media, iframeUrl,
+          indexOverride: itemIndex);
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
                 child: WBViewWidget(
-                  key: ValueKey(cacheKey),
+                  key: _webAppKeyFor(itemIndex),
                   media: iframeUrl,
                   onMediaEnd: _onMediaEnd,
                 ),
@@ -2125,7 +2191,32 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   Future<void> _initializeVideo() async {
     _debugLog("VideoPlayerWidget: Initializing video: ${widget.filePath}");
 
-    if (!_isNetworkUrl) {
+    String resolvedPath;
+    if (_isNetworkUrl) {
+      // mpv streaming an MP4 directly from the network is slow and prone to
+      // hanging/failing on a flaky connection (e.g. the "tcp: ffurl_read
+      // returned ..." error QA reported, and a plain video open taking 60+
+      // seconds seen in signagex_debug.log) -- download and cache it
+      // locally first, the same way the main campaign-wide download pass
+      // does, so playback opens from disk instead. ensureLocalMediaUrl
+      // already no-ops (a fast local file-exists check) once cached, so
+      // only the first play of a given video ever pays this cost -- this
+      // also self-heals a video the upstream download pass missed for any
+      // reason, instead of it streaming from the network forever.
+      _debugLog(
+          "VideoPlayerWidget: Network URL, downloading to cache first: ${widget.filePath}");
+      final mqttViewModel =
+          Provider.of<MqttViewModel>(context, listen: false);
+      final cached = await mqttViewModel.ensureLocalMediaUrl(widget.filePath);
+      if (!mounted) return;
+      final cachedIsNetwork =
+          cached.startsWith('http://') || cached.startsWith('https://');
+      resolvedPath =
+          cachedIsNetwork ? cached : (_normalizeLocalMediaPath(cached) ?? cached);
+      _debugLog(cachedIsNetwork
+          ? "VideoPlayerWidget: caching failed, falling back to network stream: $resolvedPath"
+          : "VideoPlayerWidget: cached locally, path=$resolvedPath");
+    } else {
       final localPath =
           _normalizeLocalMediaPath(widget.filePath) ?? widget.filePath;
       final file = File(localPath);
@@ -2144,14 +2235,10 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           return;
         }
       }
+      resolvedPath = localPath;
     }
 
-    final resolvedPath = _isNetworkUrl
-        ? widget.filePath
-        : (_normalizeLocalMediaPath(widget.filePath) ?? widget.filePath);
-
-    _debugLog(
-        "VideoPlayerWidget: ${_isNetworkUrl ? "Network URL" : "File exists"}, opening path=$resolvedPath");
+    _debugLog("VideoPlayerWidget: opening path=$resolvedPath");
 
     try {
       _isVideoEnded = false;

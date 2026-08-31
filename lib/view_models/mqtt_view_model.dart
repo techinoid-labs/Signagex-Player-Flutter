@@ -1563,7 +1563,7 @@ EOF
       notifyListeners();
 
       try {
-        final localPath = await _ensureLocalMediaUrl(
+        final localPath = await ensureLocalMediaUrl(
           originalUrl,
           onProgress: _updateCurrentFileProgress,
         );
@@ -1698,7 +1698,14 @@ EOF
     return false;
   }
 
-  Future<String> _ensureLocalMediaUrl(String url,
+  /// Downloads [url] to local storage and returns the cached file path, or
+  /// the original URL if every retry failed. Public so widgets (e.g.
+  /// VideoPlayerWidget) can self-heal a video that reaches them as a raw
+  /// network URL -- because the upstream campaign-wide download pass
+  /// missed it, or a retry is worth it -- instead of streaming it directly
+  /// over the network on every play, which is slow and can hang for tens
+  /// of seconds on a flaky connection.
+  Future<String> ensureLocalMediaUrl(String url,
       {void Function(int received, int total)? onProgress}) async {
     final trimmed = url.trim();
 
