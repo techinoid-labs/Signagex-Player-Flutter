@@ -1,7 +1,10 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
 import 'package:provider/provider.dart';
+import 'package:win32/win32.dart' as win32;
 
 import '../services/mqtt_client_service.dart';
 import '../view_models/mqtt_view_model.dart';
@@ -74,8 +77,31 @@ class _MqttProviderState extends State<MqttProvider> {
 
   void _onKey(RawKeyEvent event) {
     if (event is RawKeyDownEvent) {
+      // Kiosk/signage player: runs borderless and covering the whole
+      // monitor at all times (see win32_window.cpp's Create -- there's no
+      // title bar or maximize button to click, ever), so Escape is the only
+      // way to get it out of the way without touching the mouse. Minimizing
+      // rather than restoring to a windowed frame matches "get this off my
+      // screen for a second", not "let me resize it".
+      if (event.logicalKey == LogicalKeyboardKey.escape) {
+        _minimizeWindow();
+      }
       print("Key pressed: ${event.logicalKey.debugName}");
     }
+  }
+
+  void _minimizeWindow() {
+    if (!Platform.isWindows) return;
+    try {
+      // GetForegroundWindow always resolves to the top-level window even
+      // though actual keyboard focus sits on the hosted Flutter child HWND
+      // (child windows can't be "foreground" in Win32), so this reliably
+      // targets our own window without needing to look it up by class name.
+      final hwnd = win32.GetForegroundWindow();
+      if (hwnd != 0) {
+        win32.ShowWindow(hwnd, win32.SW_MINIMIZE);
+      }
+    } catch (_) {}
   }
 
   Widget _getScreenForState(MqttState state) {

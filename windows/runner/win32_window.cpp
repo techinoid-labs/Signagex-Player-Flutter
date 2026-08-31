@@ -134,10 +134,32 @@ bool Win32Window::Create(const std::wstring& title,
   UINT dpi = FlutterDesktopGetDpiForMonitor(monitor);
   double scale_factor = dpi / 96.0;
 
+  // Kiosk/signage player: always cover the entire monitor with no title
+  // bar or border, regardless of the origin/size the caller asked for --
+  // this is a dedicated signage display, not a desktop app window, so it
+  // should never show window chrome. rcMonitor (not rcWork) is used
+  // deliberately so this covers the taskbar too. WS_POPUP has no caption/
+  // border/system menu, which is what removes the title bar entirely --
+  // "maximized" isn't a separate state to handle since the window always
+  // covers the full monitor already. Escape minimizing it back down to the
+  // taskbar is handled Dart-side (see main_provider.dart's _onKey), since
+  // keyboard focus lives on the hosted Flutter child window, not here.
+  LONG window_x = Scale(origin.x, scale_factor);
+  LONG window_y = Scale(origin.y, scale_factor);
+  LONG window_width = Scale(size.width, scale_factor);
+  LONG window_height = Scale(size.height, scale_factor);
+  MONITORINFO monitor_info = {};
+  monitor_info.cbSize = sizeof(MONITORINFO);
+  if (GetMonitorInfo(monitor, &monitor_info)) {
+    window_x = monitor_info.rcMonitor.left;
+    window_y = monitor_info.rcMonitor.top;
+    window_width = monitor_info.rcMonitor.right - monitor_info.rcMonitor.left;
+    window_height = monitor_info.rcMonitor.bottom - monitor_info.rcMonitor.top;
+  }
+
   HWND window = CreateWindow(
-      window_class, title.c_str(), WS_OVERLAPPEDWINDOW,
-      Scale(origin.x, scale_factor), Scale(origin.y, scale_factor),
-      Scale(size.width, scale_factor), Scale(size.height, scale_factor),
+      window_class, title.c_str(), WS_POPUP,
+      window_x, window_y, window_width, window_height,
       nullptr, nullptr, GetModuleHandle(nullptr), this);
 
   if (!window) {
