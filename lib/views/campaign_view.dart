@@ -378,14 +378,32 @@ class _CampaignViewState extends State<CampaignView> {
       // safely shown instead, or fall back to the existing DownloadingView
       // if this is the very first thing the player has ever shown.
       if (_campaignIsWebAppOnly(campaign) && !_campaignWebAppsReady(campaign)) {
+        // Must still build the prefetch layer here -- this gated campaign
+        // isn't being rendered by _buildZones below, so it's the only thing
+        // that will ever start its web app(s) loading; without this the
+        // player would be permanently stuck on this fallback, since no
+        // build path would exist to ever make _campaignWebAppsReady true.
+        // _lastGoodCampaignId (if showing) IS excluded -- it's actively
+        // rendering itself as the fallback below, so it must not also be
+        // duplicated here under the same GlobalKey(s).
+        final gatedPrefetch = _buildGlobalWebAppPrefetchLayer(
+          campaigns,
+          excludeCampaignIds: {
+            if (_lastGoodCampaignId != null) _lastGoodCampaignId!,
+          },
+        );
+        final fallback = _lastGoodContent ?? const DownloadingView();
         _debugLog(
             'campaign ${campaign.campaignId} is web-app-only and not ready yet, '
             '${_lastGoodContent != null ? "keeping $_lastGoodCampaignId on screen" : "showing downloading screen"}');
-        return _lastGoodContent ?? const DownloadingView();
+        return gatedPrefetch == null
+            ? fallback
+            : Stack(children: [fallback, gatedPrefetch]);
       }
 
       final zonesContent = _buildZones(campaign, campaigns, campaignCanPlay);
-      final prefetch = _buildGlobalWebAppPrefetchLayer(campaigns, campaign);
+      final prefetch = _buildGlobalWebAppPrefetchLayer(campaigns,
+          excludeCampaignIds: {if (campaign.campaignId != null) campaign.campaignId!});
       final content =
           prefetch == null ? zonesContent : Stack(children: [zonesContent, prefetch]);
       _lastGoodContent = content;
@@ -441,13 +459,24 @@ class _CampaignViewState extends State<CampaignView> {
   // the player's whole session, so by the time rotation reaches it, it's
   // already loaded. Does not currently recurse into nested-composition
   // sub-zones -- only top-level campaign zones.
+  // excludeCampaignIds should name every campaign whose zones are already
+  // being rendered directly elsewhere in this same frame -- by _buildZones
+  // (the campaign currently on screen) and/or by a stored _lastGoodContent
+  // widget tree still actively showing as a gated fallback. Either one
+  // already builds these same items directly, so skip them here to avoid a
+  // second simultaneous mount under the same GlobalKey (Flutter does not
+  // allow two widgets to share one GlobalKey at the same time). The one
+  // campaign that must NOT be excluded is a currently-gated campaign
+  // (nothing else is rendering it while it's gated) -- otherwise, if it's
+  // the only one with unready web apps, nothing would ever start loading
+  // them and the player would be stuck on the fallback forever.
   Widget? _buildGlobalWebAppPrefetchLayer(
-    List<Campaign> campaigns,
-    Campaign currentCampaign,
-  ) {
+    List<Campaign> campaigns, {
+    Set<String> excludeCampaignIds = const {},
+  }) {
     final children = <Widget>[];
     for (final c in campaigns) {
-      final isCurrent = c.campaignId == currentCampaign.campaignId;
+      final isCurrent = excludeCampaignIds.contains(c.campaignId);
       for (final zone in c.zones ?? const <CampaignZone>[]) {
         final zoneId = (zone.id ?? 0).toString();
         for (final media in zone.mediaItems ?? const <MediaItem>[]) {
