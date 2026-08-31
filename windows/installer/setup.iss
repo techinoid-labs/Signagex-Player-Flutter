@@ -33,7 +33,7 @@
 #define MyAppName "SignageX Player" + AppSuffix
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "SignageX"
-#define MyAppExeName "flutter_application_2.exe"
+#define MyAppExeName "SignageXPlayer.exe"
 
 [Setup]
 ; Fixed AppId so re-running the installer (same or newer version) upgrades
