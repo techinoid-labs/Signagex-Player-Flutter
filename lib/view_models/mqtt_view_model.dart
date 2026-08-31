@@ -1747,11 +1747,20 @@ EOF
     }
 
     // Ensure URL is valid for parsing (fix illegal percent encoding).
-    String downloadUrl = fullUrl;
+    // Uri.parse doesn't throw on a literal unencoded space (e.g. a CMS
+    // asset path like "/_next/static/media/Leaf 4.6bb812d5.svg"), so this
+    // catch alone never caught it -- but an unencoded space in the actual
+    // HTTP request line is invalid and made the download fail silently for
+    // every asset whose filename happened to contain one, while filenames
+    // without spaces downloaded fine. Confirmed as the source of "some
+    // stickers load, some don't" (all 10 counted as "downloaded" in the
+    // progress UI regardless, since a failed download still increments
+    // that counter -- see the catch block further down in this file).
+    String downloadUrl = Uri.encodeFull(fullUrl);
     try {
-      Uri.parse(fullUrl);
+      Uri.parse(downloadUrl);
     } catch (_) {
-      downloadUrl = fullUrl.replaceAllMapped(
+      downloadUrl = downloadUrl.replaceAllMapped(
           RegExp(r'%(?![0-9A-Fa-f]{2})'), (_) => '%25');
     }
 

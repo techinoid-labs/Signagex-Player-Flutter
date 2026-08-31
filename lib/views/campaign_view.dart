@@ -1970,10 +1970,14 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     // apps. Only reached once the local-file check above has already had
     // its chance, so this can't misfire on a genuine local path that
     // happens to start with "/" (e.g. on macOS/Linux).
-    final remoteUrl = (effectiveStickerUrl.startsWith('/') &&
+    // Uri.encodeFull because these asset paths can contain literal spaces
+    // (e.g. "/_next/static/media/Leaf 4.6bb812d5.svg"), which is invalid in
+    // an actual HTTP request -- see ensureLocalMediaUrl in
+    // mqtt_view_model.dart for the matching fix on the download side.
+    final remoteUrl = Uri.encodeFull((effectiveStickerUrl.startsWith('/') &&
             !effectiveStickerUrl.startsWith('//'))
         ? 'https://$apiHost$effectiveStickerUrl'
-        : effectiveStickerUrl;
+        : effectiveStickerUrl);
 
     return SizedBox.expand(
       child: StickerHtmlWidget(
