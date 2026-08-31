@@ -2730,6 +2730,21 @@ class WBViewWidget extends StatefulWidget {
 class _WBViewWidgetState extends State<WBViewWidget> {
   InAppWebViewController? _webViewController;
   double progress = 0;
+  // Timing instrumentation -- neither this widget's own native-control
+  // creation time nor the target page's actual load time were logged
+  // anywhere before, so a slow/white-screen web app zone gave no way to
+  // tell whether the remaining delay was WebView2 control creation (should
+  // be fixed by main.dart's app-launch prewarm) or just that specific
+  // page's own network+render time (which the player has no control over).
+  // Compare against WebViewPrewarmer's own timestamps in the same log.
+  final DateTime _createdAt = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    _debugLog(
+        'WBViewWidget created for ${widget.media} at $_createdAt');
+  }
 
   @override
   void dispose() {
@@ -2784,6 +2799,12 @@ class _WBViewWidgetState extends State<WBViewWidget> {
               ),
               onWebViewCreated: (InAppWebViewController controller) {
                 _webViewController = controller;
+                _debugLog(
+                    'WBViewWidget native control created after ${DateTime.now().difference(_createdAt).inMilliseconds}ms (${widget.media})');
+              },
+              onLoadStart: (controller, url) {
+                _debugLog(
+                    'WBViewWidget navigation started after ${DateTime.now().difference(_createdAt).inMilliseconds}ms: $url');
               },
               onProgressChanged: (controller, newProgress) {
                 if (!mounted) return;
@@ -2793,17 +2814,19 @@ class _WBViewWidgetState extends State<WBViewWidget> {
               },
               onLoadStop: (controller, url) {
                 if (!mounted) return;
+                _debugLog(
+                    'WBViewWidget page finished loading after ${DateTime.now().difference(_createdAt).inMilliseconds}ms: $url');
                 setState(() {
                   progress = 1.0;
                 });
               },
               onReceivedError: (controller, request, error) {
-                print(
-                    "[LOG] WBViewWidget load error: ${error.description}");
+                _debugLog(
+                    'WBViewWidget load error after ${DateTime.now().difference(_createdAt).inMilliseconds}ms: ${error.description} (${request.url})');
               },
               onReceivedHttpError: (controller, request, errorResponse) {
-                print(
-                    "[LOG] WBViewWidget HTTP error: ${errorResponse.statusCode}");
+                _debugLog(
+                    'WBViewWidget HTTP error after ${DateTime.now().difference(_createdAt).inMilliseconds}ms: ${errorResponse.statusCode} (${request.url})');
               },
             ),
           ),

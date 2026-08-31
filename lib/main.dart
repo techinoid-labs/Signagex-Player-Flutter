@@ -14,6 +14,7 @@ import 'package:flutter_phoenix/flutter_phoenix.dart';
 import 'package:media_kit/media_kit.dart';
 
 import 'package:digital_signage/provider/main_provider.dart';
+import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/widgets/touch_feedback_overlay.dart';
 
@@ -74,8 +75,27 @@ void main() {
 // case). This pays it once, invisibly, at app launch instead -- typically
 // while the player is still on the pairing/downloading screen, well
 // before any real content needs to show.
-class _WebViewPrewarmer extends StatelessWidget {
+class _WebViewPrewarmer extends StatefulWidget {
   const _WebViewPrewarmer();
+
+  @override
+  State<_WebViewPrewarmer> createState() => _WebViewPrewarmerState();
+}
+
+class _WebViewPrewarmerState extends State<_WebViewPrewarmer> {
+  // Timestamps logged here vs. WBViewWidget's own onWebViewCreated/
+  // onLoadStop timestamps (campaign_view.dart) are what actually tell us
+  // whether a still-slow web app zone is waiting on WebView2's runtime
+  // (this prewarm not done yet, or not helping) or just that specific
+  // page's own network/render time -- neither was logged anywhere before,
+  // so there was no way to tell the two apart from a real test run.
+  final DateTime _createdAt = DateTime.now();
+
+  @override
+  void initState() {
+    super.initState();
+    debug.debugLog('WebViewPrewarmer', 'offstage WebView2 control creation starting at $_createdAt');
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -91,6 +111,18 @@ class _WebViewPrewarmer extends StatelessWidget {
         child: webview.InAppWebView(
           initialUrlRequest: webview.URLRequest(
               url: webview.WebUri.uri(Uri.parse('about:blank'))),
+          onWebViewCreated: (controller) {
+            debug.debugLog('WebViewPrewarmer',
+                'native WebView2 control created after ${DateTime.now().difference(_createdAt).inMilliseconds}ms');
+          },
+          onLoadStop: (controller, url) {
+            debug.debugLog('WebViewPrewarmer',
+                'about:blank finished loading after ${DateTime.now().difference(_createdAt).inMilliseconds}ms -- runtime is warm from here on');
+          },
+          onReceivedError: (controller, request, error) {
+            debug.debugLog('WebViewPrewarmer',
+                'FAILED: ${error.description} after ${DateTime.now().difference(_createdAt).inMilliseconds}ms');
+          },
         ),
       ),
     );
