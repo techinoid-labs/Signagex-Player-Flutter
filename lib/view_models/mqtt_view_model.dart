@@ -71,7 +71,14 @@ enum MqttState {
   noInternet,
   downloading,
   pairedScreen,
-  playlistScreen
+  playlistScreen,
+  // PLAYER_STOP_REASON_CONTRACT: paired:false + action:"action_stop_player"
+  // on a player/connection/ response. Distinct from pairedScreen (a
+  // genuinely never-paired device) -- this player IS paired, just
+  // temporarily stopped by the backend (licence/subscription/account
+  // issue), so it must keep its cache and pairing state exactly as-is and
+  // just stop showing content until the next poll comes back paired again.
+  playerStopped,
 }
 
 class MqttViewModel extends ChangeNotifier {
@@ -92,6 +99,14 @@ class MqttViewModel extends ChangeNotifier {
   String _topic = "";
   String get topic => _topic;
   String get playerCode => _topic;
+
+  // PLAYER_STOP_REASON_CONTRACT: the backend's stopReason() value from the
+  // most recent action_stop_player response (licence_removed, org_expired,
+  // demo_expired, org_inactive, org_suspended, or an older/unrecognised
+  // value -- see PlayerStoppedView for how each is rendered). Null when not
+  // currently stopped.
+  String? _stopReason;
+  String? get stopReason => _stopReason;
 
   PlayListModel? _playListModel;
 
@@ -1985,7 +2000,33 @@ EOF
       // Reset retry counter on successful connection
       _pairingRetryCount = 0;
 
-      if (response["paired"] == false) {
+      if (response["paired"] == false &&
+          response["action"] == "action_stop_player") {
+        // PLAYER_STOP_REASON_CONTRACT: this player IS paired -- the backend
+        // stopped it for a licence/subscription/account reason, which is
+        // completely different from never having been paired at all.
+        // Deliberately does NOT touch storeState/prefs (that would make
+        // action_setup_player's `storeState == false` gate re-run
+        // _checkPairingStatus and, worse, would make the pairedScreen QR
+        // code briefly flash on every resume too), does NOT call
+        // _stopPeriodicReporting() (the player is still up and reporting
+        // fine, it's just not displaying anything), and does NOT clear any
+        // cached campaign/media state -- _getScreenForState swapping to
+        // PlayerStoppedView is what actually stops the content from
+        // showing; nothing underneath it is torn down, so a resume is
+        // instant. An unrecognised reason value still lands here and is
+        // handled generically by PlayerStoppedView -- never falls through
+        // to the pairing-code screen.
+        _stopReason = (response["reason"] ?? "").toString();
+        _state = MqttState.playerStopped;
+
+        // Same poll-until-resumed mechanism as the unpaired case below --
+        // per the contract there's no push on restore, only the next poll.
+        _pairingPollTimer ??=
+            Timer.periodic(const Duration(seconds: 10), (_) async {
+          await _checkPairingStatus();
+        });
+      } else if (response["paired"] == false) {
         print("this is state screeen ${response["paired"]}");
         await prefs.setBool('storeState', response["paired"]);
         storeState = false;
@@ -1998,6 +2039,7 @@ EOF
           await _checkPairingStatus();
         });
       } else if (response["paired"] == true) {
+        _stopReason = null;
         _pairingPollTimer?.cancel();
         _pairingPollTimer = null;
 
@@ -2013,12 +2055,29 @@ EOF
         await prefs.setBool('storeState', true);
         storeState = true;
 
-        // Only the initial pairing handshake should drop to noContent --
-        // once already showing real content, a redundant pairing
-        // confirmation shouldn't blank the screen out from under it.
-        if (_state != MqttState.campaignScreen &&
+        if (_state == MqttState.playerStopped) {
+          // PLAYER_STOP_REASON_CONTRACT: "there is no separate resume
+          // message... the poll is the entire mechanism" -- nothing
+          // re-sends the campaign on restore, so falling through to the
+          // generic noContent branch below would leave the screen stuck
+          // there forever (nothing else would ever move it back to
+          // campaignScreen). _campaignModel/_playListModel were never
+          // touched while stopped, so they're exactly what has to bring
+          // the screen back -- resume instantly from that instead.
+          _startPeriodicReporting();
+          if (_campaignModel != null) {
+            _state = MqttState.campaignScreen;
+          } else if (_playListModel != null) {
+            _state = MqttState.playlistScreen;
+          } else {
+            _state = MqttState.noContent;
+          }
+        } else if (_state != MqttState.campaignScreen &&
             _state != MqttState.playlistScreen &&
             _state != MqttState.downloading) {
+          // Only the initial pairing handshake should drop to noContent --
+          // once already showing real content, a redundant pairing
+          // confirmation shouldn't blank the screen out from under it.
           _startPeriodicReporting();
           _state = MqttState.noContent;
         }
@@ -2029,9 +2088,14 @@ EOF
     } catch (error) {
       debugPrint("Error during pairing check: $error");
 
-      // Don't restart or retry if already paired - just log the error
-      if (_state == MqttState.pairedScreen) {
-        debugPrint("Device is already paired. Skipping retry and restart.");
+      // Don't restart or retry if already on the pairing screen, or
+      // currently stopped -- both already have _pairingPollTimer quietly
+      // retrying every 10s, so a transient network error here shouldn't
+      // force a disruptive full app restart on top of that.
+      if (_state == MqttState.pairedScreen ||
+          _state == MqttState.playerStopped) {
+        debugPrint(
+            "Device is already paired or stopped. Skipping retry and restart.");
         return;
       }
 
