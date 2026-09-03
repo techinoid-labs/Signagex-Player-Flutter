@@ -1,12 +1,14 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 
 import 'package:mqtt5_client/mqtt5_client.dart';
 import 'package:mqtt5_client/mqtt5_server_client.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'package:typed_data/typed_data.dart';
 
 import 'package:digital_signage/utils/debug_log.dart' as debug;
@@ -128,6 +130,37 @@ class MqttClientService {
     print('MQTT_LOGS:: Auto-reconnected successfully');
   }
 
+  // A laptop sleep/resume (or any drop severe enough that the broker's own
+  // keepalive-timeout detection, not our own disconnect, is what notices)
+  // used to leave the CMS stuck showing "offline" indefinitely -- not just
+  // for the sleep duration itself. Every connect() call generated a BRAND
+  // NEW client ID from the current timestamp, so on resume the app opened
+  // an entirely new broker session and immediately published "online",
+  // while the *old* (pre-sleep) session -- still registered under its own
+  // timestamp ID, with its own Last Will still pending -- got detected as
+  // dead by the broker on its own schedule and fired {"status":"offline"}
+  // (retained) afterwards, silently overwriting the fresh "online" status.
+  // Nothing corrected it until the next 30s heartbeat, and if it happened
+  // again before that landed, it could look stuck for a lot longer.
+  // Reconnecting with the SAME client ID every time means the broker
+  // recognizes it as the same session and supersedes the old one outright,
+  // instead of racing two independent sessions' Last Wills against each
+  // other.
+  String? _stableClientId;
+
+  Future<String> _getStableClientId() async {
+    if (_stableClientId != null) return _stableClientId!;
+    final prefs = await SharedPreferences.getInstance();
+    var id = prefs.getString('mqtt_stable_client_id');
+    if (id == null || id.isEmpty) {
+      final rand = Random();
+      id = 'signagex_${List.generate(20, (_) => rand.nextInt(16).toRadixString(16)).join()}';
+      await prefs.setString('mqtt_stable_client_id', id);
+    }
+    _stableClientId = id;
+    return id;
+  }
+
   // ────────────────────────────────
   // Connect - using wss://signagexai.com/mqtt
   // ────────────────────────────────
@@ -145,9 +178,9 @@ class MqttClientService {
         }
       } catch (e) {}
 
+      final clientId = await _getStableClientId();
       final connMessage = MqttConnectMessage()
-          .withClientIdentifier(
-              'flutter_client_${DateTime.now().millisecondsSinceEpoch}')
+          .withClientIdentifier(clientId)
           .startClean();
 
       // Matches the working Android player's presence protocol: a Last Will
