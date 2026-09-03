@@ -7,7 +7,7 @@ class ApiRepository {
 
   Future<dynamic> fetchData(String url) async {
     try {
-      return await _apiService.getApiResponse(url);
+      return await _apiService.getApiResponse(baseurl + url);
     } catch (e) {
       rethrow;
     }
