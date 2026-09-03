@@ -13,7 +13,7 @@ import 'package:digital_signage/utils/debug_log.dart' as debug;
 Future<void> _debugLog(String message) =>
     debug.debugLog('UpdateCheckService', message);
 
-// CI passes --dart-define=APP_BUILD_ID=<git short sha> when building the
+// CI passes --dart-define=APP_BUILD_ID=<v1, v2, v3...> when building the
 // production Windows installer (see .github/workflows/build-windows.yml) --
 // that's what gets compared against player-releases/latest's "version".
 // 'dev' (the default for any build that didn't set this, including every
