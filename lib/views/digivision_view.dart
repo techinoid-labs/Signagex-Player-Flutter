@@ -13,8 +13,6 @@ class DigivisionView extends StatefulWidget {
 }
 
 class _DigivisionViewState extends State<DigivisionView> {
-  static const Color _borderGray = Color(0xFF2D2D2D);
-
   @override
   void initState() {
     super.initState();
@@ -29,10 +27,7 @@ class _DigivisionViewState extends State<DigivisionView> {
       backgroundColor: Colors.black,
       body: SingleChildScrollView(
         child: Container(
-          decoration: BoxDecoration(
-            color: Colors.black,
-            border: Border.all(color: _borderGray, width: 2),
-          ),
+          color: Colors.black,
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
