@@ -25,14 +25,46 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      # Feeds the in-app update check (lib/services/update_check_service.dart)
+      # -- the running app compares this against whatever player-releases
+      # reports as latest. A git SHA rather than a bumped semver number: this
+      # branch ships many small fixes without a manual version-bump step, and
+      # a SHA is guaranteed unique per push with no process to remember.
+      - name: Compute build id
+        id: build_id
+        shell: bash
+        run: echo "id=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build production
-        run: flutter build windows --release
+        run: flutter build windows --release --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
 
       - name: Package production build
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath digital_signage-production.zip
 
       - name: Build production installer
         run: iscc windows\installer\setup.iss /DOutputBaseFilename=SignageX-Player-Setup
+
+      - name: Publish production installer for player auto-update
+        # Uploads to signageX-backend's player-releases module -- the stable
+        # public download URL, and what the in-app "update available" banner
+        # polls. Needs PLAYER_RELEASE_UPLOAD_KEY set as a secret here AND as
+        # the same value in that backend's own environment; continue-on-error
+        # so a publish failure (e.g. the secret not set up yet) can't block
+        # the installer artifact this workflow already produces below.
+        continue-on-error: true
+        shell: bash
+        env:
+          RELEASE_KEY: ${{ secrets.PLAYER_RELEASE_UPLOAD_KEY }}
+        run: |
+          if [ -z "$RELEASE_KEY" ]; then
+            echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping publish to player-releases (in-app auto-update won't see this build)."
+            exit 0
+          fi
+          curl -sf -X POST "https://signagexai.com/v1/player-releases/upload" \
+            -H "x-release-key: $RELEASE_KEY" \
+            -F "platform=windows" \
+            -F "version=${{ steps.build_id.outputs.id }}" \
+            -F "file=@dist/SignageX-Player-Setup.exe"
 
       - name: Build staging
         run: flutter build windows --release --dart-define=APP_ENV=staging

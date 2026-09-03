@@ -17,6 +17,7 @@ import 'package:digital_signage/provider/main_provider.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/widgets/touch_feedback_overlay.dart';
+import 'package:digital_signage/widgets/update_banner.dart';
 
 class MyHttpOverrides extends HttpOverrides {
   @override
@@ -54,6 +55,7 @@ void main() {
                     child: MyHomePage(),
                   ),
                   const _WebViewPrewarmer(),
+                  const UpdateBanner(),
                 ],
               ),
             ),
