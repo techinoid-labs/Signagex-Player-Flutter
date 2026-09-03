@@ -67,13 +67,34 @@ jobs:
             -F "file=@dist/SignageX-Player-Setup.exe"
 
       - name: Build staging
-        run: flutter build windows --release --dart-define=APP_ENV=staging
+        run: flutter build windows --release --dart-define=APP_ENV=staging --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
 
       - name: Package staging build
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath digital_signage-staging.zip
 
       - name: Build staging installer
         run: iscc windows\installer\setup.iss "/DAppSuffix= (Staging)" /DOutputBaseFilename=SignageX-Player-Setup-Staging
+
+      - name: Publish staging installer for player auto-update
+        # Same idea as the production publish step above, but against
+        # stage.signagexai.com -- a staging-built app's own apiHost (see
+        # lib/utils/constants.dart) points there, so this is what lets the
+        # whole CI -> backend -> in-app update banner loop be tested for
+        # real on staging before anything touches production.
+        continue-on-error: true
+        shell: bash
+        env:
+          RELEASE_KEY: ${{ secrets.PLAYER_RELEASE_UPLOAD_KEY }}
+        run: |
+          if [ -z "$RELEASE_KEY" ]; then
+            echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping staging publish to player-releases."
+            exit 0
+          fi
+          curl -sf -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
+            -H "x-release-key: $RELEASE_KEY" \
+            -F "platform=windows" \
+            -F "version=${{ steps.build_id.outputs.id }}" \
+            -F "file=@dist/SignageX-Player-Setup-Staging.exe"
 
       - name: Upload production build
         uses: actions/upload-artifact@v4
