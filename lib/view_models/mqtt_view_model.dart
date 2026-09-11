@@ -318,7 +318,9 @@ class MqttViewModel extends ChangeNotifier {
       Map<String, dynamic> sendLog = {
         "action": "image",
         "img_url": base64String,
-        "sender": "windows",
+        // captureAndSendScreenshot runs on every platform, so tag the real OS
+        // rather than always claiming "windows".
+        "sender": Platform.operatingSystem,
       };
 
       _mqttClientService.publish('$topic/remote', jsonEncode(sendLog));
@@ -2441,6 +2443,11 @@ EOF
         jsonObj["action"] == "publish_campaign") {
       SharedPreferences prefs = await SharedPreferences.getInstance();
       bool isSaved = await prefs.setString('jsonObj', jsonEncode(jsonObj));
+      // Keep the in-memory restore payload in sync with what was just published.
+      // Previously only SharedPreferences was updated, so a later connectivity
+      // change (which restores playback from storedJsonObj) could revert to the
+      // PREVIOUS campaign/playlist.
+      storedJsonObj = jsonObj;
 
       if (isSaved) {
         print('Data successfully saved to SharedPreferences');
@@ -2453,7 +2460,11 @@ EOF
       print("action rebooot");
       Map<String, dynamic> sendLog = {
         "action": "Action Reboot",
-        "name": "Player ${deviceInfo!["hardware_details"]["model"]}",
+        // deviceInfo is only populated by the iOS-oriented getDeviceInfo path;
+        // Windows fills a different map, so deviceInfo can be null here. The
+        // force-unwrap threw before the reboot command was ever issued -- make
+        // the log line null-safe so the reboot below actually runs.
+        "name": "Player ${deviceInfo?["hardware_details"]?["model"] ?? ""}",
         "type": "info",
         "dateTime": DateTime.now().toIso8601String(),
       };
@@ -2712,12 +2723,27 @@ EOF
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
         "log": "Remove Campaign",
-        "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+        "name": "Player ${deviceInfo?["hardware_details"]?["model"] ?? ""}",
         "type": "info",
         "date_time": DateTime.now().toIso8601String(),
       };
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
+      // Actually stop what's playing. Previously this only cleared prefs and
+      // re-checked pairing, but the in-memory campaign/playlist kept rendering
+      // (a paired poll response deliberately preserves active content), so
+      // remove_campaign alone could leave content on screen. Mirror the
+      // empty-publish no-content path, and clear the restore payload so a later
+      // reconnect can't bring the removed content back.
+      _timerOfCampaign?.cancel();
+      _timerOfCampaign = null;
+      _currentIndexOfCapmaign = 0;
+      _campaignModel = null;
+      _playListModel = null;
+      storedJsonObj = {};
+      _state = MqttState.noContent;
+      notifyListeners();
+
       SharedPreferences prefs = await SharedPreferences.getInstance();
       prefs.clear();
       await _checkPairingStatus();
