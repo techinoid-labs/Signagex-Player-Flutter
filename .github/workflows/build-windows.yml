@@ -26,14 +26,29 @@ jobs:
         run: choco install innosetup -y --no-progress
 
       # The in-app webview (flutter_inappwebview) needs the Edge WebView2
-      # runtime. A fresh Windows machine may not have it, which makes the
-      # webview plugin DLL fail to load at launch ("Bad Image"). Bundle the tiny
-      # Evergreen bootstrapper into the installer; setup.iss runs it per-user
-      # (no admin) only when the runtime is missing.
-      - name: Fetch WebView2 bootstrapper (bundled into installer)
+      # runtime. A fresh Windows machine may not have it, which makes the webview
+      # plugin DLL fail to load at launch ("Bad Image"). Bundle a WebView2 runtime
+      # installer into setup.exe; setup.iss runs it per-user (no admin) only when
+      # the runtime is missing.
+      #
+      #   ONLINE (default): the tiny Evergreen *bootstrapper* -- it downloads the
+      #     runtime at install time, so the target needs internet during setup.
+      #   OFFLINE (kiosk): set a repo variable WEBVIEW2_INSTALLER_URL to a pinned
+      #     Evergreen *Standalone* Installer (x64) URL; the produced setup.exe then
+      #     installs WebView2 with no internet (adds ~130 MB). Get the URL from
+      #     https://developer.microsoft.com/microsoft-edge/webview2/ -> "Evergreen
+      #     Standalone Installer" (x64), and pin a specific version for reproducible
+      #     kiosk builds. Both installers accept the same "/silent /install" args,
+      #     so setup.iss needs no change.
+      - name: Fetch WebView2 installer (bundled into setup.exe)
         shell: pwsh
+        env:
+          WEBVIEW2_INSTALLER_URL: ${{ vars.WEBVIEW2_INSTALLER_URL || 'https://go.microsoft.com/fwlink/p/?LinkId=2124703' }}
         run: |
-          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "windows\installer\MicrosoftEdgeWebview2Setup.exe"
+          Write-Host "Downloading WebView2 installer from $env:WEBVIEW2_INSTALLER_URL"
+          Invoke-WebRequest -Uri "$env:WEBVIEW2_INSTALLER_URL" -OutFile "windows\installer\MicrosoftEdgeWebview2Setup.exe"
+          $sz = (Get-Item "windows\installer\MicrosoftEdgeWebview2Setup.exe").Length
+          Write-Host ("WebView2 installer size: {0:N1} MB" -f ($sz/1MB))
 
       # Feeds the in-app update check (lib/services/update_check_service.dart)
       # -- the running app compares this against whatever player-releases
