@@ -25,6 +25,16 @@ jobs:
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
 
+      # The in-app webview (flutter_inappwebview) needs the Edge WebView2
+      # runtime. A fresh Windows machine may not have it, which makes the
+      # webview plugin DLL fail to load at launch ("Bad Image"). Bundle the tiny
+      # Evergreen bootstrapper into the installer; setup.iss runs it per-user
+      # (no admin) only when the runtime is missing.
+      - name: Fetch WebView2 bootstrapper (bundled into installer)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest -Uri "https://go.microsoft.com/fwlink/p/?LinkId=2124703" -OutFile "windows\installer\MicrosoftEdgeWebview2Setup.exe"
+
       # Feeds the in-app update check (lib/services/update_check_service.dart)
       # -- the running app compares this against whatever player-releases
       # reports as latest. Uses the workflow's own run number (v1, v2, v3...)
@@ -38,6 +48,22 @@ jobs:
 
       - name: Build production
         run: flutter build windows --release --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
+
+      # Ship the Visual C++ runtime app-local, next to the exe. The native
+      # webview plugin (flutter_inappwebview_windows_plugin.dll) links against
+      # the MSVC runtime; on a clean Windows box without the VC++ redistributable
+      # the DLL fails to load ("Bad Image"). App-local DLLs need no admin (matches
+      # the per-user, no-UAC installer) and no separate vc_redist on the target.
+      - name: Bundle VC++ runtime app-local (production)
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -property installationPath
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -Directory | Sort-Object FullName | Select-Object -Last 1
+          if (-not $crt) { throw "VC++ CRT redist folder not found under $vs" }
+          Write-Host "Copying VC++ CRT runtime from $($crt.FullName)"
+          Copy-Item "$($crt.FullName)\*.dll" "build\windows\x64\runner\Release\" -Force
+          Get-ChildItem "build\windows\x64\runner\Release\*140*.dll" | Select-Object -ExpandProperty Name
 
       - name: Package production build
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath digital_signage-production.zip
@@ -69,6 +95,17 @@ jobs:
 
       - name: Build staging
         run: flutter build windows --release --dart-define=APP_ENV=staging --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
+
+      # Re-copy the app-local VC++ runtime: the staging build regenerated the
+      # Release folder, dropping the DLLs added after the production build.
+      - name: Bundle VC++ runtime app-local (staging)
+        shell: pwsh
+        run: |
+          $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+          $vs = & $vswhere -latest -property installationPath
+          $crt = Get-ChildItem "$vs\VC\Redist\MSVC\*\x64\Microsoft.VC*.CRT" -Directory | Sort-Object FullName | Select-Object -Last 1
+          if (-not $crt) { throw "VC++ CRT redist folder not found under $vs" }
+          Copy-Item "$($crt.FullName)\*.dll" "build\windows\x64\runner\Release\" -Force
 
       - name: Package staging build
         run: Compress-Archive -Path build\windows\x64\runner\Release\* -DestinationPath digital_signage-staging.zip
