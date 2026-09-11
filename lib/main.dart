@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
 
 // Prefixed: this package re-exports its own X509Certificate class (from
@@ -31,7 +32,14 @@ class MyHttpOverrides extends HttpOverrides {
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
-  HttpOverrides.global = MyHttpOverrides();
+  // Certificate validation is bypassed ONLY in debug builds (e.g. a local dev
+  // server with a self-signed cert). Release builds -- production AND staging --
+  // must validate certificates; accepting every certificate in a shipped player
+  // is a man-in-the-middle hole. If a staging server uses a self-signed cert,
+  // give it a real one instead of re-enabling this globally.
+  if (kDebugMode) {
+    HttpOverrides.global = MyHttpOverrides();
+  }
   runApp(Phoenix(
     child: MaterialApp(
         debugShowCheckedModeBanner: false,
