@@ -29,7 +29,7 @@ class _NoInternetViewState extends State<NoInternetView> {
             ),
             SimpleText(
               text:
-                  "Wifi is still trying to connect, but it’s taking longer than normal.\nCheck that your Wifi is on and connected.",
+                  "Still trying to connect, but it’s taking longer than normal.\nCheck that your network connection (Wi-Fi or Ethernet) is active.",
             )
           ],
         ),
