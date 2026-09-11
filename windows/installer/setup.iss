@@ -47,7 +47,17 @@ DefaultDirName={localappdata}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
-ArchitecturesInstallIn64BitMode=x64
+; Refuse to install on unsupported Windows, up front with a clear message,
+; instead of installing and then failing at runtime. Both the Flutter Windows
+; engine and WebView2 (the in-app browser) require Windows 10 version 1809
+; (build 17763) or newer -- older Windows 10 and Windows 7/8/8.1 are out.
+MinVersion=10.0.17763
+; The app is x64 only (there is no 32-bit Flutter Windows build). x64compatible
+; allows native x64 Windows AND ARM64 devices running x64 under emulation, while
+; blocking 32-bit-only Windows where the app cannot run. (Requires Inno Setup
+; 6.3+, which CI's chocolatey innosetup provides.)
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
 ; Without this, if the app is already running (e.g. re-running the installer
 ; to update, or installing production over a staging test build), Windows
 ; keeps flutter_windows.dll/icudtl.dat locked and Inno Setup silently skips
