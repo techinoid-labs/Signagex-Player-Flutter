@@ -79,10 +79,14 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 ; user session) -- Windows finishes the replace on next reboot instead of
 ; silently leaving the old file in place.
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs
-; Microsoft Edge WebView2 Evergreen bootstrapper. The in-app webview
+; Microsoft Edge WebView2 runtime installer. The in-app webview
 ; (flutter_inappwebview) needs the WebView2 runtime; a fresh Windows box may
 ; not have it, and the plugin DLL then fails to load at launch with a "Bad
-; Image" error. CI downloads this next to setup.iss before compiling;
+; Image" error. CI downloads this next to setup.iss before compiling -- either
+; the small online Evergreen bootstrapper (default) or, for offline/kiosk
+; builds, a pinned Evergreen Standalone Installer (see build-windows.yml,
+; WEBVIEW2_INSTALLER_URL); both are driven identically below. The filename is
+; kept constant so this line doesn't care which one it is.
 ; skipifsourcedoesntexist keeps a plain local `iscc` working when it hasn't
 ; been fetched. (The Visual C++ runtime DLLs the plugin also needs are copied
 ; app-local into {#SourceDir} by CI, so they arrive via the line above.)

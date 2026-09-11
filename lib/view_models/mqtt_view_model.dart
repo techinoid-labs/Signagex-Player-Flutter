@@ -2737,6 +2737,11 @@ EOF
       // reconnect can't bring the removed content back.
       _timerOfCampaign?.cancel();
       _timerOfCampaign = null;
+      // Also cancel the playlist rotation timer. Its callback _updateIndex()
+      // force-unwraps _playListModel, so leaving it running after we null the
+      // model below would crash on the very next tick.
+      _timer?.cancel();
+      _timer = null;
       _currentIndexOfCapmaign = 0;
       _campaignModel = null;
       _playListModel = null;
