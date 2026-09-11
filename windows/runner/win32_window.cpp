@@ -18,6 +18,21 @@ namespace {
 
 constexpr const wchar_t kWindowClassName[] = L"FLUTTER_RUNNER_WIN32_WINDOW";
 
+// Registered as a global hotkey (see Create()) rather than relied upon via
+// normal keyboard message routing: keyboard focus lives on the hosted
+// Flutter/WebView2 child window (see the Create() comment on WS_POPUP), and
+// an embedded Chromium-based control can consume WM_SYSKEYDOWN/Alt+F4 before
+// it ever reaches this top-level window's WndProc, silently swallowing the
+// only close affordance a borderless kiosk window has (no title bar, no
+// visible close button, Escape only toggles fullscreen -- see
+// main_provider.dart). RegisterHotKey delivers WM_HOTKEY straight to this
+// window regardless of which child currently has focus, so Alt+F4 is
+// guaranteed to actually close the app instead of silently doing nothing
+// and leaving someone no option but Task Manager -- which force-terminates
+// with a nonzero exit code the crash watchdog then (correctly, by its own
+// logic) treats as a crash and relaunches.
+constexpr int kAltF4HotkeyId = 1;
+
 /// Registry key for app theme preference.
 ///
 /// A value of 0 indicates apps should use dark mode. A non-zero or missing
@@ -167,6 +182,14 @@ bool Win32Window::Create(const std::wstring& title,
     return false;
   }
 
+  // MOD_NOREPEAT: one WM_HOTKEY per press, not one per key-repeat tick while
+  // held. A failure here (e.g. another process already grabbed Alt+F4
+  // system-wide, vanishingly rare) just means Alt+F4 falls back to normal
+  // message routing -- not a reason to fail window creation.
+  if (!RegisterHotKey(window, kAltF4HotkeyId, MOD_ALT | MOD_NOREPEAT, VK_F4)) {
+    OutputDebugStringW(L"SignageX: Alt+F4 hotkey registration failed\n");
+  }
+
   UpdateTheme(window);
 
   return OnCreate();
@@ -202,6 +225,13 @@ Win32Window::MessageHandler(HWND hwnd,
                             WPARAM const wparam,
                             LPARAM const lparam) noexcept {
   switch (message) {
+    case WM_HOTKEY:
+      if (wparam == kAltF4HotkeyId) {
+        PostMessage(hwnd, WM_CLOSE, 0, 0);
+        return 0;
+      }
+      break;
+
     case WM_DESTROY:
       window_handle_ = nullptr;
       Destroy();
@@ -273,6 +303,7 @@ void Win32Window::Destroy() {
   OnDestroy();
 
   if (window_handle_) {
+    UnregisterHotKey(window_handle_, kAltF4HotkeyId);
     DestroyWindow(window_handle_);
     window_handle_ = nullptr;
   }
