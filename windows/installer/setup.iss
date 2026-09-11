@@ -104,6 +104,21 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion restartreplace 
 ; app-local into {#SourceDir} by CI, so they arrive via the line above.)
 Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourcedoesntexist
 
+[UninstallDelete]
+; Inno Setup's uninstaller only removes files it tracked installing from
+; [Files] above -- anything the running app writes afterward into its own
+; install folder (shared_preferences.json holding pairing state/cached
+; campaign JSON, WebView2's own EBWebView cache/cookies/IndexedDB folder,
+; which defaults to living next to the exe when no custom user-data
+; folder is configured) is invisible to it, so {app} never ends up empty
+; and never actually gets removed on its own. Force-deleting the whole
+; tree here means uninstall actually leaves nothing behind, and a
+; reinstall always starts from a genuinely clean/unpaired state.
+Type: filesandordirs; Name: "{app}"
+; The debug log (lib/utils/debug_log.dart) lives in a completely separate
+; directory tree that [Files] never manages at all.
+Type: filesandordirs; Name: "{userappdata}\SignageX\SignageX Player"
+
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
