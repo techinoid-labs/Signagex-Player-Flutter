@@ -1,0 +1,33 @@
+name: CI
+
+# Static analysis + tests on every push and PR. This is the verification the
+# player has been missing: the only prior automated job (build-windows.yml)
+# packaged Windows but never ran the analyzer or a test, so broken Dart could
+# ship. `flutter analyze` here compiles all of lib/, catching real errors before
+# merge; `flutter test` runs the (small) test suite.
+on:
+  push:
+  pull_request:
+
+jobs:
+  analyze-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Fail the build only on ERRORS (compile-breaking issues), not on the
+      # existing warning/info lint debt -- otherwise this would be red from day
+      # one and get ignored. Ratchet toward fatal warnings once the backlog is
+      # cleared.
+      - name: Analyze
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
+
+      - name: Test
+        run: flutter test
