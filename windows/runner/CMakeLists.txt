@@ -38,3 +38,10 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# Standalone supervisor: no Flutter/plugin dependency, also copied into ZIPs.
+add_executable(SignageXWatchdog WIN32 "watchdog_main.cpp")
+apply_standard_settings(SignageXWatchdog)
+target_compile_definitions(SignageXWatchdog PRIVATE NOMINMAX)
+target_link_libraries(SignageXWatchdog PRIVATE shell32 user32)
+add_dependencies(${BINARY_NAME} SignageXWatchdog)

@@ -1,0 +1,41 @@
+name: Windows kiosk tests
+on:
+  push:
+  pull_request:
+
+jobs:
+  native-watchdog:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ilammy/msvc-dev-cmd@v1
+      - name: Compile native supervisor and test player
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force 'work/kiosk-tests' | Out-Null
+          Push-Location 'work/kiosk-tests'
+          cl /nologo /std:c++17 /EHsc /W4 /WX /wd4100 /MT /DUNICODE /D_UNICODE /DNOMINMAX ../../windows/runner/watchdog_main.cpp /Fe:SignageXWatchdog.exe /link /SUBSYSTEM:WINDOWS user32.lib shell32.lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl /nologo /std:c++17 /EHsc /W4 /WX /wd4100 /MT /DUNICODE /D_UNICODE /DNOMINMAX ../../windows/tests/fake_player.cpp /Fe:SignageXPlayer.exe /link /SUBSYSTEM:WINDOWS user32.lib
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cl /nologo /std:c++17 /EHsc /W4 /WX /MT ../../windows/tests/watchdog_policy_test.cpp /Fe:policy_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          ./policy_test.exe
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Pop-Location
+      - name: Exercise normal exit, crash recovery, duplicate launch and maintenance
+        shell: pwsh
+        run: ./windows/tests/watchdog_smoke.ps1 -BuildDirectory ./work/kiosk-tests
+      - name: Compile installer script with test binaries (not a release)
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $compiler = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          & $compiler windows/installer/setup.iss "/DSourceDir=$env:GITHUB_WORKSPACE\work\kiosk-tests" /DOutputBaseFilename=Kiosk-Test-Do-Not-Deploy
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: watchdog-test-log
+          path: work/kiosk-tests/watchdog.log*
