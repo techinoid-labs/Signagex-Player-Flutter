@@ -79,6 +79,14 @@ Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription:
 ; user session) -- Windows finishes the replace on next reboot instead of
 ; silently leaving the old file in place.
 Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion restartreplace recursesubdirs createallsubdirs
+; Microsoft Edge WebView2 Evergreen bootstrapper. The in-app webview
+; (flutter_inappwebview) needs the WebView2 runtime; a fresh Windows box may
+; not have it, and the plugin DLL then fails to load at launch with a "Bad
+; Image" error. CI downloads this next to setup.iss before compiling;
+; skipifsourcedoesntexist keeps a plain local `iscc` working when it hasn't
+; been fetched. (The Visual C++ runtime DLLs the plugin also needs are copied
+; app-local into {#SourceDir} by CI, so they arrive via the line above.)
+Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourcedoesntexist
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
@@ -87,4 +95,30 @@ Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: de
 Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startupicon
 
 [Run]
+; Ensure the Edge WebView2 runtime is present before first launch -- per-user,
+; silent, no admin (matches PrivilegesRequired=lowest). Skipped when already
+; installed or when the bootstrapper wasn't bundled (see NeedsWebView2).
+Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installing Microsoft Edge WebView2 runtime (required for playback)..."; Flags: waituntilterminated; Check: NeedsWebView2
 Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
+
+[Code]
+{ True when the Edge WebView2 Evergreen runtime is NOT installed, so the bundled
+  bootstrapper should run. Detects the Evergreen client under EdgeUpdate
+  (per-machine on 64-bit Windows, else per-user); a missing/empty/"0.0.0.0"
+  version means absent. Returns False (nothing to do) if the bootstrapper file
+  wasn't bundled into this build. }
+function NeedsWebView2(): Boolean;
+var
+  pv: String;
+begin
+  if not FileExists(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe')) then
+  begin
+    Result := False;
+    exit;
+  end;
+  pv := '';
+  RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', pv);
+  if pv = '' then
+    RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', pv);
+  Result := (pv = '') or (pv = '0.0.0.0');
+end;
