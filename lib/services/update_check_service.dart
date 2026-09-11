@@ -28,6 +28,31 @@ class UpdateInfo {
   const UpdateInfo({required this.version, required this.downloadUrl});
 }
 
+/// True only when [latest] is a *strictly newer* build than [current].
+///
+/// Build ids are the CI run number formatted as "vN" (see [appBuildId]). Only a
+/// strictly greater N is an update: equal or older never updates -- this avoids
+/// silently downgrading, and avoids an update/restart loop if the feed's version
+/// string ever fails to match the installed binary's baked id. Anything that
+/// doesn't parse as an integer build number (empty, "dev", "vX", "13beta") is
+/// treated as "not newer" -- logged by the caller, never nags. If the versioning
+/// scheme ever becomes semver, replace the integer compare with a semver one.
+bool isNewerBuild(String current, String latest) {
+  final c = _parseBuildNumber(current);
+  final l = _parseBuildNumber(latest);
+  if (c == null || l == null) return false;
+  return l > c;
+}
+
+int? _parseBuildNumber(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty) return null;
+  final body = (trimmed[0] == 'v' || trimmed[0] == 'V')
+      ? trimmed.substring(1)
+      : trimmed;
+  return int.tryParse(body);
+}
+
 class UpdateCheckService {
   Future<UpdateInfo?> checkForUpdate() async {
     if (!Platform.isWindows || appBuildId == 'dev') return null;
@@ -37,9 +62,16 @@ class UpdateCheckService {
           .fetchData('player-releases/latest?platform=windows');
       final latestVersion = (response?['version'] ?? '').toString();
       final downloadUrl = (response?['downloadUrl'] ?? '').toString();
-      if (latestVersion.isEmpty ||
-          downloadUrl.isEmpty ||
-          latestVersion == appBuildId) {
+      if (latestVersion.isEmpty || downloadUrl.isEmpty) {
+        return null;
+      }
+      // Only a strictly newer build is an update. Equal/older/malformed are
+      // skipped -- prevents downgrades and the update/restart loop a bare
+      // inequality would cause if the feed's version ever fails to match the
+      // installed build id.
+      if (!isNewerBuild(appBuildId, latestVersion)) {
+        await _debugLog(
+            'checkForUpdate: current=$appBuildId latest=$latestVersion -- not newer, skipping');
         return null;
       }
 
