@@ -34,6 +34,7 @@
 #define MyAppVersion "1.0.0"
 #define MyAppPublisher "SignageX"
 #define MyAppExeName "SignageXPlayer.exe"
+#define MyLauncherExeName "SignageXWatchdog.exe"
 
 [Setup]
 ; Fixed AppId so re-running the installer (same or newer version) upgrades
@@ -65,9 +66,10 @@ ArchitecturesInstallIn64BitMode=x64compatible
 ; which makes the app open a permanently blank grey window (engine/AOT
 ; snapshot version mismatch, never renders a frame). CloseApplications uses
 ; the Restart Manager to detect and close the running app before copying;
-; RestartApplications relaunches it after install finishes.
+; the supervised launcher is started explicitly after installation.
 CloseApplications=yes
-RestartApplications=yes
+; Relaunch through our supervisor explicitly, never just the child process.
+RestartApplications=no
 OutputDir=..\..\dist
 OutputBaseFilename={#OutputBaseFilename}
 SetupIconFile=..\runner\resources\app_icon.ico
@@ -103,19 +105,63 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion restartreplace 
 Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourcedoesntexist
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
-Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; Tasks: startupicon
+Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"; Tasks: desktopicon
+Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"; Tasks: startupicon
 
 [Run]
 ; Ensure the Edge WebView2 runtime is present before first launch -- per-user,
 ; silent, no admin (matches PrivilegesRequired=lowest). Skipped when already
 ; installed or when the bootstrapper wasn't bundled (see NeedsWebView2).
 Filename: "{tmp}\MicrosoftEdgeWebview2Setup.exe"; Parameters: "/silent /install"; StatusMsg: "Installing Microsoft Edge WebView2 runtime (required for playback)..."; Flags: waituntilterminated; Check: NeedsWebView2
-Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyLauncherExeName}"; Description: "Launch {#MyAppName} now"; Flags: nowait postinstall skipifsilent
+
+; Silent upgrades restart by default, including older in-app updaters that do
+; not yet pass /RESTARTPLAYER. Fresh silent installs need /RESTARTPLAYER=1.
+Filename: "{app}\{#MyLauncherExeName}"; Flags: nowait; Check: RestartPlayerSilently
 
 [Code]
+var
+  UpgradingPlayer: Boolean;
+
+function RestartPlayerSilently(): Boolean;
+var
+  DefaultRestart: String;
+begin
+  DefaultRestart := '0';
+  if UpgradingPlayer then DefaultRestart := '1';
+  Result := WizardSilent and
+    (ExpandConstant('{param:RESTARTPLAYER|' + DefaultRestart + '}') = '1');
+end;
+
+function StopPlayerSupervisor(): Boolean;
+var
+  ExitCode: Integer;
+  Launcher: String;
+begin
+  Launcher := ExpandConstant('{app}\{#MyLauncherExeName}');
+  Result := True;
+  if FileExists(Launcher) then
+    Result := Exec(Launcher, '--stop', ExpandConstant('{app}'), SW_HIDE,
+      ewWaitUntilTerminated, ExitCode) and (ExitCode = 0);
+end;
+
+function PrepareToInstall(var NeedsRestart: Boolean): String;
+begin
+  UpgradingPlayer := FileExists(ExpandConstant('{app}\{#MyAppExeName}'));
+  Result := '';
+  if not StopPlayerSupervisor() then
+    Result := 'Close SignageX Player and its watchdog, then retry installation.';
+end;
+
+function InitializeUninstall(): Boolean;
+begin
+  Result := StopPlayerSupervisor();
+  if not Result then
+    MsgBox('Close SignageX Player and its watchdog, then retry uninstall.', mbError, MB_OK);
+end;
+
 { True when the Edge WebView2 Evergreen runtime is NOT installed, so the bundled
   bootstrapper should run. Detects the Evergreen client under EdgeUpdate
   (per-machine on 64-bit Windows, else per-user); a missing/empty/"0.0.0.0"

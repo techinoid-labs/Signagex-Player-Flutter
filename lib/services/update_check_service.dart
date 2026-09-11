@@ -81,11 +81,11 @@ class UpdateCheckService {
       // Detached and never awaited: setup.iss's CloseApplications will
       // close THIS running process as part of installing over it, so
       // waiting on the installer's exit code here would just deadlock the
-      // app waiting on a process that's about to kill it. RestartApplications
-      // brings the app back up once the new files are in place.
+      // app waiting on a process that's about to close it. RestartApplications
+      // is disabled; /RESTARTPLAYER=1 launches the supervised player after setup.
       await Process.start(
         installerPath,
-        ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'],
+        ['/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/RESTARTPLAYER=1'],
         mode: ProcessStartMode.detached,
       );
       await _debugLog('runInstallerSilently: launched $installerPath');
