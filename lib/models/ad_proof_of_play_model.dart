@@ -69,6 +69,40 @@ class AdProofOfPlayRequest {
         'played_at': playedAt,
         'error_message': errorMessage ?? '',
       };
+
+  // W17: round-trips through the exact same map toJson() already produces,
+  // so a failed report can be persisted (SharedPreferences) and reconstructed
+  // later for retry without a second, separately-maintained serialization.
+  factory AdProofOfPlayRequest.fromJson(Map<String, dynamic> json) {
+    return AdProofOfPlayRequest(
+      playerCode: (json['player_code'] ?? '').toString(),
+      adCampaignId: (json['ad_campaign_id'] ?? '').toString(),
+      campaignId: (json['campaign_id'] ?? '').toString(),
+      adCampaignItemId: (json['ad_campaign_item_id'] ?? '').toString(),
+      contentId: (json['content_id'] ?? '').toString(),
+      slotTimelineId: (json['slot_timeline_id'] ?? '').toString(),
+      adZoneId: (json['ad_zone_id'] ?? '').toString(),
+      zoneId: (json['zone_id'] as num?)?.toInt() ?? 0,
+      zoneName: (json['zone_name'] ?? '').toString(),
+      creativeName: (json['creative_name'] ?? '').toString(),
+      creativeUrl: (json['creative_url'] ?? '').toString(),
+      mediaType: (json['media_type'] ?? '').toString(),
+      status: (json['status'] ?? '').toString(),
+      durationSeconds: (json['duration_seconds'] as num?)?.toInt() ?? 0,
+      completionPercent: (json['completion_percent'] as num?)?.toInt() ?? 0,
+      playedAt: (json['played_at'] ?? '').toString(),
+      errorMessage: (json['error_message'] as String?)?.isEmpty ?? true
+          ? null
+          : json['error_message'] as String,
+    );
+  }
+
+  /// Identifies "the same reported play instance" for retry-queue dedup --
+  /// slotTimelineId is the CMS's own per-scheduled-occurrence identifier;
+  /// combined with status, two attempts to report the same outcome for the
+  /// same slot instance collapse to one queued entry instead of piling up
+  /// duplicates on every retry pass.
+  String get dedupKey => '$slotTimelineId|$status';
 }
 
 bool isAdMediaType(String? mediaType) {

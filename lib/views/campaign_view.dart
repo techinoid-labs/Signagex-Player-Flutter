@@ -17,6 +17,12 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
+// W22: only need Content (for the interactivity overlay below) -- this file
+// only imports Content specifically because intractivity_model.dart also
+// declares its own MediaItem/Settings/Period/Data/Trigger/Zone/Interactivity,
+// several of which collide with same-named classes already imported
+// unprefixed from compaign_model.dart and play_list_model.dart.
+import 'package:digital_signage/models/intractivity_model.dart' show Content;
 import 'package:digital_signage/utils/constants.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/log_format.dart';
@@ -310,8 +316,46 @@ class _CampaignViewState extends State<CampaignView> {
     super.dispose();
   }
 
+  // W22: interactivity triggers (a matched hotspot tap or key press) need to
+  // show something on top of whatever the campaign is currently doing,
+  // regardless of which of this method's several early-return branches is
+  // active, without touching any of that branch's own logic. Wrapping the
+  // existing build() (renamed, otherwise untouched) is the lowest-risk way
+  // to add that: every existing return path keeps working exactly as
+  // before, and the overlay is purely additive on top.
   @override
   Widget build(BuildContext context) {
+    final content = _buildScreen(context);
+    final overlay = _buildInteractivityOverlay(context);
+    return overlay == null ? content : Stack(children: [content, overlay]);
+  }
+
+  // W22: renders a matched hotspot/key trigger's content full-screen, on top
+  // of whatever the campaign is currently showing, for the duration the
+  // MqttViewModel's timer holds it. See activeInteractivityContent's own doc
+  // comment (mqtt_view_model.dart) for what's deliberately NOT supported
+  // (per-zone targeting via namedRegion, video content, nested compositions)
+  // and why.
+  Widget? _buildInteractivityOverlay(BuildContext context) {
+    final mqttViewModel = Provider.of<MqttViewModel>(context);
+    final content = mqttViewModel.activeInteractivityContent;
+    if (content == null) return null;
+    final mediaUrl = content.mediaUrl ?? '';
+    if (mediaUrl.isEmpty) return null;
+    return Positioned.fill(
+      child: Container(
+        color: Colors.black87,
+        child: ImageWidget(
+          key: ValueKey('interactivity_overlay_${content.id}'),
+          filePath: mediaUrl,
+          onImageEnd: () {},
+          transitionType: 'none',
+        ),
+      ),
+    );
+  }
+
+  Widget _buildScreen(BuildContext context) {
     final mqttViewModel = Provider.of<MqttViewModel>(context);
     final campaignModel = mqttViewModel.campaignModel;
 
@@ -1142,10 +1186,18 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   }) async {
     if (!adMedia.isAd) return;
 
-    if (status == 'completed') {
-      if (_adProofReported) return;
-      _adProofReported = true;
-    }
+    // W17: both terminal outcomes ('completed' and 'failed') must be
+    // reported exactly once per ad playback attempt -- previously only
+    // 'completed' was guarded, so a slot whose creative failed to load
+    // (see onLoadFailed below) could report 'failed' and then still have
+    // _startMediaLoop's wall-clock timer fire 'completed' on top of it, or
+    // report 'failed' multiple times if more than one error signal fired.
+    // _adPlaybackSessionKey changing already resets this flag for a new ad
+    // session (see the check above _playNextMedia's restriction checks), so
+    // guarding unconditionally here doesn't suppress a genuinely new slot's
+    // own report.
+    if (_adProofReported) return;
+    _adProofReported = true;
 
     final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
     final settings = adMedia.settings;
@@ -2208,6 +2260,14 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           _onMediaEnd();
         },
         transitionType: media.settings?.transition ?? 'none',
+        // W17: adSource is the pre-resolution ad-slot media when this
+        // creative belongs to one; _sendAdProofOfPlay no-ops on its own for
+        // non-ad media, so this is safe to pass unconditionally.
+        onLoadFailed: () => _sendAdProofOfPlay(
+          adSource,
+          status: 'failed',
+          errorMessage: 'creative_load_error',
+        ),
       );
     }
 
@@ -2226,6 +2286,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         },
         transitionType: media.settings?.transition ?? 'none',
         volume: (media.settings?.volume ?? 100) / 100.0,
+        onLoadFailed: () => _sendAdProofOfPlay(
+          adSource,
+          status: 'failed',
+          errorMessage: 'creative_load_error',
+        ),
       );
     }
 
@@ -2268,6 +2333,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           },
           transitionType: media.settings?.transition ?? 'none',
           volume: (media.settings?.volume ?? 100) / 100.0,
+          onLoadFailed: () => _sendAdProofOfPlay(
+            adSource,
+            status: 'failed',
+            errorMessage: 'creative_load_error',
+          ),
         );
       } else {
         // Treat as image
@@ -2276,6 +2346,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           filePath: mediaUrl,
           onImageEnd: _onMediaEnd,
           transitionType: media.settings?.transition ?? 'none',
+          onLoadFailed: () => _sendAdProofOfPlay(
+            adSource,
+            status: 'failed',
+            errorMessage: 'creative_load_error',
+          ),
         );
       }
     }
@@ -2293,6 +2368,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         },
         transitionType: media.settings?.transition ?? 'none',
         volume: (media.settings?.volume ?? 100) / 100.0,
+        onLoadFailed: () => _sendAdProofOfPlay(
+          adSource,
+          status: 'failed',
+          errorMessage: 'creative_load_error',
+        ),
       );
     } else if (isWebFile(mediaUrl)) {
       return WBViewWidget(
@@ -2313,6 +2393,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         filePath: mediaUrl,
         onImageEnd: _onMediaEnd,
         transitionType: media.settings?.transition ?? 'none',
+        onLoadFailed: () => _sendAdProofOfPlay(
+          adSource,
+          status: 'failed',
+          errorMessage: 'creative_load_error',
+        ),
       );
     }
   }
@@ -2328,6 +2413,15 @@ class VideoPlayerWidget extends StatefulWidget {
   // why. This widget only ever calls player.open() on it, never disposes it.
   final Player player;
   final VideoController controller;
+  // W17: fired at most once, only when this video gave up entirely (either
+  // every open() attempt failed, or a mid-playback stream error survived
+  // every retry) without ever completing -- distinct from onVideoEnd, which
+  // previously fired in both the give-up-after-stream-error path AND actual
+  // successful completion, making the two indistinguishable to the caller.
+  // Optional: only ad slots (campaign_view.dart's _buildMediaWidget) care
+  // about this distinction for proof-of-play; every other caller can ignore
+  // it exactly as before.
+  final VoidCallback? onLoadFailed;
 
   const VideoPlayerWidget({
     super.key,
@@ -2337,6 +2431,7 @@ class VideoPlayerWidget extends StatefulWidget {
     required this.player,
     required this.controller,
     this.volume = 1.0,
+    this.onLoadFailed,
   });
 
   @override
@@ -2410,6 +2505,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         Future.delayed(const Duration(seconds: 5), () {
           if (mounted && _hasError && !_isVideoEnded) {
             _isVideoEnded = true;
+            widget.onLoadFailed?.call();
             widget.onVideoEnd();
           }
         });
@@ -2466,6 +2562,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
         } else {
           _debugLog(
               "VideoPlayerWidget: Giving up after $_maxInitAttempts attempts – video will show as not initialized.");
+          if (mounted) {
+            setState(() {
+              _hasError = true;
+              _errorDescription = 'file not found: $localPath';
+            });
+          }
+          // W17: same reasoning as the open()-failure give-up path above --
+          // this creative never played, and nothing previously told the
+          // caller at all.
+          widget.onLoadFailed?.call();
           return;
         }
       }
@@ -2503,6 +2609,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
           _hasError = true;
           _errorDescription = error.toString();
         });
+        // W17: every open() attempt failed -- this creative never played at
+        // all. Previously nothing told the caller: onVideoEnd was never
+        // called from this path either, so an ad slot stuck here silently
+        // reported nothing (worse than the original false-'completed' bug --
+        // no proof-of-play record at all, not even a failed one).
+        widget.onLoadFailed?.call();
       }
     }
   }
@@ -2564,12 +2676,20 @@ class ImageWidget extends StatelessWidget {
   final VoidCallback onImageEnd;
 
   final String transitionType;
+  // W17: fired when the image fails to decode/load at all, distinct from
+  // onImageEnd (which only ever meant "the display duration elapsed").
+  // Optional -- only ad slots (campaign_view.dart's _buildMediaWidget) care;
+  // _sendAdProofOfPlay itself is guarded against being called more than
+  // once per ad session, so this can be called unconditionally from
+  // errorBuilder even if that builder runs more than once.
+  final VoidCallback? onLoadFailed;
 
   const ImageWidget({
     super.key,
     required this.filePath,
     required this.onImageEnd,
     required this.transitionType,
+    this.onLoadFailed,
   });
 
   bool get _isNetworkUrl =>
@@ -2606,9 +2726,12 @@ class ImageWidget extends StatelessWidget {
       imageChild = Image.memory(
         bytes,
         fit: BoxFit.cover,
-        errorBuilder: (_, __, ___) => const Center(
-          child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
-        ),
+        errorBuilder: (_, __, ___) {
+          onLoadFailed?.call();
+          return const Center(
+            child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
+          );
+        },
       );
     } else if (_isNetworkUrl) {
       imageChild = Image.network(
@@ -2616,9 +2739,12 @@ class ImageWidget extends StatelessWidget {
         fit: BoxFit.cover,
         height: MediaQuery.sizeOf(context).height,
         width: MediaQuery.sizeOf(context).width,
-        errorBuilder: (_, __, ___) => const Center(
-          child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
-        ),
+        errorBuilder: (_, __, ___) {
+          onLoadFailed?.call();
+          return const Center(
+            child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
+          );
+        },
       );
     } else {
       imageChild = Image.file(
@@ -2626,9 +2752,12 @@ class ImageWidget extends StatelessWidget {
         fit: BoxFit.cover,
         height: MediaQuery.sizeOf(context).height,
         width: MediaQuery.sizeOf(context).width,
-        errorBuilder: (_, __, ___) => const Center(
-          child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
-        ),
+        errorBuilder: (_, __, ___) {
+          onLoadFailed?.call();
+          return const Center(
+            child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
+          );
+        },
       );
     }
 

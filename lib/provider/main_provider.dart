@@ -47,9 +47,17 @@ class _MqttProviderState extends State<MqttProvider> {
     super.dispose();
   }
 
-  void _onTap(TapUpDetails details) {
+  // W22: this used to only print the tap position -- it was never actually
+  // forwarded to the view model at all, so a configured hotspot could never
+  // fire from here (only no_content_view.dart's own separate
+  // RawKeyboardListener, on a different screen state, ever called into
+  // MqttViewModel). This is the listener actually active during normal
+  // playback (CampaignView/PlaylistScreen), so this is the reachability fix
+  // that matters.
+  void _onTap(TapUpDetails details, MqttViewModel viewModel) {
     final position = details.localPosition;
     print("Touched at position: $position");
+    viewModel.setTapPosition(position.dx, position.dy);
   }
 
   @override
@@ -67,9 +75,9 @@ class _MqttProviderState extends State<MqttProvider> {
         builder: (context, viewModel, child) {
           return RawKeyboardListener(
             focusNode: _focusNode,
-            onKey: _onKey,
+            onKey: (event) => _onKey(event, viewModel),
             child: GestureDetector(
-              onTapUp: _onTap,
+              onTapUp: (details) => _onTap(details, viewModel),
               child: _getScreenForState(viewModel.state),
             ),
           );
@@ -78,12 +86,19 @@ class _MqttProviderState extends State<MqttProvider> {
     );
   }
 
-  void _onKey(RawKeyEvent event) {
+  void _onKey(RawKeyEvent event, MqttViewModel viewModel) {
     if (event is RawKeyDownEvent) {
       if (event.logicalKey == LogicalKeyboardKey.escape) {
         _toggleFullscreen();
       }
       print("Key pressed: ${event.logicalKey.debugName}");
+      // W22: same debugName format no_content_view.dart's own (separate)
+      // key listener already uses when calling getKey() -- matching it
+      // rather than a different key-string format keeps this consistent
+      // with whatever the CMS's key_press configuration actually expects.
+      if (event.logicalKey.debugName != null) {
+        viewModel.getKey(event.logicalKey.debugName!);
+      }
     }
   }
 

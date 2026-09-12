@@ -591,4 +591,40 @@ public class SignageXInput {
       print('An error occurred: $e');
     }
   }
+
+  // W22: send_text previously only wrote the clipboard -- nothing ever
+  // consumed it, so remote text never actually reached any input. This
+  // simulates a real Ctrl+V keystroke via user32.dll's keybd_event (same
+  // technique as simulateClickForWindows above), so whatever currently has
+  // OS keyboard focus in this kiosk's own window -- a WebView-hosted <input>
+  // included, since Windows delivers synthetic key events the same as real
+  // ones -- receives the paste exactly like a real user pressing Ctrl+V
+  // right after the clipboard was set would. Caller is expected to have
+  // already called Clipboard.setData with the text to send.
+  Future<bool> simulatePasteForWindows() async {
+    try {
+      const command = '''
+Add-Type -TypeDefinition @'
+using System.Runtime.InteropServices;
+public class SignageXKeyInput {
+    [DllImport("user32.dll")]
+    public static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, System.UIntPtr dwExtraInfo);
+}
+'@ -ErrorAction SilentlyContinue
+[SignageXKeyInput]::keybd_event(0x11, 0, 0, [System.UIntPtr]::Zero)
+[SignageXKeyInput]::keybd_event(0x56, 0, 0, [System.UIntPtr]::Zero)
+[SignageXKeyInput]::keybd_event(0x56, 0, 2, [System.UIntPtr]::Zero)
+[SignageXKeyInput]::keybd_event(0x11, 0, 2, [System.UIntPtr]::Zero)
+''';
+      final result = await Process.run('powershell', ['-Command', command]);
+      if (result.exitCode != 0) {
+        print('Error simulating paste: ${result.stderr}');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      print('An error occurred: $e');
+      return false;
+    }
+  }
 }

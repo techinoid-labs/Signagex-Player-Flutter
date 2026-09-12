@@ -29,6 +29,7 @@ import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/utils/cache_path_utils.dart';
 import 'package:digital_signage/utils/connectivity_utils.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
+import 'package:digital_signage/utils/interactivity_hit_test.dart';
 import 'package:digital_signage/utils/time_range_utils.dart';
 import 'package:digital_signage/utils/url_encoding_utils.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
@@ -400,9 +401,15 @@ class MqttViewModel extends ChangeNotifier {
     // port 53, so the check was testing reachability to the wrong thing.
     // This checks reachability to what the app actually needs -- its own
     // backend host, on the same port its API calls already use.
+    // W17: drain any proof-of-play reports that failed to send earlier --
+    // once at startup (in case the app was closed/crashed with reports still
+    // queued) and again every time the stream below reports connectivity
+    // restored.
+    unawaited(retryQueuedAdProofOfPlay());
     hostReachabilityStream(apiHost, 443).listen((hasConnection) async {
 
       if (hasConnection) {
+        unawaited(retryQueuedAdProofOfPlay());
         print("this is data $storedJsonObj");
 
         if (storedJsonObj["action"] == "publish_playlist") {
@@ -2033,12 +2040,39 @@ EOF
     }
   }
 
+  // W17: reportAdProofOfPlay's catch block used to just print and drop the
+  // report on any HTTP/network error -- a slot that failed to report during
+  // a network blip was simply never recorded, with nothing to ever retry
+  // it. This persists a failed report (SharedPreferences, capped size, one
+  // entry per dedupKey so repeated failures for the same slot don't pile
+  // up duplicates) and drains it opportunistically: on connectivity
+  // restore (_monitorConnectivity's own reachability listener already
+  // fires exactly when this becomes worth retrying) and once at startup.
+  //
+  // What this does NOT establish: proof the server actually recorded a
+  // given report exactly once. postData treats any non-throwing response as
+  // success with no receipt/idempotency key echoed back, so if a request
+  // reached the server and it failed only on the response round-trip (e.g.
+  // the connection dropped after the server committed it), a queued retry
+  // could cause a real server-side duplicate. That needs a backend-side
+  // idempotency contract this player can't unilaterally create.
+  static const String _kAdProofOfPlayQueueKey = 'ad_proof_of_play_retry_queue';
+  static const int _kMaxQueuedAdProofOfPlay = 50;
+
   Future<void> reportAdProofOfPlay(AdProofOfPlayRequest request) async {
     final url = '$baseurl$adCampaignProofOfPlayPath';
     if (playerCode.isEmpty) {
       print('[AdPoP] Skipped: player_code is empty (POST $url)');
       return;
     }
+    final sent = await _postAdProofOfPlay(request);
+    if (!sent) {
+      await _enqueueFailedAdProofOfPlay(request);
+    }
+  }
+
+  Future<bool> _postAdProofOfPlay(AdProofOfPlayRequest request) async {
+    final url = '$baseurl$adCampaignProofOfPlayPath';
     try {
       final body = request.toJson();
       print('[AdPoP] POST $url');
@@ -2050,9 +2084,87 @@ EOF
       );
       print('[AdPoP] Response: $response');
       print('[AdPoP] Report sent successfully');
+      return true;
     } catch (e, st) {
       print('[AdPoP] HTTP/network error: $e');
       print('[AdPoP] Stack: $st');
+      return false;
+    }
+  }
+
+  Future<void> _enqueueFailedAdProofOfPlay(AdProofOfPlayRequest request) async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final raw = prefs.getStringList(_kAdProofOfPlayQueueKey) ?? [];
+      final queue = raw
+          .map((e) {
+            try {
+              return AdProofOfPlayRequest.fromJson(
+                  jsonDecode(e) as Map<String, dynamic>);
+            } catch (_) {
+              return null;
+            }
+          })
+          .whereType<AdProofOfPlayRequest>()
+          .toList();
+      queue.removeWhere((q) => q.dedupKey == request.dedupKey);
+      queue.add(request);
+      // Bounded, oldest-dropped-first -- this is best-effort delivery, not a
+      // durable audit log; an unbounded queue on a device that's offline for
+      // a long stretch would otherwise grow forever.
+      while (queue.length > _kMaxQueuedAdProofOfPlay) {
+        queue.removeAt(0);
+      }
+      await prefs.setStringList(
+        _kAdProofOfPlayQueueKey,
+        queue.map((q) => jsonEncode(q.toJson())).toList(),
+      );
+      print('[AdPoP] Queued for retry (queue size=${queue.length}): '
+          '${request.dedupKey}');
+    } catch (e) {
+      print('[AdPoP] Failed to persist retry queue entry: $e');
+    }
+  }
+
+  /// Drains the persisted proof-of-play retry queue -- called on
+  /// connectivity restore and once at startup. Each entry is attempted at
+  /// most once per call; a still-failing entry stays queued for the next
+  /// call instead of being retried in a tight loop against a network that
+  /// just proved it's still down.
+  Future<void> retryQueuedAdProofOfPlay() async {
+    List<String> raw;
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      raw = prefs.getStringList(_kAdProofOfPlayQueueKey) ?? [];
+    } catch (e) {
+      print('[AdPoP] retryQueuedAdProofOfPlay: failed to read queue: $e');
+      return;
+    }
+    if (raw.isEmpty) return;
+
+    print('[AdPoP] Retrying ${raw.length} queued proof-of-play report(s)');
+    final stillFailed = <String>[];
+    for (final entry in raw) {
+      AdProofOfPlayRequest? request;
+      try {
+        request =
+            AdProofOfPlayRequest.fromJson(jsonDecode(entry) as Map<String, dynamic>);
+      } catch (_) {
+        continue; // corrupt entry -- drop it, nothing to retry
+      }
+      final sent = await _postAdProofOfPlay(request);
+      if (!sent) stillFailed.add(entry);
+    }
+
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      if (stillFailed.isEmpty) {
+        await prefs.remove(_kAdProofOfPlayQueueKey);
+      } else {
+        await prefs.setStringList(_kAdProofOfPlayQueueKey, stillFailed);
+      }
+    } catch (e) {
+      print('[AdPoP] retryQueuedAdProofOfPlay: failed to save queue: $e');
     }
   }
 
@@ -2356,27 +2468,125 @@ EOF
   void setTapPosition(double x, double y) {
     tapX = x;
     tapY = y;
-    // if(tapX==_interactivityModel!.data.interactivity[].regionX ||  tapY==_interactivityModel!.data.interactivity[].regionY){
-    // print("i am in intractivity by region");
-
-    // }
     notifyListeners();
+    // W22: the region hit-test was entirely commented out -- a configured
+    // hotspot could never match a tap at all, regardless of coordinates.
+    _matchAndFireInteractivity(x: x, y: y);
   }
 
   void getKey(String keydata) {
     _key = keydata;
     notifyListeners();
-    // Check if any key in the interactivity list matches _key (case-insensitive)
-    bool keyFound = _interactivityModel?.data.interactivity.any(
-            (interactivity) => interactivity.keyPress
-                .any((key) => key.toUpperCase() == _key!.toUpperCase())) ??
-        false;
-    print("this is key data $keydata");
-    if (keyFound) {
-      print("I am in interactivity by key");
-    } else {
-      print("Key not found in interactivity");
+    // W22: matching was logged ("I am in interactivity by key") but never
+    // actually dispatched the configured trigger(s).
+    _matchAndFireInteractivity(key: keydata);
+  }
+
+  double? _asDouble(dynamic v) {
+    if (v == null) return null;
+    if (v is num) return v.toDouble();
+    if (v is String) return double.tryParse(v);
+    return null;
+  }
+
+  // W22: content shown on top of the current campaign in response to a
+  // matched hotspot tap or key press, for the firing Trigger's own
+  // configured duration. Only ever the FIRST Content entry of the FIRST matching
+  // trigger -- a Trigger can carry multiple Content items and/or nested
+  // Zone/MediaItem compositions (Content.zones), but resolving those fully
+  // would mean re-implementing this app's whole zone/media rendering
+  // pipeline a second time against a completely separate, much thinner
+  // model (intractivity_model.dart's own MediaItem/Settings, hidden on
+  // import specifically because they don't match compaign_model.dart's
+  // richer ones). A single flat image/video Content -- by far the common
+  // case for a hotspot popup/promo -- is what this actually supports.
+  //
+  // Also unsupported, confirmed rather than assumed: Trigger.namedRegion
+  // (the CMS's way of saying "show this inside a specific zone", not
+  // full-screen) can't be resolved at all -- CampaignZone (compaign_model.
+  // dart) has no name field anywhere, so there is no data in this app that
+  // maps a name back to on-screen zone bounds. Every trigger this fires
+  // shows full-screen, regardless of namedRegion.
+  Content? _activeInteractivityContent;
+  Content? get activeInteractivityContent => _activeInteractivityContent;
+  Timer? _interactivityOverlayTimer;
+
+  void _matchAndFireInteractivity({
+    double? x,
+    double? y,
+    String? key,
+  }) {
+    final list = _interactivityModel?.data.interactivity;
+    if (list == null || list.isEmpty) return;
+
+    for (final interactivity in list) {
+      // pause is the one reliable, fully-modeled on/off gate available here.
+      // startTime/endTime/startDate/endDate are untyped (dynamic) and
+      // InteractivityDays only ever parses "monday" (a pre-existing gap in
+      // this model, not something introduced or fixed here) -- not safe to
+      // evaluate blindly, so alwaysPlay/day/time scheduling for
+      // interactivity is intentionally NOT enforced here beyond `pause`.
+      if (interactivity.pause) continue;
+
+      bool matched;
+      if (key != null) {
+        matched = keyMatches(interactivity.keyPress, key);
+      } else if (x != null && y != null) {
+        if (interactivity.anyRegion == true) {
+          matched = true;
+        } else {
+          final rx = _asDouble(interactivity.regionX);
+          final ry = _asDouble(interactivity.regionY);
+          final rw = _asDouble(interactivity.regionWidth);
+          final rh = _asDouble(interactivity.regionHeight);
+          matched = rx != null &&
+              ry != null &&
+              rw != null &&
+              rh != null &&
+              isPointInRegion(
+                  x: x,
+                  y: y,
+                  regionX: rx,
+                  regionY: ry,
+                  regionWidth: rw,
+                  regionHeight: rh);
+        }
+      } else {
+        matched = false;
+      }
+      if (!matched) continue;
+
+      print('[Interactivity] Matched "${interactivity.name}" '
+          '(${interactivity.triggers.length} trigger(s))');
+      for (final trigger in interactivity.triggers) {
+        _fireInteractivityTrigger(trigger);
+      }
+      return; // first match wins -- matches getKey's prior single-match intent
     }
+  }
+
+  void _fireInteractivityTrigger(Trigger trigger) {
+    if (trigger.content.isEmpty) {
+      print('[Interactivity] Trigger has no content -- nothing to show');
+      return;
+    }
+    final content = trigger.content.first;
+    final mediaType = content.mediaType.toLowerCase();
+    if (mediaType.startsWith('video')) {
+      // Not implemented -- see the class doc above _activeInteractivityContent.
+      print('[Interactivity] Trigger content is video ($mediaType) -- '
+          'video interactivity overlays are not supported, skipping');
+      return;
+    }
+    _interactivityOverlayTimer?.cancel();
+    _activeInteractivityContent = content;
+    notifyListeners();
+    final durationSeconds = trigger.duration > 0 ? trigger.duration : 10;
+    _interactivityOverlayTimer =
+        Timer(Duration(seconds: durationSeconds), () {
+      _activeInteractivityContent = null;
+      notifyListeners();
+    });
   }
 
   // Keys that mean "this payload carries Player Configuration settings",
@@ -2609,8 +2819,16 @@ EOF
         return;
       case "send_text":
         {
+          // W22: previously only wrote the clipboard -- nothing ever
+          // actually typed/pasted it anywhere, so remote text entry never
+          // reached a real input regardless of what had focus.
           final text = (jsonObj["message"] ?? "").toString();
-          if (text.isNotEmpty) Clipboard.setData(ClipboardData(text: text));
+          if (text.isNotEmpty) {
+            await Clipboard.setData(ClipboardData(text: text));
+            if (Platform.isWindows) {
+              await deviceSettings.simulatePasteForWindows();
+            }
+          }
         }
         return;
       case "click":
@@ -3532,6 +3750,7 @@ EOF
     _timerOfCampaign?.cancel();
     _timer?.cancel();
     _pairingPollTimer?.cancel();
+    _interactivityOverlayTimer?.cancel();
     _stopPeriodicReporting();
     // W03: releases the MQTT updates subscription too, not just this
     // view model's own timers.
