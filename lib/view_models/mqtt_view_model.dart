@@ -3789,6 +3789,14 @@ EOF
   }
 
   /// Check if restrictions allow the campaign/media to play
+  ///
+  /// Every decision here previously only went through print() -- invisible
+  /// in a release-mode Windows exe (no console), confirmed by a real device
+  /// debug log from a session where a restriction had been configured: zero
+  /// lines from this function anywhere in it. _debugLog goes to the actual
+  /// persisted signagex_debug.log file instead, so the next report of
+  /// "restrictions aren't working" has real evidence instead of another
+  /// unlogged black box.
   bool checkRestrictions(List<Restriction>? restrictions) {
     const String reset = '\x1B[0m';
     const String red = '\x1B[31m';
@@ -3798,6 +3806,7 @@ EOF
 
     if (restrictions == null || restrictions.isEmpty) {
       print('$yellow⚠️  RESTRICTION: No restrictions provided → Allowed$reset');
+      _debugLog('checkRestrictions: no restrictions provided -> true');
       return true; // No restrictions means allowed
     }
 
@@ -3813,6 +3822,8 @@ EOF
           restriction.values == null) {
         print(
             '$yellow⚠️  RESTRICTION: Skipping invalid restriction (missing type/operator/values)$reset');
+        _debugLog('checkRestrictions: skipping invalid restriction '
+            '(type=${restriction.type} operator=${restriction.operator} values=${restriction.values})');
         continue; // Skip invalid restrictions
       }
 
@@ -3828,7 +3839,13 @@ EOF
         restrictionPass = true;
         print(
             "$yellow⚠️  RESTRICTION: Type '${restriction.type}' is not date/time → Treating as always play$reset");
+        _debugLog(
+            "checkRestrictions: type '${restriction.type}' is not date/time -> treated as pass");
       }
+
+      _debugLog('checkRestrictions: type=${restriction.type} '
+          'operator=${restriction.operator} values=${restriction.values} '
+          'now=$now -> ${restrictionPass ? "PASS" : "FAIL"}');
 
       // All restrictions must pass (AND logic)
       if (!restrictionPass) {
@@ -3847,6 +3864,7 @@ EOF
     } else {
       print('$red❌ RESTRICTION: At least one restriction FAILED$reset');
     }
+    _debugLog('checkRestrictions: final result -> $allRestrictionsPass');
 
     return allRestrictionsPass;
   }

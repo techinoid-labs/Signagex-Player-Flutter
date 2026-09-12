@@ -389,15 +389,39 @@ class _CampaignViewState extends State<CampaignView> {
 
     bool campaignCanPlay = false;
 
+    // This whole block's decision (and checkRestrictions' own internal
+    // pass/fail reasoning) previously only ever went through print(), which
+    // a release-mode Windows exe has no console for at all (confirmed: a
+    // real device debug log from a session where a restriction was added
+    // showed zero lines from any of this, anywhere) -- making "did the
+    // configured restriction ever actually get evaluated, and why"
+    // completely unanswerable after the fact. _debugLog goes to the
+    // persisted signagex_debug.log file instead.
+    _debugLog(
+        'campaignId=${campaign.campaignId} alwaysPlay=${campaignSchedule?.alwaysPlay} '
+        'restrictionsCount=${campaignSchedule?.restrictions?.length ?? 0}');
     if (campaignSchedule?.alwaysPlay ?? false) {
       campaignCanPlay = true;
       print('$green✅ CAMPAIGN: alwaysPlay = true → Campaign can play$reset');
+      // alwaysPlay short-circuits past restrictions entirely, by design --
+      // any configured restriction on a campaign that also has alwaysPlay
+      // still set has no effect at all. If that combination isn't supposed
+      // to be possible, it needs fixing on the CMS/backend side; the player
+      // can't tell "alwaysPlay defaulted true and was never turned off when
+      // a restriction was added" apart from "alwaysPlay is genuinely meant
+      // to override restrictions" -- both look identical in this payload.
+      _debugLog(
+          'campaignId=${campaign.campaignId} alwaysPlay=true -- restrictions '
+          '(if any: ${campaignSchedule?.restrictions?.length ?? 0}) are NOT evaluated');
     } else {
       final restrictions = campaignSchedule?.restrictions;
       if (restrictions != null && restrictions.isNotEmpty) {
         print(
             '$yellow🔍 CAMPAIGN: Checking ${restrictions.length} restriction(s)...$reset');
         campaignCanPlay = mqttViewModel.checkRestrictions(restrictions);
+        _debugLog(
+            'campaignId=${campaign.campaignId} checkRestrictions -> $campaignCanPlay '
+            '(${restrictions.map((r) => "${r.type}/${r.operator}/${r.values}").join(", ")})');
         if (campaignCanPlay) {
           print(
               '$green✅ CAMPAIGN: Restrictions PASSED → Campaign can play$reset');
@@ -407,6 +431,9 @@ class _CampaignViewState extends State<CampaignView> {
         }
       } else {
         print('$yellow⚠️  CAMPAIGN: No restrictions configured$reset');
+        _debugLog(
+            'campaignId=${campaign.campaignId} alwaysPlay=false and no restrictions '
+            'configured -- campaignCanPlay=false (Campaign Not Scheduled screen)');
         campaignCanPlay = false;
       }
     }
@@ -1100,12 +1127,21 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         (currentMedia.schedule?.alwaysPlay ?? false)) {
       shouldPlay = true;
       print('$green✅ MEDIA: alwaysPlay = true → Media can play$reset');
+      // Same alwaysPlay-short-circuit as the campaign-level check in
+      // _buildScreen -- any restriction configured on THIS media item, if
+      // schedule/alwaysPlay is null/true, is never evaluated at all.
+      _debugLog(
+          'zone=${widget.zoneId} id=${currentMedia.id} schedule=${currentMedia.schedule == null ? "null" : "alwaysPlay=true"} '
+          '-- restrictions (if any: ${currentMedia.schedule?.restrictions?.length ?? 0}) are NOT evaluated');
     } else {
       final restrictions = currentMedia.schedule?.restrictions;
       if (restrictions != null && restrictions.isNotEmpty) {
         print(
             '$yellow🔍 MEDIA: Checking ${restrictions.length} restriction(s)...$reset');
         shouldPlay = mqttViewModel.checkRestrictions(restrictions);
+        _debugLog(
+            'zone=${widget.zoneId} id=${currentMedia.id} checkRestrictions -> $shouldPlay '
+            '(${restrictions.map((r) => "${r.type}/${r.operator}/${r.values}").join(", ")})');
         if (shouldPlay) {
           print('$green✅ MEDIA: Restrictions PASSED → Media can play$reset');
         } else {
