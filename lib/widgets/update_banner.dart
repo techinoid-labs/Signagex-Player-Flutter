@@ -72,7 +72,7 @@ class _UpdateBannerState extends State<UpdateBanner> {
     }
 
     if (mounted) setState(() => _phase = _BannerPhase.installing);
-    final launched = await _service.runInstallerSilently(path);
+    final launched = await _service.runInstallerSilently(path, info.version);
     // On success the installer is about to close this process (setup.iss's
     // CloseApplications) and relaunch it (RestartApplications) -- nothing
     // left to do here. Only handle the failure case; there's no "installed"
