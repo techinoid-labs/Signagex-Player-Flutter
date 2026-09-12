@@ -1,83 +1,49 @@
 import 'dart:async';
-import 'dart:io';
 
-// Root cause of "connected via Ethernet, player still says no network"
-// (reported repeatedly against this same symptom, while the working
-// Android player on the same office network works fine over Ethernet):
-// _monitorConnectivity() previously used InternetConnectionChecker() with
-// no custom configuration, which probes a hardcoded list of well-known
-// third-party addresses (public DNS resolver IPs on port 53) to decide
-// whether "the internet" is reachable at all. Many office/corporate
-// networks route Ethernet through a firewall that allows normal outbound
-// HTTPS to real destinations (including this app's own backend) but blocks
-// arbitrary raw TCP to unrelated external IPs on port 53 -- so the check
-// itself was reachability testing the wrong thing and failing on exactly
-// the kind of network this player is meant to run on, unrelated to
-// wifi/ethernet as such.
+import 'package:connectivity_plus/connectivity_plus.dart';
+
+// First attempt at this bug replaced InternetConnectionChecker's probe of
+// third-party DNS-resolver IPs with a raw TCP connect to this app's own
+// backend host:port instead -- reasoning that the specific *target* being
+// probed was the problem. That did NOT fix the report on real hardware: the
+// device still showed "no network" over Ethernet. That ruled out "wrong
+// probe target" as the actual root cause, and pointed at something more
+// fundamental about probing *any* specific external destination at all from
+// this app on this platform (DNS resolution behavior, IPv6/IPv4 preference,
+// or a network-stack quirk specific to raw Socket.connect on Windows --
+// unconfirmed which, and it doesn't matter which, given the fix below).
 //
-// This checks reachability the way it should be checked for THIS app:
-// can it open a live TCP connection to its own backend host:port -- the
-// exact same host:port the MQTT client (mqttBroker:mqttPort from
-// mqtt_client_service.dart) and every API call already depend on. If that
-// succeeds, the app's actual required connectivity is confirmed; if it
-// doesn't, no unrelated third party's reachability is relevant anyway.
+// Checked how signagex-player-android (the reference implementation that
+// works correctly over Ethernet on the same networks) actually decides this,
+// expecting it to reveal the real divergence -- and it does: it NEVER probes
+// any external host. Utils.kt's isInternetAvailable() and NetworkReceiver.kt
+// both ask the OS directly (ConnectivityManager/NetworkCapabilities.
+// NET_CAPABILITY_INTERNET on the active network, or the legacy
+// NetworkInfo.isConnected), with no transport restriction at all -- WiFi,
+// Ethernet, and cellular all satisfy it identically, because the OS itself
+// already validated that network. No raw socket to any specific host is
+// probed anywhere in that codebase for this decision.
+//
+// This mirrors that exactly instead of probing anything: connectivity_plus
+// (already a listed dependency, previously unused) asks Windows the
+// equivalent OS-level question. A result other than "none" means the OS
+// considers some network connected, regardless of which transport it is.
 
-/// Whether a live TCP connection to [host]:[port] can be established within
-/// [timeout].
-Future<bool> canReachHost(
-  String host,
-  int port, {
-  Duration timeout = const Duration(seconds: 5),
-}) async {
-  try {
-    final socket = await Socket.connect(host, port, timeout: timeout);
-    socket.destroy();
-    return true;
-  } catch (_) {
-    return false;
-  }
+bool _isConnected(List<ConnectivityResult> results) {
+  return results.any((r) => r != ConnectivityResult.none);
 }
 
-/// Polls [canReachHost] on [interval] and emits only when reachability
-/// actually flips, mirroring the shape of
-/// InternetConnectionChecker().onStatusChange (a status stream a listener
-/// can just .listen() to) without depending on that package's fixed,
-/// third-party check targets.
-Stream<bool> hostReachabilityStream(
-  String host,
-  int port, {
-  Duration interval = const Duration(seconds: 5),
-  Duration timeout = const Duration(seconds: 5),
-}) {
-  late StreamController<bool> controller;
-  Timer? timer;
-  bool? lastState;
-  var checking = false;
+/// Whether the OS currently reports any connected network -- WiFi, Ethernet,
+/// mobile, or VPN all count equally, exactly matching how the Android
+/// reference implementation treats this (no transport is special-cased).
+Future<bool> isOsNetworkConnected() async {
+  final results = await Connectivity().checkConnectivity();
+  return _isConnected(results);
+}
 
-  Future<void> check() async {
-    if (checking) return;
-    checking = true;
-    try {
-      final reachable = await canReachHost(host, port, timeout: timeout);
-      if (reachable != lastState) {
-        lastState = reachable;
-        controller.add(reachable);
-      }
-    } finally {
-      checking = false;
-    }
-  }
-
-  controller = StreamController<bool>(
-    onListen: () {
-      check();
-      timer = Timer.periodic(interval, (_) => check());
-    },
-    onCancel: () {
-      timer?.cancel();
-      timer = null;
-    },
-  );
-
-  return controller.stream;
+/// Emits the OS-level connectivity state (see [isOsNetworkConnected]) once
+/// immediately and again on every change connectivity_plus reports.
+Stream<bool> osNetworkConnectivityStream() async* {
+  yield await isOsNetworkConnected();
+  yield* Connectivity().onConnectivityChanged.map(_isConnected);
 }

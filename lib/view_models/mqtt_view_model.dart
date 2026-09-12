@@ -390,23 +390,22 @@ class MqttViewModel extends ChangeNotifier {
     await getStoredState();
     await retrieveStoredResponse();
     await loadDeviceInfoFromSharedPreferences();
-    // Was InternetConnectionChecker().onStatusChange, which probes a
-    // hardcoded list of third-party addresses (public DNS resolver IPs on
-    // port 53) to decide whether "the internet" is up at all. Confirmed
-    // root cause of repeated "device connected via Ethernet still says no
-    // network" reports on office networks where the working Android player
-    // connects fine over the same Ethernet: those networks commonly allow
-    // normal outbound HTTPS to real destinations (this app's own backend
-    // included) but block arbitrary raw TCP to unrelated external IPs on
-    // port 53, so the check was testing reachability to the wrong thing.
-    // This checks reachability to what the app actually needs -- its own
-    // backend host, on the same port its API calls already use.
+    // Was InternetConnectionChecker().onStatusChange (probed third-party DNS-
+    // resolver IPs), then briefly a raw TCP connect to this app's own
+    // backend host:port -- neither fixed the repeated "connected via
+    // Ethernet, still says no network" reports. Checked how
+    // signagex-player-android (which works correctly over Ethernet on the
+    // same networks) actually decides this: it never probes any external
+    // host at all, it asks the OS directly (ConnectivityManager/
+    // NetworkCapabilities.NET_CAPABILITY_INTERNET on the active network) and
+    // treats every transport identically. See connectivity_utils.dart's own
+    // doc comment for the full history. This mirrors that exactly.
     // W17: drain any proof-of-play reports that failed to send earlier --
     // once at startup (in case the app was closed/crashed with reports still
     // queued) and again every time the stream below reports connectivity
     // restored.
     unawaited(retryQueuedAdProofOfPlay());
-    hostReachabilityStream(apiHost, 443).listen((hasConnection) async {
+    osNetworkConnectivityStream().listen((hasConnection) async {
 
       if (hasConnection) {
         unawaited(retryQueuedAdProofOfPlay());
