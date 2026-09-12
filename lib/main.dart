@@ -1,4 +1,8 @@
 import 'dart:io';
+// Prefixed: dart:ui re-declares several names (Color, Offset, Size, Rect,
+// TextDirection...) that flutter/material.dart also exports with its own
+// versions -- only PlatformDispatcher is actually needed from here.
+import 'dart:ui' as ui;
 
 import 'package:flutter/foundation.dart' show kDebugMode;
 import 'package:flutter/material.dart';
@@ -32,6 +36,27 @@ class MyHttpOverrides extends HttpOverrides {
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   MediaKit.ensureInitialized();
+  // Confirmed real blind spot while chasing a live "screen stops updating
+  // forever" report: a widget's State got disposed immediately after a
+  // build that created multiple GlobalKey-bearing widgets in the same
+  // frame (campaign_view.dart's shared _globalWebAppKeys registry, used
+  // deliberately so a web app's live WebView can move between the
+  // background-prefetch slot and the visible slot without reloading --
+  // but a GlobalKey used in two places in the same frame is a Flutter
+  // build error, not a silent no-op). Framework build/layout/paint errors
+  // normally only go to FlutterError.dumpErrorToConsole, which -- like
+  // print() -- goes nowhere for a release-mode Windows GUI-subsystem exe.
+  // There was no way to tell "a widget errored and got torn down" apart
+  // from "nothing happened" using only this app's own debugLog calls.
+  FlutterError.onError = (FlutterErrorDetails details) {
+    debug.debugLog('FlutterError',
+        '${details.exceptionAsString()}\n${details.stack}');
+    FlutterError.presentError(details);
+  };
+  ui.PlatformDispatcher.instance.onError = (error, stack) {
+    debug.debugLog('PlatformDispatcher', 'uncaught: $error\n$stack');
+    return false;
+  };
   // Certificate validation is bypassed ONLY in debug builds (e.g. a local dev
   // server with a self-signed cert). Release builds -- production AND staging --
   // must validate certificates; accepting every certificate in a shipped player
