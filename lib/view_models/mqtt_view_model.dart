@@ -13,7 +13,6 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:flutter_phoenix/flutter_phoenix.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:image/image.dart' as img;
-import 'package:internet_connection_checker/internet_connection_checker.dart';
 import 'package:network_info_plus/network_info_plus.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
@@ -28,6 +27,7 @@ import 'package:digital_signage/models/intractivity_model.dart'
     hide MediaItem, Settings;
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/utils/cache_path_utils.dart';
+import 'package:digital_signage/utils/connectivity_utils.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/time_range_utils.dart';
 import 'package:digital_signage/utils/url_encoding_utils.dart';
@@ -389,8 +389,18 @@ class MqttViewModel extends ChangeNotifier {
     await getStoredState();
     await retrieveStoredResponse();
     await loadDeviceInfoFromSharedPreferences();
-    InternetConnectionChecker().onStatusChange.listen((status) async {
-      final hasConnection = status == InternetConnectionStatus.connected;
+    // Was InternetConnectionChecker().onStatusChange, which probes a
+    // hardcoded list of third-party addresses (public DNS resolver IPs on
+    // port 53) to decide whether "the internet" is up at all. Confirmed
+    // root cause of repeated "device connected via Ethernet still says no
+    // network" reports on office networks where the working Android player
+    // connects fine over the same Ethernet: those networks commonly allow
+    // normal outbound HTTPS to real destinations (this app's own backend
+    // included) but block arbitrary raw TCP to unrelated external IPs on
+    // port 53, so the check was testing reachability to the wrong thing.
+    // This checks reachability to what the app actually needs -- its own
+    // backend host, on the same port its API calls already use.
+    hostReachabilityStream(apiHost, 443).listen((hasConnection) async {
 
       if (hasConnection) {
         print("this is data $storedJsonObj");
@@ -2101,7 +2111,7 @@ EOF
 
       globleTopic = _topic;
 
-      // The MQTT socket is normally connected by the InternetConnectionChecker
+      // The MQTT socket is normally connected by the backend-reachability
       // listener in _monitorConnectivity(), but that's an independent async
       // race against this pairing check -- on Windows, getSystemDataForWindows()
       // calls _checkPairingStatus() directly from the constructor path with no

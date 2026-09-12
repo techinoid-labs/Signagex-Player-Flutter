@@ -47,7 +47,6 @@ dependencies:
   shared_preferences: ^2.0.5
   permission_handler:
   connectivity_plus: ^6.0.5
-  internet_connection_checker: ^1.0.0
   # video_player_win's own docs pin against video_player ^2.5.1 -- bumping
   # to 2.9.2 (done incidentally while fixing an unrelated flutter_html build
   # error) wasn't needed for that fix (.network() still compiles fine on
