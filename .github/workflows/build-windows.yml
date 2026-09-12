@@ -18,9 +18,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # See the matching note on the package job's flutter-action step below --
+      # bumped from 3.24.5 to the actual current stable release after CI
+      # failed with a CMake "Visual Studio 16 2019 could not find any
+      # instance" error, caused by the 2-year-old pin's VS-version detection
+      # falling behind windows-latest's actual current Visual Studio version.
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
+          flutter-version: '3.47.4'
 
       # W25: see the matching note in ci.yml -- this is a warning, not a hard
       # failure, until an initial pubspec.lock has actually been generated
@@ -49,9 +54,20 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Was 3.24.5 (Sept 2024) -- this job's own CI run failed with "CMake
+      # Error at CMakeLists.txt:3 (project): Generator Visual Studio 16 2019
+      # could not find any instance of Visual Studio." flutter_tools' Visual
+      # Studio detection needs periodic updates for each new VS release
+      # (Flutter tracks this as ongoing work -- e.g. flutter/flutter#176399,
+      # "Add Support for VisualStudio 2026"); the 2-year-old pin had fallen
+      # behind whatever VS version windows-latest actually runs now and
+      # requested a generator that isn't there. Bumped to the actual current
+      # stable release (verified directly against flutter_infra_release's
+      # own releases_windows.json, not guessed), which is necessarily built
+      # and tested against today's supported CI images.
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
+          flutter-version: '3.47.4'
 
       - name: Check whether pubspec.lock is tracked
         shell: bash

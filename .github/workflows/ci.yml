@@ -20,9 +20,21 @@ jobs:
       # change between two runs of identical source with nobody deciding
       # that on purpose. Bump this deliberately (with a commit) when the
       # team is ready to move, never let it drift silently.
+      #
+      # Was 3.24.5 (Sept 2024) -- CI failed on windows-latest with "CMake
+      # Error ... Generator Visual Studio 16 2019 could not find any
+      # instance of Visual Studio." flutter_tools' Visual-Studio-version
+      # detection needs periodic updates to recognize each new VS release
+      # (Flutter tracks this as ongoing work -- e.g. flutter/flutter#176399,
+      # "Add Support for VisualStudio 2026"); a 2-year-old pin had fallen
+      # behind whatever VS version windows-latest actually runs today and
+      # was requesting the wrong (unavailable) generator. Bumped to the
+      # actual current stable release (flutter_infra_release's own
+      # releases_windows.json, checked directly) so the pinned toolchain
+      # matches an SDK built and tested against today's supported CI images.
       - uses: subosito/flutter-action@v2
         with:
-          flutter-version: '3.24.5'
+          flutter-version: '3.47.4'
 
       # W25: pubspec.lock should be committed (see .gitignore) so dependency
       # resolution is byte-for-byte reproducible between CI runs and dev
