@@ -406,6 +406,17 @@ class MqttViewModel extends ChangeNotifier {
     // restored.
     unawaited(retryQueuedAdProofOfPlay());
     osNetworkConnectivityStream().listen((hasConnection) async {
+      // Confirmed real-world symptom this is meant to catch: a
+      // publish_campaign message can be received and parsed correctly, but
+      // the actual screen doesn't switch to it for several minutes -- with
+      // zero prior evidence of whether this connectivity listener is
+      // repeatedly firing and re-entering this branch during that window
+      // (which would race against/override the state _startDownloadingFor*
+      // just set). storedJsonObj["action"] and _state show exactly what
+      // this listener would do if it fires again right now.
+      _debugLog(
+          'osNetworkConnectivityStream: hasConnection=$hasConnection '
+          'storedJsonObjAction=${storedJsonObj["action"]} currentState=$_state');
 
       if (hasConnection) {
         unawaited(retryQueuedAdProofOfPlay());
@@ -1567,7 +1578,22 @@ EOF
     } else if (hasPlayableCampaignMedia) {
       // W07: a newer publication has since started -- this one is stale,
       // don't let it commit state for content that's no longer current.
-      if (myGeneration != _contentGeneration) return;
+      if (myGeneration != _contentGeneration) {
+        // Confirmed real-world symptom: a web-app-only campaign was
+        // received and parsed correctly, but the screen didn't switch to
+        // it for 5+ minutes with zero prior evidence of why. This guard is
+        // the one place a legitimate, fresh publish_campaign's own state-
+        // commit gets silently dropped -- including by
+        // _monitorConnectivity's connectivity-restore path, which ALSO
+        // calls this same function (using possibly-stale storedJsonObj)
+        // and would bump _contentGeneration out from under this call if it
+        // fires concurrently. If this line shows up right after a
+        // publish_campaign that never displays, that race is confirmed.
+        _debugLog(
+            'campaign download: myGeneration=$myGeneration != current='
+            '$_contentGeneration -- discarding this campaign\'s own state commit');
+        return;
+      }
       // W08: don't let a stale in-flight publication resume playback out
       // from under an active stop command -- see the matching guard in
       // the playlist download-completion path above.
@@ -1575,6 +1601,8 @@ EOF
       print(
           'No downloadable files; showing campaign with web/inline media '
           '(${campaigns.length} campaign(s)).');
+      _debugLog('campaign download: setting campaignScreen '
+          '(${campaigns.length} campaign(s), generation=$myGeneration)');
       _selectCompositionCampaignIndexIfPresent();
       _state = MqttState.campaignScreen;
       notifyListeners();
