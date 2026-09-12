@@ -10,6 +10,7 @@
 // contents via GDI BitBlt -- the same technique most Windows screen-capture
 // tools use -- so Remote View reflects whatever is actually on screen.
 import 'dart:ffi';
+import 'dart:typed_data';
 
 import 'package:ffi/ffi.dart';
 import 'package:image/image.dart' as img;
@@ -108,7 +109,24 @@ img.Image? _readBitmap(int hdcMem, int hBitmap, int width, int height) {
     // frame.
     if (linesCopied != height) return null;
 
-    final bytes = pixels.asTypedList(bufferSize);
+    // CONFIRMED CRASH CAUSE (watchdog.log: repeated STATUS_ACCESS_VIOLATION
+    // 0xC0000005 exits, roughly every 9-19 minutes -- this runs on every
+    // periodic screenshot, ~15-25s apart): Pointer<Uint8>.asTypedList()
+    // returns a zero-copy VIEW backed directly by this `pixels` calloc
+    // allocation, not a copy. The old code handed that view's ByteBuffer
+    // straight to Image.fromBytes and then freed `pixels` in the finally
+    // block below -- regardless of whether Image.fromBytes happens to copy
+    // internally (not guaranteed, and not something this can rely on across
+    // package versions), anything that reads the image's pixel data after
+    // this function returns is reading through a pointer into memory this
+    // function just freed. calloc.free doesn't corrupt memory immediately;
+    // it just marks it reusable, so this "worked" until something else
+    // reused or unmapped that page -- exactly the intermittent, only-after-
+    // a-while pattern in watchdog.log, not a crash on every single capture.
+    // Uint8List.fromList allocates real Dart-GC-managed memory and copies
+    // into it here, before the finally block frees the native buffer, so
+    // nothing downstream can ever hold a dangling reference to freed memory.
+    final bytes = Uint8List.fromList(pixels.asTypedList(bufferSize));
     return img.Image.fromBytes(
       width: width,
       height: height,
