@@ -2029,17 +2029,39 @@ List<Campaign> _dedupeCampaignsById(List<Campaign> campaigns) {
   return byId.values.toList();
 }
 
+// W05: max nesting depth as defense-in-depth alongside the visited-ID set
+// below -- if a cycle somehow isn't caught by ID (e.g. a linked campaign
+// resolved by name/single-composition-fallback rather than a stable id),
+// this still guarantees termination.
+const int kMaxCompositionNestingDepth = 8;
+
 MediaItem _mergeCompositionInMediaItem(
   MediaItem media,
-  List<Campaign> compositions,
-) {
+  List<Campaign> compositions, {
+  Set<String> visitedCompositionIds = const {},
+  int depth = 0,
+}) {
   var result = media;
   final type = (media.mediaType ?? '').toLowerCase();
+
+  if (depth >= kMaxCompositionNestingDepth) {
+    return result;
+  }
 
   if (type == 'composition') {
     var linked = findLinkedCompositionCampaign(result, compositions);
     if (linked == null && compositions.length == 1) {
       linked = compositions.first;
+    }
+    // W05: a composition whose linked campaign has already been expanded
+    // earlier in this same chain is a cycle -- a direct self-reference
+    // (A's own composition media links back to A) or a longer one
+    // (A -> B -> A). Stop expanding here instead of recursing into the
+    // same zones again, which previously had no bound and threw
+    // StackOverflowError on exactly this input.
+    final linkedId = linked?.campaignId;
+    if (linkedId != null && visitedCompositionIds.contains(linkedId)) {
+      return result;
     }
     final chosen =
         MediaItem._pickCompositionZones(result.zones, linked?.zones);
@@ -2053,12 +2075,27 @@ MediaItem _mergeCompositionInMediaItem(
         zones: chosen,
       );
     }
+    if (linkedId != null) {
+      // A new set, not a mutation -- two independent branches of the same
+      // tree (e.g. two different zones both legitimately linking to the
+      // same composition) must not affect each other's visited history.
+      visitedCompositionIds = {...visitedCompositionIds, linkedId};
+    }
   } else if (type == 'content') {
     final hasLinkHint =
         (result.settings?.compositionCampaignId ?? '').trim().isNotEmpty;
     if (hasLinkHint) {
       final linked = findLinkedCompositionCampaign(result, compositions);
-      if (linked != null && (linked.zones?.isNotEmpty ?? false)) {
+      // W05: same cycle guard as the 'composition' branch above -- this
+      // branch links to another campaign's zones just as directly (via a
+      // compositionCampaignId hint instead of the media's own type), so it
+      // needs the same protection.
+      final linkedId = linked?.campaignId;
+      final alreadyVisited =
+          linkedId != null && visitedCompositionIds.contains(linkedId);
+      if (linked != null &&
+          !alreadyVisited &&
+          (linked.zones?.isNotEmpty ?? false)) {
         final existing = result.settings;
         result = MediaItem(
           id: result.id,
@@ -2077,13 +2114,21 @@ MediaItem _mergeCompositionInMediaItem(
           mediaUrl: null,
           zones: linked.zones,
         );
+        if (linkedId != null) {
+          visitedCompositionIds = {...visitedCompositionIds, linkedId};
+        }
       }
     }
   }
 
   final nested = result.zones;
   if (nested != null && nested.isNotEmpty) {
-    final mergedNested = _mergeCompositionInZoneList(nested, compositions);
+    final mergedNested = _mergeCompositionInZoneList(
+      nested,
+      compositions,
+      visitedCompositionIds: visitedCompositionIds,
+      depth: depth + 1,
+    );
     if (mergedNested != nested) {
       result = MediaItem(
         id: result.id,
@@ -2100,15 +2145,23 @@ MediaItem _mergeCompositionInMediaItem(
 
 List<CampaignZone> _mergeCompositionInZoneList(
   List<CampaignZone> zones,
-  List<Campaign> compositions,
-) {
+  List<Campaign> compositions, {
+  Set<String> visitedCompositionIds = const {},
+  int depth = 0,
+}) {
   var changed = false;
   final updated = zones.map((zone) {
     final items = zone.mediaItems;
     if (items == null) return zone;
 
-    final mergedItems =
-        items.map((m) => _mergeCompositionInMediaItem(m, compositions)).toList();
+    final mergedItems = items
+        .map((m) => _mergeCompositionInMediaItem(
+              m,
+              compositions,
+              visitedCompositionIds: visitedCompositionIds,
+              depth: depth,
+            ))
+        .toList();
 
     var zoneChanged = false;
     if (mergedItems.length != items.length) {

@@ -15,12 +15,28 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # W25: pinned to a specific release, not the moving "stable" channel --
+      # a channel pin means the exact Flutter/Dart toolchain a build uses can
+      # change between two runs of identical source with nobody deciding
+      # that on purpose. Bump this deliberately (with a commit) when the
+      # team is ready to move, never let it drift silently.
       - uses: subosito/flutter-action@v2
         with:
-          channel: stable
+          flutter-version: '3.24.5'
+
+      # W25: pubspec.lock must be committed (see .gitignore) so dependency
+      # resolution is byte-for-byte reproducible between CI runs and dev
+      # machines -- "rebuilding the same source" must mean the same
+      # dependency versions too, not just the same pubspec.yaml constraints.
+      - name: Verify pubspec.lock is tracked
+        run: |
+          if [ ! -f pubspec.lock ]; then
+            echo "::error::pubspec.lock is missing. Run 'flutter pub get' locally and commit the generated pubspec.lock -- dependency resolution must be reproducible, not re-resolved fresh on every CI run."
+            exit 1
+          fi
 
       - name: Install dependencies
-        run: flutter pub get
+        run: flutter pub get --enforce-lockfile
 
       # Fail the build only on ERRORS (compile-breaking issues), not on the
       # existing warning/info lint debt -- otherwise this would be red from day

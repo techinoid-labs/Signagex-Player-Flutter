@@ -33,5 +33,15 @@ void main() {
       expect(isNewerBuild(' v12 ', ' v13 '), isTrue);
       expect(isNewerBuild('v12', '12'), isFalse); // 12 == 12, not newer
     });
+
+    test('a hex-looking build id is rejected, not silently parsed as hex', () {
+      // The exact reproduced counterexample (03-audit-check-results.txt):
+      // Dart's int.tryParse with no explicit radix auto-detects a "0x"
+      // prefix and returns 16 for "0x10" -- the build-id grammar this
+      // project actually uses (CI always writes a plain decimal run
+      // number) must never accept that.
+      expect(isNewerBuild('v9', 'v0x10'), isFalse);
+      expect(isNewerBuild('v0x10', 'v17'), isFalse);
+    });
   });
 }

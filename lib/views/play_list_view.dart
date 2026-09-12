@@ -180,98 +180,137 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     _initializeNextMedia();
   }
 
+  // W14: without this, a rebuild that hands this same State object a
+  // different (e.g. shorter) mediaPaths list left _currentIndex and the
+  // running timer pointed at the *old* list -- the next timer/video-end
+  // callback could then index a since-shrunk widget.mediaPaths out of
+  // range, or simply keep advancing through media that's no longer part
+  // of the current playlist at all.
+  @override
+  void didUpdateWidget(covariant VideoPlaylistWidget oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (identical(oldWidget.mediaPaths, widget.mediaPaths)) return;
+
+    _timer.cancel();
+    _nextController?.pause();
+    _nextController?.dispose();
+    _nextController = null;
+    _currentIndex = 0;
+    if (widget.playlist.playback!.order == "shuffle") {
+      widget.mediaPaths.shuffle();
+    }
+    _initializeNextMedia();
+  }
+
+  // W04: pure eligibility check, shared by the initial load and the
+  // bounded re-scan below -- extracted from what used to be inline in
+  // _initializeNextMedia.
+  bool _isMediaEligibleNow(Media media) {
+    if (media.schedule.alwaysPlay) return true;
+
+    final now = DateTime.now();
+    final startDate = media.schedule.period!.date.start;
+    final endDate = media.schedule.period!.date.end;
+    final isDateInRange =
+        now.isAfter(startDate) && now.isBefore(endDate.add(const Duration(days: 1)));
+    final isDayAllowed = _isCurrentDayAllowed(media.schedule.period!.days, now);
+
+    final timeFrom = media.schedule.period!.time.from;
+    final timeTo = media.schedule.period!.time.to;
+    final currentTime = DateTime.now();
+    final fromTime = DateTime.now().copyWith(
+      hour: int.parse(timeFrom.split(':')[0]),
+      minute: int.parse(timeFrom.split(':')[1]),
+      second: int.parse(timeFrom.split(':')[2]),
+    );
+    final toTime = DateTime.now().copyWith(
+      hour: int.parse(timeTo.split(':')[0]),
+      minute: int.parse(timeTo.split(':')[1]),
+      second: int.parse(timeTo.split(':')[2]),
+    );
+    final isTimeInRange =
+        currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
+
+    return isDateInRange && isDayAllowed && isTimeInRange;
+  }
+
+  void _loadEligibleMedia(Media media) {
+    final duration = media.settings.duration.toString();
+    // Videos advance via VideoPlayerWidget's onVideoEnd (real playback
+    // completion) -- a CMS duration timer here races that and, when the
+    // configured duration is short/zero, wins first and advances past the
+    // video before it ever paints a frame.
+    if (!_isVideoMedia(media)) {
+      _startMediaLoop(duration);
+    }
+    _loadMedia(media);
+  }
+
   void _onMediaEnd() {
     if (_timer.isActive) _timer.cancel();
-    if (!_isDisposed) {
-      setState(() {
-        if (widget.playlist.playback!.order == "shuffle") {
-          print(".......i am in shuffle .....");
-          _currentIndex = Random().nextInt(widget.mediaPaths.length);
-        } else if (_currentIndex < widget.mediaPaths.length - 1) {
-          _currentIndex++;
-        } else {
-          _currentIndex = 0;
-        }
-        _initializeNextMedia();
-      });
-    }
+    if (_isDisposed) return;
+    final total = widget.mediaPaths.length;
+    if (total == 0) return;
+    setState(() {
+      if (widget.playlist.playback!.order == "shuffle") {
+        _currentIndex = Random().nextInt(total);
+      } else {
+        _currentIndex = (_currentIndex + 1) % total;
+      }
+    });
+    // Bounded scan for the next eligible item happens in
+    // _initializeNextMedia -- never recurse through _onMediaEnd itself.
+    _initializeNextMedia();
   }
 
+  // W04: bounded scan (at most mediaPaths.length candidates, starting at
+  // _currentIndex inclusive) for the next schedule-eligible media item.
+  // This used to advance one step and, when that single candidate was
+  // ineligible, call _onMediaEnd() again directly -- which itself called
+  // straight back into this function, with no bound on how many times
+  // that could happen. If every item in the playlist was ever ineligible
+  // at the same time, that recursion never terminated (worse than the
+  // campaign-rotation version of this same bug, which at least wrapped
+  // once): it spun synchronously forever, starving the UI thread. This
+  // version always returns after at most `total` iterations, and
+  // explicitly schedules a bounded recheck instead of spinning when
+  // nothing qualifies.
   void _initializeNextMedia() {
-    widget.mediaPaths.forEach((media) {
-      print("This is listsssss ${media.mediaUrl}");
-    });
-    if (_currentIndex < widget.mediaPaths.length) {
-      Media nextMedia = widget.mediaPaths[_currentIndex];
-      print("Loading media at index $_currentIndex: ${nextMedia.mediaUrl}");
-      if (nextMedia.schedule.alwaysPlay) {
-        print("Always play is true for media: ${nextMedia.mediaUrl}");
-        String duration = nextMedia.settings.duration.toString();
-        print("Loading duration at index $_currentIndex: $duration");
-        // Videos advance via VideoPlayerWidget's onVideoEnd (real playback
-        // completion) -- a CMS duration timer here races that and, when the
-        // configured duration is short/zero, wins first and advances past
-        // the video before it ever paints a frame.
-        if (!_isVideoMedia(nextMedia)) {
-          _startMediaLoop(duration);
-        }
-        _loadMedia(nextMedia);
+    final total = widget.mediaPaths.length;
+    if (total == 0) return;
+
+    for (var i = 0; i < total; i++) {
+      final idx = (_currentIndex + i) % total;
+      final candidate = widget.mediaPaths[idx];
+      if (_isMediaEligibleNow(candidate)) {
+        _currentIndex = idx;
+        print("Loading media at index $_currentIndex: ${candidate.mediaUrl}");
+        _loadEligibleMedia(candidate);
         return;
       }
-      DateTime now = DateTime.now();
-      print("Current date: $now");
-
-      DateTime startDate = nextMedia.schedule.period!.date.start;
-      DateTime endDate = nextMedia.schedule.period!.date.end;
-      print("Media start date: $startDate");
-      print("Media end date: $endDate");
-
-      bool isDateInRange = now.isAfter(startDate) &&
-          now.isBefore(endDate.add(const Duration(days: 1)));
-      print("Is current date in range: $isDateInRange");
-
-      bool isDayAllowed =
-          _isCurrentDayAllowed(nextMedia.schedule.period!.days, now);
-      print("Is current day allowed: $isDayAllowed");
-
-      final timeFrom = nextMedia.schedule.period!.time.from;
-      final timeTo = nextMedia.schedule.period!.time.to;
-
-      DateTime currentTime = DateTime.now();
-      DateTime fromTime = DateTime.now().copyWith(
-        hour: int.parse(timeFrom.split(':')[0]),
-        minute: int.parse(timeFrom.split(':')[1]),
-        second: int.parse(timeFrom.split(':')[2]),
-      );
-
-      DateTime toTime = DateTime.now().copyWith(
-        hour: int.parse(timeTo.split(':')[0]),
-        minute: int.parse(timeTo.split(':')[1]),
-        second: int.parse(timeTo.split(':')[2]),
-      );
-
-      bool isTimeInRange =
-          currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
-      print("Is current time in range: $isTimeInRange");
-
-      if (isDateInRange && isDayAllowed && isTimeInRange) {
-        String duration = nextMedia.settings.duration.toString();
-        print("Loading duration at index $_currentIndex: $duration");
-        if (!_isVideoMedia(nextMedia)) {
-          _startMediaLoop(duration);
-        }
-        _loadMedia(nextMedia);
-      } else {
-        print("Skipping media not allowed by schedule.");
-        print("Current date, day, or time is not allowed for this media.");
-        _onMediaEnd();
-      }
     }
+
+    print("No playlist media is eligible right now; rechecking in 30s.");
+    Future.delayed(const Duration(seconds: 30), () {
+      if (!_isDisposed) _initializeNextMedia();
+    });
   }
 
-  bool isWebFile(String path) {
-    final webExtensions = ['.html'];
-    return webExtensions.any((ext) => path.endsWith(ext));
+  // W15: this used to only check the URL suffix (".html"), while the
+  // download path (mqtt_view_model.dart) recognizes web content by
+  // mediaType ("web_app_instance"/"text/html") and deliberately keeps the
+  // remote URL instead of downloading it. A web app published without a
+  // literal ".html"-suffixed URL (e.g. an extensionless dashboard URL, or
+  // one with a query string) downloaded fine but then got handed to
+  // ImageWidget instead of the WebView here -- same underlying content,
+  // different (wrong) renderer depending on incidental URL shape. Checking
+  // mediaType first, matching the download side, is the shared classifier;
+  // the suffix check remains only as a fallback for content whose type
+  // field doesn't come through as expected.
+  bool isWebFile(Media media) {
+    final type = media.mediaType.toLowerCase();
+    if (type == 'web_app_instance' || type == 'text/html') return true;
+    return media.mediaUrl.endsWith('.html');
   }
 
   bool _isVideoMedia(Media media) {
@@ -283,7 +322,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     print("[LOG] Loading media: ${nextMedia.mediaUrl}");
     if (_isVideoMedia(nextMedia)) {
       setState(() {});
-    } else if (isWebFile(nextMedia.mediaUrl)) {
+    } else if (isWebFile(nextMedia)) {
       // Ensure you are not reinitializing the WebView if the file is the same
       if (_currentIndex > 0 &&
           widget.mediaPaths[_currentIndex - 1].mediaUrl == nextMedia.mediaUrl) {
@@ -291,20 +330,19 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         return;
       }
     } else {
+      // W13: this used to start a *second* advance timer here, on top of
+      // the one _loadEligibleMedia's call to _startMediaLoop already set
+      // up moments ago -- without cancelling the first, so both eventually
+      // fired _onMediaEnd(), each independently advancing the playlist
+      // (worse than a single stray callback: every advance from here on
+      // compounds, since each _onMediaEnd() call goes through
+      // _initializeNextMedia() -> _loadEligibleMedia() -> _loadMedia()
+      // again, creating yet another extra timer on top of the ones still
+      // pending). The single-media "force transition" via an uncancellable
+      // Future.delayed was a workaround for the same underlying timer
+      // confusion, not a separate necessary behavior -- _startMediaLoop's
+      // timer already fires unconditionally regardless of playlist length.
       print("[LOG] Current media is an image: ${nextMedia.mediaUrl}");
-      int durationSeconds =
-          int.tryParse(nextMedia.settings.duration.toString()) ?? 5;
-
-      // Set a timer for images with a duration
-      _timer = Timer(Duration(seconds: durationSeconds), () {
-        _onMediaEnd();
-      });
-
-      // If the playlist has only one media (image), force the transition after duration
-      if (widget.mediaPaths.length == 1) {
-        Future.delayed(Duration(seconds: durationSeconds), _onMediaEnd);
-      }
-
       setState(() {});
     }
   }
@@ -562,7 +600,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   aspectRatio: getAspectRatio(currentMedia.settings.ratio),
                   transitionType: currentMedia.settings.transition,
                 )
-              : isWebFile(currentMedia.mediaUrl)
+              : isWebFile(currentMedia)
                   ? SizedBox.expand(
                       key: ValueKey(currentMedia.mediaUrl),
                       child: WBViewWidget(

@@ -34,7 +34,9 @@ android/app/release
 **/ios/Flutter/.last_build_id
 **/generated_plugin_registrant.dart
 build/
-pubspec.lock
+# pubspec.lock is intentionally tracked (W25) -- CI and every dev must
+# resolve the exact same dependency versions, not "whatever's newest that
+# matches pubspec.yaml today". Do not re-ignore it.
 .dart_tool/
 .packages
 .packages.generated

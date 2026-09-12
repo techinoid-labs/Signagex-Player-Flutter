@@ -41,6 +41,9 @@ dependencies:
   url_launcher: ^6.1.0
   http: ^1.1.0
   path_provider:
+  # Content-addressed media cache filenames (W02/W09) -- stdlib-grade,
+  # pure-Dart, no native code.
+  crypto: ^3.0.3
   shared_preferences: ^2.0.5
   permission_handler:
   connectivity_plus: ^6.0.5

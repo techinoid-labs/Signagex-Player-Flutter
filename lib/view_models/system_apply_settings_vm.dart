@@ -356,10 +356,18 @@ public class SignageXAudio {
   public static void SetVolume(int percent) {
     Endpoint().SetMasterVolumeLevelScalar(percent / 100f, Guid.Empty);
   }
+  public static void SetMute(bool mute) {
+    Endpoint().SetMute(mute, Guid.Empty);
+  }
 }
 ''';
 
-  Future<void> _setWindowsVolume(int volume) async {
+  // W16: returns success/failure (checked exit code), not just "the
+  // Process.run call itself didn't throw" -- a nonzero exit from the
+  // PowerShell/COM shim (e.g. no default audio endpoint present) used to
+  // be silently swallowed, and the caller recorded the setting as applied
+  // regardless.
+  Future<bool> _setWindowsVolume(int volume) async {
     if (volume < 0) volume = 0;
     if (volume > 100) volume = 100;
 
@@ -371,33 +379,60 @@ public class SignageXAudio {
     print('Error: ${result.stderr}');
     _debugLog(
         'setWindowsVolume($volume): exitCode=${result.exitCode}, stdout=${result.stdout}, stderr=${result.stderr}');
+    return result.exitCode == 0;
   }
 
-  Future<void> changeVolumeForWindows(int volume) async {
+  // W16: real mute via the audio endpoint's own SetMute, not "set volume to
+  // 0" -- the old approach made mute and volume the *same* underlying
+  // property (volume level), so a settings payload with both mute_audio
+  // and volume raced: whichever of muteVolumeForWindows/
+  // changeVolumeForWindows's un-awaited PowerShell process happened to
+  // finish last "won", and unmuting always landed on a hardcoded 50%
+  // instead of whatever level was actually configured before muting. A
+  // real mute flag is an independent property from volume level, so
+  // mute+volume in the same payload can no longer race at all, and
+  // unmuting restores the volume that was already in effect.
+  Future<bool> _setWindowsMute(bool mute) async {
+    final script = "\$def = @'\n$_audioComShim\n'@\n"
+        "Add-Type -TypeDefinition \$def -Language CSharp -ErrorAction Stop\n"
+        "[SignageXAudio]::SetMute(\$${mute ? 'true' : 'false'})";
+    final result = await Process.run('powershell', ['-Command', script]);
+    _debugLog(
+        'setWindowsMute($mute): exitCode=${result.exitCode}, stdout=${result.stdout}, stderr=${result.stderr}');
+    return result.exitCode == 0;
+  }
+
+  Future<bool> changeVolumeForWindows(int volume) async {
     try {
-      await _setWindowsVolume(volume);
-      print('Volume changed to $volume%');
+      final ok = await _setWindowsVolume(volume);
+      print(ok ? 'Volume changed to $volume%' : 'Volume change failed');
+      return ok;
     } catch (e) {
       print('An error occurred: $e');
       _debugLog('changeVolumeForWindows($volume): FAILED -- $e');
+      return false;
     }
   }
 
-  Future<void> unmuteVolumeForWindows() async {
+  Future<bool> unmuteVolumeForWindows() async {
     try {
-      await _setWindowsVolume(50);
-      print('Volume is unmuted (50%).');
+      final ok = await _setWindowsMute(false);
+      print(ok ? 'Volume is unmuted.' : 'Unmute failed');
+      return ok;
     } catch (e) {
       print('An error occurred: $e');
+      return false;
     }
   }
 
-  Future<void> muteVolumeForWindows() async {
+  Future<bool> muteVolumeForWindows() async {
     try {
-      await _setWindowsVolume(0);
-      print('Volume is muted.');
+      final ok = await _setWindowsMute(true);
+      print(ok ? 'Volume is muted.' : 'Mute failed');
+      return ok;
     } catch (e) {
       print('An error occurred: $e');
+      return false;
     }
   }
 

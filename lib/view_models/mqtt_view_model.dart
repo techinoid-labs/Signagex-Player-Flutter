@@ -27,7 +27,9 @@ import 'package:digital_signage/models/compaign_model.dart';
 import 'package:digital_signage/models/intractivity_model.dart'
     hide MediaItem, Settings;
 import 'package:digital_signage/models/play_list_model.dart';
+import 'package:digital_signage/utils/cache_path_utils.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
+import 'package:digital_signage/utils/url_encoding_utils.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/utils/windows_screen_capture.dart'
     as windows_capture;
@@ -402,6 +404,11 @@ class MqttViewModel extends ChangeNotifier {
             publishMessage(globleTopic, jsonEncode(deviceInfoMap));
           }
           _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
+          // W14: see the matching comment at the main publish_playlist
+          // handler -- a restored playlist can be shorter than whatever
+          // _currentIndex was left pointing at.
+          _currentIndex = 0;
+          _timer?.cancel();
 
           for (var playlist in _playListModel!.data.playlist) {
             // Check if the playlist contains any media
@@ -445,6 +452,11 @@ class MqttViewModel extends ChangeNotifier {
       } else {
         if (storedJsonObj["action"] == "publish_playlist") {
           _playListModel = playListModelFromJson(jsonEncode(storedJsonObj));
+          // W14: see the matching comment at the main publish_playlist
+          // handler -- a restored playlist can be shorter than whatever
+          // _currentIndex was left pointing at.
+          _currentIndex = 0;
+          _timer?.cancel();
           print(_mediaList);
           for (var playlist in _playListModel!.data.playlist) {
             // Check if the playlist contains any media
@@ -1305,10 +1317,12 @@ EOF
   Map<String, List<String>> get mediaPath => _mediaPath;
 
   void _startDownloadingForPlaylist() async {
-    if (_state == MqttState.downloading) {
-      print("Downloads are already in progress.");
-      return;
-    }
+    // W07: see the matching comment in _startDownloadingForCampaign --
+    // bumping (not bailing out on _state == downloading) is deliberate,
+    // so a newer publication's own download pass always gets to run
+    // instead of being silently dropped while an older one is still in
+    // flight.
+    final myGeneration = ++_contentGeneration;
 
     _downloadCount = _playListModel!.data.playlist.fold(
       0,
@@ -1355,14 +1369,7 @@ EOF
           _updateOverallProgress(completedDownloads);
           continue;
         }
-        String filename = _extractFilename(mediaUrl);
-        Directory? directory = await _getDirectory();
-        if (directory == null) {
-          print('Unable to determine directory');
-          throw Exception('Unable to determine directory');
-        }
-
-        String filePath = '${directory.path}/$filename';
+        String filePath = await _cacheFilePathFor(mediaUrl);
         bool fileExists = await File(filePath).exists();
 
         if (fileExists) {
@@ -1396,7 +1403,19 @@ EOF
 
     if (completedDownloads == _downloadCount) {
       print("All media files for all playlists have been downloaded.");
+      if (myGeneration != _contentGeneration) {
+        // W07: superseded by a newer publication.
+        return;
+      }
       _updateMediaModelForPlaylist(); // Update model with local file paths
+      if (_state == MqttState.playerStopped) {
+        // W08: a stop command can arrive while a download that started
+        // before it is still in flight -- this completion must not
+        // silently resume playback. Only the authorized resume path
+        // (paired:true on the next poll, in _checkPairingStatus) may
+        // leave playerStopped.
+        return;
+      }
       _state = MqttState.playlistScreen;
       notifyListeners();
     }
@@ -1458,28 +1477,18 @@ EOF
     while (attempt < retries) {
       try {
         attempt++;
-        String filename = _extractFilename(url);
-        Directory? directory = await _getDirectory();
-        if (directory == null) {
-          print('Unable to determine directory');
-          throw Exception('Unable to determine directory');
-        }
-
-        String filePath = '${directory.path}/$filename';
-        print('Downloading from URL: $url to $filePath');
+        print('Downloading from URL: $url (attempt $attempt/$retries)');
 
         _currentFileProgress = 0.0;
         notifyListeners();
 
-        Dio dio = Dio();
-        await dio.download(
+        // Temp file + atomic rename inside _downloadToCache (W09): a
+        // crash/interruption mid-download can no longer leave a corrupt
+        // file sitting at the cache path a later run would treat as
+        // already-downloaded.
+        final filePath = await _downloadToCache(
           url,
-          filePath,
-          onReceiveProgress: (received, total) {
-            if (total != -1 && total > 0) {
-              _updateCurrentFileProgress(received, total);
-            }
-          },
+          onProgress: _updateCurrentFileProgress,
         );
 
         print('Download complete: $filePath');
@@ -1498,10 +1507,17 @@ EOF
   }
 
   void _startDownloadingForCampaign() async {
-    if (_state == MqttState.downloading) {
-      print("Downloads are already in progress.");
-      return;
-    }
+    // W07: bumping (not bailing out when _state is already `downloading`)
+    // is deliberate -- the old `if (_state == downloading) return;` guard
+    // blocked exactly the case that needed to keep working: campaign B
+    // published while campaign A's download pass was still running used
+    // to make B's own call return immediately without ever downloading
+    // B's assets, leaving only A's (stale, and about to be superseded)
+    // download pass running -- whichever completes last then wins,
+    // regardless of which was actually published last. Bumping the
+    // generation here lets B's own pass proceed, and lets A's pass
+    // recognize at its own completion (below) that it's been superseded.
+    final myGeneration = ++_contentGeneration;
 
     Map<String, dynamic> sendLog = {
       "action": "player_logs",
@@ -1541,6 +1557,13 @@ EOF
       _state = MqttState.downloading;
       notifyListeners();
     } else if (hasPlayableCampaignMedia) {
+      // W07: a newer publication has since started -- this one is stale,
+      // don't let it commit state for content that's no longer current.
+      if (myGeneration != _contentGeneration) return;
+      // W08: don't let a stale in-flight publication resume playback out
+      // from under an active stop command -- see the matching guard in
+      // the playlist download-completion path above.
+      if (_state == MqttState.playerStopped) return;
       print(
           'No downloadable files; showing campaign with web/inline media '
           '(${campaigns.length} campaign(s)).');
@@ -1629,6 +1652,17 @@ EOF
     // campaign that happened to be selected before downloading kicked in
     // would still be shown once playback actually starts.
     _selectCompositionCampaignIndexIfPresent();
+    if (myGeneration != _contentGeneration) {
+      // W07: superseded by a newer publication -- don't commit state for
+      // content that's no longer current.
+      return;
+    }
+    if (_state == MqttState.playerStopped) {
+      // W08: same guard as the other two download-completion paths -- a
+      // stop command that arrived while this download was in flight must
+      // not be resumed by its completion.
+      return;
+    }
     final campaignsAfterDownload = _campaignModel?.data?.playerCampaigns ?? const [];
     if (campaignsAfterDownload.isNotEmpty &&
         !_campaignIsPlayable(campaignsAfterDownload[_currentIndexOfCapmaign])) {
@@ -1749,55 +1783,82 @@ EOF
       return fullUrl;
     }
 
-    final filename = _extractFilename(fullUrl);
-    final directory = await _getDirectory();
-    if (directory == null) {
-      throw Exception('Unable to determine directory');
-    }
-
-    final filePath = '${directory.path}/$filename';
-    final file = File(filePath);
-    final exists = await file.exists();
+    final filePath = await _cacheFilePathFor(fullUrl);
+    final exists = await File(filePath).exists();
     if (exists) {
       print('File already exists: $filePath');
       return filePath;
     }
 
-    // Ensure URL is valid for parsing (fix illegal percent encoding).
-    // Uri.parse doesn't throw on a literal unencoded space (e.g. a CMS
-    // asset path like "/_next/static/media/Leaf 4.6bb812d5.svg"), so this
-    // catch alone never caught it -- but an unencoded space in the actual
-    // HTTP request line is invalid and made the download fail silently for
-    // every asset whose filename happened to contain one, while filenames
-    // without spaces downloaded fine. Confirmed as the source of "some
-    // stickers load, some don't" (all 10 counted as "downloaded" in the
-    // progress UI regardless, since a failed download still increments
-    // that counter -- see the catch block further down in this file).
-    String downloadUrl = Uri.encodeFull(fullUrl);
+    // W11: this used to run the *whole* URL through Uri.encodeFull, which
+    // re-encodes already-valid percent-escapes too -- confirmed to turn
+    // "video%20one.mp4?token=a%2Fb" into "video%2520one.mp4?token=a%252Fb".
+    // That silently corrupts any URL that arrived already correctly
+    // encoded, in particular a signed query parameter: a %2F inside a
+    // signature becoming %252F invalidates it against whatever backend
+    // verifies it, turning a previously-working asset into a 404/403.
+    // The actual, confirmed real-world problem is narrower: a literal
+    // unencoded space in a CMS asset path (e.g.
+    // "/_next/static/media/Leaf 4.6bb812d5.svg") is invalid in the actual
+    // HTTP request line, which made the download fail silently for every
+    // asset whose filename happened to contain one ("some stickers load,
+    // some don't" -- all 10 counted as "downloaded" in the progress UI
+    // regardless, since a failed download still increments that counter --
+    // see the catch block further down in this file). Encoding only
+    // whitespace characters -- never touching an existing "%" escape, or
+    // any other already-valid URI character -- fixes that specific,
+    // confirmed problem without corrupting everything else.
+    String downloadUrl = encodeUrlWhitespaceOnly(fullUrl);
     try {
       Uri.parse(downloadUrl);
     } catch (_) {
+      // Still-illegal percent encoding (e.g. a lone "%" not followed by two
+      // hex digits) despite the whitespace fix above -- escape any bare "%"
+      // so the URL is at least parseable, without touching % sequences
+      // that are already valid.
       downloadUrl = downloadUrl.replaceAllMapped(
           RegExp(r'%(?![0-9A-Fa-f]{2})'), (_) => '%25');
     }
 
-    final dio = Dio();
+    // W10: connectTimeout bounds a hanging-headers stall (connection
+    // opens but the server never responds); receiveTimeout bounds a
+    // hanging-body stall (gap between received chunks). Neither alone
+    // bounds a slow-but-steady trickle transfer that never gaps long
+    // enough to trip receiveTimeout -- the outer .timeout() below on the
+    // whole download call is the actual overall deadline for that case.
+    final dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 30),
+    ));
+    // Unique per call (not a fixed "$filePath.part"): two concurrent
+    // callers resolving the same URL (W09 -- "concurrent requests for one
+    // asset") each get their own temp file, so neither can corrupt the
+    // other's write, and a stale .part left by a previous crashed run
+    // can't collide with a fresh attempt either.
+    final tempPath = '$filePath.${DateTime.now().microsecondsSinceEpoch}.part';
     const maxAttempts = 3;
     for (var attempt = 1; attempt <= maxAttempts; attempt++) {
       print(
           'Downloading from URL: $downloadUrl to $filePath (attempt $attempt/$maxAttempts)');
       try {
+        // Temp file + atomic rename (W09): an interruption mid-download can
+        // no longer leave a corrupt file at $filePath that a later call
+        // would treat as already-cached via the exists() check above.
         await dio.download(
           downloadUrl,
-          filePath,
+          tempPath,
           onReceiveProgress: (received, total) {
             if (total > 0) onProgress?.call(received, total);
           },
-        );
+        ).timeout(const Duration(minutes: 5)); // W10: overall deadline
+        await File(tempPath).rename(filePath);
         print('Download complete: $filePath');
         return filePath;
       } catch (e) {
         print('Error downloading $downloadUrl (attempt $attempt/$maxAttempts): $e');
+        try {
+          if (await File(tempPath).exists()) await File(tempPath).delete();
+        } catch (_) {}
         if (attempt >= maxAttempts) {
           // Out of retries -- return the original URL so the widget can try
           // to stream it directly as a last resort.
@@ -1834,46 +1895,140 @@ EOF
     }
   }
 
-  String _extractFilename(String url, {String? mediaType}) {
-    String decodedUrl;
-    try {
-      decodedUrl = Uri.decodeFull(url);
-    } catch (_) {
-      // URL has invalid percent encoding (e.g. illegal % sequence); use raw path.
-      decodedUrl = url;
-    }
-    String filename = decodedUrl.split('/').last.split('?').first;
-    // Sanitize: remove characters that are invalid in URIs or filenames.
-    if (filename.isEmpty) {
-      filename = 'file_${url.hashCode.abs()}';
-    }
-    filename = filename.replaceAll(RegExp(r'[<>:"|?*\x00-\x1f]'), '_');
-    if (mediaType != null) {
-      switch (mediaType) {
-        case 'audio/mpeg':
-          filename += '.mp3';
-          break;
-        case 'audio/mp4':
-          filename += '.m4a';
-          break;
-        case 'video/mp4':
-          filename += '.mp4';
-          break;
-        case 'image/jpeg':
-        case 'image/png':
-        case 'image/gif':
-          filename += '.jpg';
-          break;
-        default:
-          break;
-      }
-    } else {
-      if (url.contains('images')) {
-        filename += '.jpg';
-      }
-    }
+  // ── content-addressed media cache (W02 / W09) ───────────────────────────
+  // The cache filename used to be extracted straight from the URL's own
+  // basename (split on '/', strip a small set of characters) and written
+  // under the user's real Downloads/Documents folder. That had two
+  // separate problems:
+  //   W02 - the decoded URL was only ever split on forward slash, so a
+  //   backslash arriving from a source URL (e.g. a percent-encoded
+  //   "..%5Coutside.mp4") passed straight through -- Windows treats a
+  //   backslash as a path separator regardless of how the extraction code
+  //   split the string, so that filename could write outside the intended
+  //   directory. Reserved Windows device names and trailing dots weren't
+  //   rejected either.
+  //   W09 - two different URLs that happen to share a final path segment
+  //   (e.g. .../a/video.mp4 and .../b/video.mp4) shared one cache file, an
+  //   existing file was trusted on name+existence alone with no content
+  //   identity/version check, and downloads wrote directly to the final
+  //   path -- an interrupted write left a corrupt file that looked cached.
+  //
+  // The fix: the cache key is a hash of the *whole source URL*, not its
+  // basename (different URLs can never collide), the extension is
+  // extracted separately and validated against a strict whitelist (a
+  // hash + a whitelisted 1-8 character extension can never contain a
+  // path separator, a ".." segment, or resolve to a reserved device
+  // name), the cache lives in a dedicated app-private directory instead
+  // of the user's real Downloads/Documents, and writes land in a ".part"
+  // temp file first, atomically renamed into place only once the download
+  // actually completes -- so a crash/interruption mid-download can never
+  // leave a corrupt file at the final path that a later run would treat
+  // as already cached.
 
-    return filename;
+  Directory? _cacheRootCached;
+
+  // A dedicated, app-private cache directory -- not the user's real
+  // Downloads/Documents folder (W09), so cached media can never collide
+  // with, be tampered with by, or be mistaken for the user's own files,
+  // and a future eviction policy can safely operate on this directory
+  // alone.
+  Future<Directory> _cacheRootDirectory() async {
+    if (_cacheRootCached != null) return _cacheRootCached!;
+    final support = await getApplicationSupportDirectory();
+    final dir = Directory('${support.path}/media_cache');
+    if (!await dir.exists()) {
+      await dir.create(recursive: true);
+    }
+    _cacheRootCached = dir;
+    return dir;
+  }
+
+  /// Resolves the safe, content-addressed cache path for [url]. Every
+  /// download/reuse call site must go through this -- never build a cache
+  /// path from a URL's raw basename directly. The actual filename logic
+  /// lives in cache_path_utils.dart (pure, unit-tested independently of
+  /// this class).
+  Future<String> _cacheFilePathFor(String url, {String? mediaType}) async {
+    final name = cacheFilenameFor(url, mediaType: mediaType);
+    final root = await _cacheRootDirectory();
+    return '${root.path}/$name';
+  }
+
+  // Keyed by the resolved cache path (not the raw URL) so two different
+  // URLs that happen to resolve to the same content-addressed path (i.e.
+  // literally the same URL) share one in-flight download instead of two
+  // concurrent writers racing on the same temp file (W09 -- "concurrent
+  // requests for one asset").
+  final Map<String, Future<String>> _inFlightCacheDownloads = {};
+
+  /// Downloads [url] to its content-addressed cache path via a temp file
+  /// plus atomic rename, so an interrupted write can never leave a
+  /// corrupt file at the final path (W09). Returns the final path.
+  /// Reuses an existing completed file without re-downloading -- a real
+  /// freshness check needs a server-provided version/hash (see W09's
+  /// backend-dependency note); this only guards against a *different* URL
+  /// reusing another URL's file, not the same URL's bytes changing
+  /// upstream.
+  Future<String> _downloadToCache(
+    String url, {
+    String? mediaType,
+    void Function(int received, int total)? onProgress,
+  }) async {
+    final finalPath = await _cacheFilePathFor(url, mediaType: mediaType);
+    if (await File(finalPath).exists()) {
+      return finalPath;
+    }
+    final existing = _inFlightCacheDownloads[finalPath];
+    if (existing != null) {
+      return existing;
+    }
+    final future = _downloadToCacheUncached(url, finalPath, onProgress);
+    _inFlightCacheDownloads[finalPath] = future;
+    try {
+      return await future;
+    } finally {
+      _inFlightCacheDownloads.remove(finalPath);
+    }
+  }
+
+  Future<String> _downloadToCacheUncached(
+    String url,
+    String finalPath,
+    void Function(int received, int total)? onProgress,
+  ) async {
+    // Unique per attempt (not just "$finalPath.part"): even with the
+    // in-flight dedup above, a previous crashed run could have left a
+    // stale .part file around, and this guarantees a fresh download never
+    // collides with it.
+    final tempPath =
+        '$finalPath.${DateTime.now().microsecondsSinceEpoch}.part';
+    // W10: see the matching comment on the Dio instance in
+    // ensureLocalMediaUrl -- connect/receive timeouts plus an outer overall
+    // deadline, so a single unresponsive asset can't strand playback
+    // preparation indefinitely.
+    final dio = Dio(BaseOptions(
+      connectTimeout: const Duration(seconds: 15),
+      receiveTimeout: const Duration(seconds: 30),
+    ));
+    try {
+      await dio.download(
+        url,
+        tempPath,
+        onReceiveProgress: (received, total) {
+          if (total > 0) onProgress?.call(received, total);
+        },
+      ).timeout(const Duration(minutes: 5));
+      // Rename is atomic on the same volume (both paths share the cache
+      // root), so a reader can never observe a partially-written file at
+      // the final path.
+      await File(tempPath).rename(finalPath);
+      return finalPath;
+    } catch (e) {
+      try {
+        if (await File(tempPath).exists()) await File(tempPath).delete();
+      } catch (_) {}
+      rethrow;
+    }
   }
 
   Future<void> reportAdProofOfPlay(AdProofOfPlayRequest request) async {
@@ -1897,27 +2052,6 @@ EOF
       print('[AdPoP] HTTP/network error: $e');
       print('[AdPoP] Stack: $st');
     }
-  }
-
-  Future<Directory?> _getDirectory() async {
-    if (Platform.isAndroid || Platform.isIOS) {
-      // Use the application documents directory for Android and iOS
-      return await getApplicationDocumentsDirectory();
-    } else if (Platform.isMacOS) {
-      // On macOS release (sandbox), use Documents so the video player can read files.
-      // Downloads in the container can trigger "permission to view" errors with AVPlayer.
-      return await getApplicationDocumentsDirectory();
-    } else if (Platform.isWindows || Platform.isLinux) {
-      try {
-        return await getDownloadsDirectory() ??
-            await getApplicationDocumentsDirectory();
-      } catch (e) {
-        print(
-            'Error getting downloads directory, falling back to applicationDocumentsDirectory: $e');
-        return await getApplicationDocumentsDirectory();
-      }
-    }
-    return null;
   }
 
   Future<void> _checkPairingStatus() async {
@@ -2110,11 +2244,23 @@ EOF
 
       if (isServerError && _pairingRetryCount >= _maxPairingRetries) {
         debugPrint(
-            "Max retries ($_maxPairingRetries) reached for pairing check. Restarting app...");
+            "Max retries ($_maxPairingRetries) reached for pairing check. "
+            "Attempting restartApp (no confirmed Windows handler -- see "
+            "restartApp) and falling back to periodic recovery polling "
+            "regardless of whether that actually restarts anything.");
         _pairingRetryCount = 0; // Reset counter
-        // Restart the app to reset the flow
         await Future.delayed(const Duration(seconds: 2));
         await restartApp();
+        // W21: if restartApp actually works on this platform, the process
+        // is about to end anyway and this never matters. If it's a no-op
+        // (confirmed: no matching Windows handler), this is what actually
+        // recovers the device instead of leaving it stuck forever.
+        _state = MqttState.connectionScreen;
+        notifyListeners();
+        _pairingPollTimer ??=
+            Timer.periodic(const Duration(seconds: 10), (_) async {
+          await _checkPairingStatus();
+        });
         return;
       }
 
@@ -2131,9 +2277,20 @@ EOF
         return;
       }
 
-      // If not a server error or max retries not reached, just show connection screen
+      // W21: retries exhausted for a non-server error (DNS failure, generic
+      // timeout, unreachable host, etc.) -- this used to just show
+      // connectionScreen and stop, with nothing ever calling
+      // _checkPairingStatus() again until some unrelated external trigger
+      // (a connectivity-change event, a manual restart) happened to fire.
+      // A fresh player could stay stuck on "connecting" indefinitely.
+      // Falling back to the same periodic-poll recovery used for the
+      // paired:false/playerStopped cases means this is never a dead end.
       _state = MqttState.connectionScreen;
       debugPrint("Error: $error");
+      _pairingPollTimer ??=
+          Timer.periodic(const Duration(seconds: 10), (_) async {
+        await _checkPairingStatus();
+      });
     }
 
     // Reset retry counter on success
@@ -2160,8 +2317,16 @@ EOF
   Future<void> restartApp() async {
     try {
       await _channel.invokeMethod('com.example/restartApp');
-    } on PlatformException catch (e) {
-      print("Failed to restart app: ${e.message}");
+    } catch (e) {
+      // W21: was `on PlatformException catch` only -- a channel with no
+      // matching native-side handler at all (confirmed: no handler for
+      // this method in the Windows runner) throws MissingPluginException,
+      // a different type that specific clause never caught, so this could
+      // propagate as an unhandled error out of an already-in-progress
+      // catch block in _checkPairingStatus. Catching broadly here is what
+      // actually makes this a safe no-op on a platform without a handler,
+      // instead of a second, unrelated crash on top of the original error.
+      print("Failed to restart app: $e");
     }
   }
 
@@ -2259,7 +2424,6 @@ EOF
     // Independent ifs so every setting present in the payload actually gets
     // applied.
     if (settings["mute_audio"] == true && _lastAppliedMute != true) {
-      _lastAppliedMute = true;
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
         "log": "Mute Audio",
@@ -2270,16 +2434,26 @@ EOF
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       if (Platform.isMacOS) {
         deviceSettings.muteVolumeForMac();
+        _lastAppliedMute = true;
       } else if (Platform.isAndroid) {
         deviceSettings.muteVolumeForAndroid();
+        _lastAppliedMute = true;
       } else if (Platform.isWindows) {
-        deviceSettings.muteVolumeForWindows();
+        // W16: only record this as applied once the native call actually
+        // reports success (awaited -- was previously fired without
+        // awaiting at all) -- a failed mute used to still be marked
+        // applied, so a retried/re-echoed identical settings payload would
+        // be silently skipped by the != _lastAppliedMute guard above and
+        // never actually retried.
+        if (await deviceSettings.muteVolumeForWindows()) {
+          _lastAppliedMute = true;
+        }
       } else if (Platform.isLinux) {
         deviceSettings.muteVolumeForLinux();
+        _lastAppliedMute = true;
       }
     }
     if (settings["mute_audio"] == false && _lastAppliedMute != false) {
-      _lastAppliedMute = false;
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
         "log": "Unmute Audio",
@@ -2290,12 +2464,17 @@ EOF
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       if (Platform.isMacOS) {
         deviceSettings.unmuteVolumeForMac();
+        _lastAppliedMute = false;
       } else if (Platform.isAndroid) {
         deviceSettings.unmuteVolumeForAndroid();
+        _lastAppliedMute = false;
       } else if (Platform.isWindows) {
-        deviceSettings.unmuteVolumeForWindows();
+        if (await deviceSettings.unmuteVolumeForWindows()) {
+          _lastAppliedMute = false;
+        }
       } else if (Platform.isLinux) {
         deviceSettings.unmuteVolumeForLinux();
+        _lastAppliedMute = false;
       }
     }
     final brightnessValue = settings["brightness"] != null
@@ -2324,7 +2503,6 @@ EOF
     final volumeValue =
         settings["volume"] != null ? _asNum(settings["volume"])?.round() : null;
     if (volumeValue != null && volumeValue != _lastAppliedVolume) {
-      _lastAppliedVolume = volumeValue;
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
         "log": "Volume",
@@ -2335,12 +2513,19 @@ EOF
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       if (Platform.isMacOS) {
         deviceSettings.setVolumeForMac(volumeValue);
+        _lastAppliedVolume = volumeValue;
       } else if (Platform.isAndroid) {
         deviceSettings.setVolumeForAndroid(volumeValue);
+        _lastAppliedVolume = volumeValue;
       } else if (Platform.isWindows) {
-        deviceSettings.changeVolumeForWindows(volumeValue);
+        // W16: same "record success only after checking the result" fix as
+        // mute above.
+        if (await deviceSettings.changeVolumeForWindows(volumeValue)) {
+          _lastAppliedVolume = volumeValue;
+        }
       } else if (Platform.isLinux) {
         deviceSettings.changeVolumeForLinux(volumeValue.toString());
+        _lastAppliedVolume = volumeValue;
       }
     }
     // Screen Rotation / Show touch feedback / Hide helpful messages --
@@ -2515,6 +2700,12 @@ EOF
 // Deserialize the JSON into the model
       // await _checkPairingStatus();
       _playListModel = playListModelFromJson(jsonEncode(jsonObj));
+      // W14: a fresh playlist can be shorter than the previous one -- reset
+      // rather than leaving _currentIndex pointing past the end of the new
+      // list, which would throw a RangeError on the very next
+      // currentDuration/_durationForPlaylistAt access.
+      _currentIndex = 0;
+      _timer?.cancel();
       final hasPlaylistMedia = _playListModel!.data.playlist.any(
         (playlist) => playlist.media?.isNotEmpty ?? false,
       );
@@ -2699,8 +2890,26 @@ EOF
       };
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
+      // W06: this used to only clear prefs and re-check pairing --
+      // _playListModel, storedJsonObj, and the rotation timer were left
+      // intact, so a paired response deliberately preserving an active
+      // playlist screen kept the removed playlist rendering, and it could
+      // even be restored from the in-memory payload on the next reconnect.
+      // Mirrors the targeted in-memory cancellation remove_campaign
+      // already does below.
+      _timer?.cancel();
+      _timer = null;
+      _currentIndex = 0;
+      _playListModel = null;
+      storedJsonObj = {};
+      _state = MqttState.noContent;
+      notifyListeners();
+
       SharedPreferences prefs = await SharedPreferences.getInstance();
-      prefs.clear();
+      // Only the persisted content payload -- prefs.clear() wiped every
+      // other key too (app_environment, updater retry budget, pairing
+      // cache), none of which "remove this playlist" should touch.
+      await prefs.remove('jsonObj');
 
       await _checkPairingStatus();
     } else if (jsonObj["action"] == "action_delete") {
@@ -2750,11 +2959,22 @@ EOF
       notifyListeners();
 
       SharedPreferences prefs = await SharedPreferences.getInstance();
-      prefs.clear();
+      // W06: as with remove_playlist above -- only the persisted content
+      // payload, not every other key prefs.clear() used to wipe.
+      await prefs.remove('jsonObj');
       await _checkPairingStatus();
     }
     notifyListeners();
   }
+
+  // W07: bumped by every fresh _startDownloadingForCampaign/
+  // _startDownloadingForPlaylist call, so an overlapping publication
+  // (campaign A still downloading when campaign B is published) can tell
+  // its own download pass is stale once a newer one has started, and
+  // discard its completion instead of overwriting B's state with A's
+  // data (or vice versa, whichever finishes "second" by wall-clock time
+  // rather than by publication order).
+  int _contentGeneration = 0;
 
   int _currentIndexOfCapmaign = 0;
 
@@ -2922,15 +3142,21 @@ EOF
 
   int get currentIndexOfCapmaign => _currentIndexOfCapmaign;
 
-  int get currentDurationOfCampaign {
-    final currentCampaign =
-        campaignModel?.data?.playerCampaigns?[_currentIndexOfCapmaign];
+  int get currentDurationOfCampaign =>
+      _durationForCampaignAt(_currentIndexOfCapmaign);
+
+  // W04: split out of the currentDurationOfCampaign getter so the bounded
+  // eligibility scan in _updateIndexForCampain can evaluate a *candidate*
+  // index's duration without first mutating _currentIndexOfCapmaign to
+  // point at it.
+  int _durationForCampaignAt(int index) {
+    final currentCampaign = campaignModel?.data?.playerCampaigns?[index];
     if (currentCampaign == null) return 0;
 
     final campaignSchedule = currentCampaign.campaignSchedule;
     if (campaignSchedule == null) {
       print(
-          'Current Index: $_currentIndexOfCapmaign, Duration: 15 seconds, '
+          'Index: $index, Duration: 15 seconds, '
           'Always Play: true (default, no schedule)');
       return 15;
     }
@@ -2968,14 +3194,14 @@ EOF
 
     // Log the state
     print(
-        "Current Index: $_currentIndexOfCapmaign, Duration: $durationcampagin seconds, Always Play: ${campaignSchedule.alwaysPlay}");
+        "Index: $index, Duration: $durationcampagin seconds, Always Play: ${campaignSchedule.alwaysPlay}");
 
     // #region agent log
     _mqttAgentDebugLog(
       'mqtt_view_model.dart:currentDurationOfCampaign',
       'resolved campaign duration',
       {
-        'campaignIndex': _currentIndexOfCapmaign,
+        'campaignIndex': index,
         'durationSeconds': durationcampagin,
         'alwaysPlay': campaignSchedule.alwaysPlay,
         'rawDuration': currentCampaign.campaignSettings?.duration,
@@ -3040,23 +3266,48 @@ EOF
 
     final playableCampaigns = campaigns!;
 
-    // Rotate through every published player campaign (compositions + solos),
-    // skipping any that are currently Paused.
-    final nextIndex = _nextPlayableCampaignIndex(
-      playableCampaigns,
-      (_currentIndexOfCapmaign + 1) % count,
-    );
-    if (nextIndex == null) {
-      // Every campaign is currently paused.
+    // W04: bounded scan (at most `count` candidates) for the next campaign
+    // that is BOTH not paused AND currently schedule-eligible (a positive
+    // duration) -- this used to only check "not paused" here, then rely on
+    // startPlaylistTimerForCampaign() calling straight back into this
+    // function whenever the chosen candidate turned out to be
+    // schedule-ineligible (duration <= 0). That recursion had no bound: if
+    // every campaign was currently outside its schedule window (or none
+    // were ever eligible), it synchronously spun through the whole
+    // rotation over and over -- reproduced at 1,000+ synchronous rotations
+    // in the audit's standalone check, enough to starve the event loop or
+    // overflow the stack. Folding both checks into one bounded loop means
+    // this function always returns after at most `count` iterations,
+    // never recurses into itself, and explicitly parks on a recheck timer
+    // when nothing qualifies instead of spinning.
+    int? eligibleIndex;
+    int eligibleDuration = 0;
+    for (var i = 1; i <= count; i++) {
+      final idx = (_currentIndexOfCapmaign + i) % count;
+      if (!_campaignIsPlayable(playableCampaigns[idx])) continue;
+      final duration = _durationForCampaignAt(idx);
+      if (duration > 0) {
+        eligibleIndex = idx;
+        eligibleDuration = duration;
+        break;
+      }
+    }
+
+    if (eligibleIndex == null) {
+      // Nothing is both unpaused and inside its schedule window right
+      // now. A restriction window can open on its own with no new content
+      // ever being published, so recheck later instead of leaving this
+      // permanently stuck -- but never by immediately recursing.
       debugPrint(
-          'MQTT_LOGS:: _updateIndexForCampain: every campaign is paused. Cancelling campaign timer.');
+          'MQTT_LOGS:: _updateIndexForCampain: no playable+eligible campaign right now. Rechecking in 30s.');
       _timerOfCampaign?.cancel();
-      _timerOfCampaign = null;
+      _timerOfCampaign =
+          Timer(const Duration(seconds: 30), _updateIndexForCampain);
       _state = MqttState.noContent;
       notifyListeners();
       return;
     }
-    _currentIndexOfCapmaign = nextIndex;
+    _currentIndexOfCapmaign = eligibleIndex;
 
     final nextCampaign = playableCampaigns[_currentIndexOfCapmaign];
     print(
@@ -3100,7 +3351,15 @@ EOF
     publishLogsForCampaign(currentCampaignName);
 
     notifyListeners();
-    startPlaylistTimerForCampaign();
+    // Sets the timer directly from the duration the bounded scan above
+    // already confirmed is positive for this index, rather than calling
+    // startPlaylistTimerForCampaign() again (which would just re-read the
+    // same value via the getter) -- avoids recomputing it and keeps this
+    // function's only path back into itself as a plain Timer callback,
+    // never a synchronous call.
+    _timerOfCampaign?.cancel();
+    _timerOfCampaign =
+        Timer(Duration(seconds: eligibleDuration), _updateIndexForCampain);
   }
 
   void resetTimerForCapmpain() {
@@ -3163,11 +3422,24 @@ EOF
 
   int get currentIndex => _currentIndex;
 
-  int get currentDuration {
-    final currentPlaylist = playListModel!.data.playlist[_currentIndex];
+  int get currentDuration => _durationForPlaylistAt(_currentIndex);
+
+  // W04: split out of the currentDuration getter (mirrors
+  // _durationForCampaignAt above) so the bounded eligibility scan in
+  // _updateIndex can evaluate a candidate index without first mutating
+  // _currentIndex to point at it. Also fixes a real collision: the old
+  // version used a literal `2` as both the "not eligible" sentinel
+  // (checked via `if (currentDuration == 2)` in startPlaylistTimer) *and*
+  // a value a genuinely-configured playlistDefault.duration could
+  // legitimately parse to -- a real two-second playlist item was
+  // therefore treated as "not in schedule" and skipped. `0` is the
+  // sentinel now, and a configured non-positive duration is clamped to a
+  // sane default instead of colliding with it.
+  int _durationForPlaylistAt(int index) {
+    final currentPlaylist = _playListModel!.data.playlist[index];
     final playlistSchedule = currentPlaylist.playlistSchedule;
 
-    int duration = 2;
+    int duration = 0;
 
     // Check if the item is in the schedule or should always play
     if (playlistSchedule!.alwaysPlay ||
@@ -3183,31 +3455,68 @@ EOF
               playlistSchedule.period!.time.from,
               playlistSchedule.period!.time.to,
             )) {
-      duration = int.parse(currentPlaylist.playlistDefault!.duration);
+      duration = int.tryParse(currentPlaylist.playlistDefault!.duration) ?? 0;
+      if (duration <= 0) duration = 15;
     }
 
     // Log the state
     print(
-        "Current Index: $_currentIndex, Duration: $duration seconds, Always Play: ${playlistSchedule.alwaysPlay}");
+        "Index: $index, Duration: $duration seconds, Always Play: ${playlistSchedule.alwaysPlay}");
 
     return duration;
   }
 
   void startPlaylistTimer() {
     _timer?.cancel();
-    print("this is duration$currentDuration");
-    // If the duration is 0, directly update the index and skip the timer setup
-    if (currentDuration == 2) {
+    final duration = currentDuration;
+    print("this is duration$duration");
+    if (duration <= 0) {
       _updateIndex();
       print("Playlist item not in schedule, skipping timer setup.");
     } else {
-      // Only start the timer if the duration is greater than 0
-      _timer = Timer(Duration(seconds: currentDuration), _updateIndex);
+      _timer = Timer(Duration(seconds: duration), _updateIndex);
     }
   }
 
   void _updateIndex() {
-    _currentIndex = (_currentIndex + 1) % playListModel!.data.playlist.length;
+    final total = _playListModel?.data.playlist.length ?? 0;
+    if (total == 0) {
+      _timer?.cancel();
+      notifyListeners();
+      return;
+    }
+
+    // W04: bounded scan (at most `total` candidates) -- this used to
+    // advance by exactly one and unconditionally call startPlaylistTimer()
+    // again, which called straight back into this function whenever the
+    // new index was ineligible. With no bound, that recursion could spin
+    // synchronously through the whole playlist forever whenever nothing
+    // was ever eligible -- reproduced at 1,000+ synchronous rotations in
+    // the audit's standalone check. This version always returns after at
+    // most `total` iterations and parks on a recheck timer instead of
+    // spinning when nothing qualifies.
+    int? eligibleIndex;
+    int eligibleDuration = 0;
+    for (var i = 1; i <= total; i++) {
+      final idx = (_currentIndex + i) % total;
+      final duration = _durationForPlaylistAt(idx);
+      if (duration > 0) {
+        eligibleIndex = idx;
+        eligibleDuration = duration;
+        break;
+      }
+    }
+
+    if (eligibleIndex == null) {
+      debugPrint(
+          'MQTT_LOGS:: _updateIndex: no eligible playlist item right now. Rechecking in 30s.');
+      _timer?.cancel();
+      _timer = Timer(const Duration(seconds: 30), _updateIndex);
+      notifyListeners();
+      return;
+    }
+
+    _currentIndex = eligibleIndex;
     print(
         "current playlist ${_playListModel!.data.playlist[_currentIndex].name} ");
 
@@ -3222,7 +3531,8 @@ EOF
     _mqttClientService.publish(topic, jsonEncode(sendLog));
 
     notifyListeners();
-    startPlaylistTimer();
+    _timer?.cancel();
+    _timer = Timer(Duration(seconds: eligibleDuration), _updateIndex);
   }
 
   void resetTimer() {
@@ -3237,6 +3547,9 @@ EOF
     _timer?.cancel();
     _pairingPollTimer?.cancel();
     _stopPeriodicReporting();
+    // W03: releases the MQTT updates subscription too, not just this
+    // view model's own timers.
+    _mqttClientService.dispose();
     super.dispose();
   }
 
@@ -3278,7 +3591,10 @@ EOF
     DateTime toTime = DateTime.now().copyWith(
         hour: int.parse(timeTo.split(':')[0]),
         minute: int.parse(timeTo.split(':')[1]),
-        second: int.parse(timeFrom.split(':')[2]));
+        // Was int.parse(timeFrom...) -- a copy-paste bug that made the end
+        // boundary's seconds always equal the start boundary's seconds
+        // instead of the end time's own seconds.
+        second: int.parse(timeTo.split(':')[2]));
 
     return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
   }
@@ -3462,10 +3778,19 @@ EOF
             final endTime = _parseTimeString(values[1]);
             final currentTime =
                 DateTime(now.year, now.month, now.day, now.hour, now.minute);
-            final result = (currentTime.isAfter(startTime) ||
-                    currentTime.isAtSameMomentAs(startTime)) &&
-                (currentTime.isBefore(endTime) ||
-                    currentTime.isAtSameMomentAs(endTime));
+            // W12: both start/end are anchored to *today's* date by
+            // _parseTimeString, so an overnight window (e.g. 22:00-06:00)
+            // used to always fail: end (06:00 today) is chronologically
+            // before start (22:00 today), so "start <= now <= end" can
+            // never be true no matter what "now" actually is (confirmed:
+            // 22:00-06:00 at 23:00 returned false). When end is before
+            // start, the valid range wraps past midnight -- it's "at/after
+            // start" OR "at/before end", not AND.
+            final result = endTime.isBefore(startTime)
+                ? (!currentTime.isBefore(startTime) ||
+                    !currentTime.isAfter(endTime))
+                : (!currentTime.isBefore(startTime) &&
+                    !currentTime.isAfter(endTime));
             print(
                 "${cyan}TIME_CHECK:: is-between - start: ${startTime.hour}:${startTime.minute.toString().padLeft(2, '0')}, end: ${endTime.hour}:${endTime.minute.toString().padLeft(2, '0')}, current: ${currentTime.hour}:${currentTime.minute.toString().padLeft(2, '0')}, result: $result$reset");
             return result;

@@ -82,19 +82,32 @@ class MqttClientService {
     _client.onAutoReconnected = _onAutoReconnected;
   }
 
-  // connect() and subscribe() used to each call _client.updates.listen(...)
-  // on every invocation, and connect() runs on every manual/auto reconnect,
-  // so every reconnect permanently added one more duplicate listener to that
-  // broadcast stream -- every subsequent incoming message (including
-  // publish_campaign) then got delivered to _handleReceivedMessage once per
-  // accumulated listener, growing worse the longer the app stayed up. This
-  // guard makes the listen() call in connect()'s success branch below a
-  // true one-time attach instead. (Deliberately NOT hoisted into
-  // _initializeClient()/the constructor -- accessing .updates before the
-  // client has ever connected isn't a call site this package's behavior has
-  // been verified for, and getting that wrong would break every app launch,
-  // not just repeated ones.)
-  bool _updatesListenerAttached = false;
+  // W03: connect() and subscribe() used to each call _client.updates.listen()
+  // on every invocation (duplicate-delivery bug, fixed by a boolean
+  // "attached once" guard). But mqtt5_client replaces its subscriptions
+  // manager -- and therefore the `updates` stream instance -- on every
+  // connect() (verified directly against the mqtt5_client 4.5.3 source),
+  // so a one-time-only boolean guard just traded "duplicate delivery" for
+  // a worse bug: after any reconnect (this service's own connect() calls
+  // _client.disconnect() then reconnects when already connected/
+  // connecting, and mqtt5_client's own autoReconnect can trigger it too),
+  // the *new* updates stream has no listener on it at all -- the old
+  // subscription is still technically active, but on a stream object nothing
+  // publishes to anymore. Messages (including publish_campaign and every
+  // remote-view command) then silently stop arriving, while the socket
+  // itself reconnects and looks perfectly healthy. Owning a real
+  // StreamSubscription and re-attaching it -- cancelling the old one
+  // first -- on every successful connect fixes both: never more than one
+  // live listener, and never a stale one pointed at a replaced stream.
+  StreamSubscription<List<MqttReceivedMessage<MqttMessage?>>?>?
+      _updatesSubscription;
+
+  // W03: serializes connect() calls -- a manual reconnect (e.g. from
+  // _monitorConnectivity's connectivity-restore path) overlapping with
+  // mqtt5_client's own autoReconnect, or two manual calls in quick
+  // succession, used to interleave against the same _client instance with
+  // no coordination at all.
+  Future<void>? _connectingFuture;
 
   // ────────────────────────────────
   // Callbacks
@@ -164,7 +177,20 @@ class MqttClientService {
   // ────────────────────────────────
   // Connect - using wss://signagexai.com/mqtt
   // ────────────────────────────────
-  Future<void> connect() async {
+  Future<void> connect() {
+    // W03: if a connect is already in flight, wait for that one instead of
+    // starting a second, overlapping attempt against the same client.
+    final inFlight = _connectingFuture;
+    if (inFlight != null) return inFlight;
+    final future = _connectInternal();
+    _connectingFuture = future;
+    future.whenComplete(() {
+      if (identical(_connectingFuture, future)) _connectingFuture = null;
+    });
+    return future;
+  }
+
+  Future<void> _connectInternal() async {
     try {
       print(
           'MQTT_LOGS:: Connecting to wss://$mqttBroker:$mqttPort$mqttWebSocketPath');
@@ -232,13 +258,16 @@ class MqttClientService {
           print('MQTT_LOGS:: Connection status: ${_client.connectionStatus}');
           _debugLog('connect(): SUCCESS, will topic set for globleTopic="$globleTopic"');
 
-          if (!_updatesListenerAttached) {
-            _updatesListenerAttached = true;
-            _client.updates
-                .listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
-              _handleReceivedMessage(c);
-            });
-          }
+          // W03: cancel any subscription from a previous connect before
+          // attaching a new one -- the previous stream instance may
+          // already be defunct (mqtt5_client replaces it on every
+          // connect), and this guarantees exactly one live listener
+          // either way.
+          await _updatesSubscription?.cancel();
+          _updatesSubscription = _client.updates
+              .listen((List<MqttReceivedMessage<MqttMessage?>>? c) {
+            _handleReceivedMessage(c);
+          });
 
           // Explicit "online" companion to the will registered above --
           // the will only fires on an *unexpected* drop, so we still need
@@ -290,6 +319,15 @@ class MqttClientService {
       _client.disconnect();
       print('MQTT_LOGS:: Disconnected');
     }
+  }
+
+  // W03: "clean up subscriptions on dispose" -- call when this service is
+  // being torn down for good (not on an ordinary reconnect, which is
+  // handled entirely inside connect() above).
+  Future<void> dispose() async {
+    await _updatesSubscription?.cancel();
+    _updatesSubscription = null;
+    disconnect();
   }
 
   void subscribe(String topic) {

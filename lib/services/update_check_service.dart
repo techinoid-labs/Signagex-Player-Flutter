@@ -44,14 +44,36 @@ bool isNewerBuild(String current, String latest) {
   return l > c;
 }
 
+// Decimal digits only. Dart's int.tryParse (with no explicit radix)
+// auto-detects a "0x"/"0X" prefix and parses it as hexadecimal -- without
+// this check, "v0x10" parsed as the integer 16, silently accepting a
+// build-id format the CI workflow never actually produces (it always
+// writes "v${{ github.run_number }}", a plain decimal). Validating the
+// grammar explicitly, then parsing with an explicit radix: 10 (which does
+// *not* auto-detect "0x", unlike an unspecified radix), closes that gap.
+final RegExp _kDecimalBuildNumber = RegExp(r'^[0-9]+$');
+
 int? _parseBuildNumber(String value) {
   final trimmed = value.trim();
   if (trimmed.isEmpty) return null;
   final body = (trimmed[0] == 'v' || trimmed[0] == 'V')
       ? trimmed.substring(1)
       : trimmed;
-  return int.tryParse(body);
+  if (!_kDecimalBuildNumber.hasMatch(body)) return null;
+  return int.tryParse(body, radix: 10);
 }
+
+// W18: the installer signing certificate's subject name a valid signature
+// must chain to. This is a placeholder -- authenticity validation is not
+// a real control until this is replaced with the actual certificate
+// subject the CI pipeline signs releases with (a backend/ops dependency:
+// obtain a code-signing certificate, wire CI to sign every installer with
+// it, then put that certificate's subject name here). Deliberately left
+// obviously unset rather than a guessed real-looking value, so
+// verifyInstallerAuthenticity fails closed (see below) until this is done
+// for real, instead of silently no-op'ing.
+const String kTrustedInstallerPublisherSubject =
+    'UNSET -- see kTrustedInstallerPublisherSubject in update_check_service.dart';
 
 class UpdateCheckService {
   Future<UpdateInfo?> checkForUpdate() async {
@@ -63,6 +85,14 @@ class UpdateCheckService {
       final latestVersion = (response?['version'] ?? '').toString();
       final downloadUrl = (response?['downloadUrl'] ?? '').toString();
       if (latestVersion.isEmpty || downloadUrl.isEmpty) {
+        return null;
+      }
+      // W18: HTTPS-only. A checksum/signature check below still catches
+      // tampering, but refusing a non-HTTPS URL up front is a cheap,
+      // independent layer against a downgrade to an interceptable channel.
+      if (!downloadUrl.startsWith('https://')) {
+        await _debugLog(
+            'checkForUpdate: refusing non-HTTPS downloadUrl: $downloadUrl');
         return null;
       }
       // Only a strictly newer build is an update. Equal/older/malformed are
@@ -93,13 +123,20 @@ class UpdateCheckService {
     try {
       final dir = await getTemporaryDirectory();
       final filePath = '${dir.path}\\SignageX-Player-Update.exe';
-      await Dio().download(
+      // W10: same reasoning as the player asset downloads (mqtt_view_model.dart)
+      // -- connect/receive timeouts plus an outer overall deadline, so a
+      // stalled installer download can't hang indefinitely.
+      final dio = Dio(BaseOptions(
+        connectTimeout: const Duration(seconds: 15),
+        receiveTimeout: const Duration(seconds: 30),
+      ));
+      await dio.download(
         downloadUrl,
         filePath,
         onReceiveProgress: (received, total) {
           if (total > 0) onProgress(received / total);
         },
-      );
+      ).timeout(const Duration(minutes: 10)); // installers are larger than typical media assets
       await _debugLog('downloadInstaller: SUCCESS -- $filePath');
       return filePath;
     } catch (e) {
@@ -108,7 +145,61 @@ class UpdateCheckService {
     }
   }
 
+  // W18: validates the downloaded installer's Authenticode signature
+  // before it's ever allowed to run. A checksum alone (which this doesn't
+  // even have today) only detects corruption, not a malicious substitution
+  // -- this is what actually distinguishes "the real signed release" from
+  // "any executable that happened to land at the download URL". Fails
+  // closed: any missing/invalid signature, or the publisher placeholder
+  // above not yet being replaced with the real signing certificate's
+  // subject, refuses the install rather than proceeding anyway.
+  Future<bool> verifyInstallerAuthenticity(String installerPath) async {
+    if (kTrustedInstallerPublisherSubject.startsWith('UNSET')) {
+      await _debugLog(
+          'verifyInstallerAuthenticity: kTrustedInstallerPublisherSubject is '
+          'not configured -- refusing to install until CI signs releases '
+          'and this is set to that certificate\'s subject name.');
+      return false;
+    }
+    try {
+      final result = await Process.run('powershell', [
+        '-NoProfile',
+        '-Command',
+        '\$sig = Get-AuthenticodeSignature -LiteralPath \$args[0]; '
+            'if (\$sig.Status -ne "Valid") { Write-Output "INVALID:\$(\$sig.Status)"; exit 1 }; '
+            'Write-Output "VALID:\$(\$sig.SignerCertificate.Subject)"',
+        installerPath,
+      ]);
+      final output = result.stdout.toString().trim();
+      await _debugLog(
+          'verifyInstallerAuthenticity: exitCode=${result.exitCode} output=$output stderr=${result.stderr}');
+      if (result.exitCode != 0 || !output.startsWith('VALID:')) {
+        return false;
+      }
+      final subject = output.substring('VALID:'.length);
+      // Subject match, not just "a valid signature from someone" -- a
+      // validly signed installer from an unrelated publisher must not
+      // pass.
+      if (!subject.contains(kTrustedInstallerPublisherSubject)) {
+        await _debugLog(
+            'verifyInstallerAuthenticity: signer subject "$subject" does not match trusted publisher');
+        return false;
+      }
+      return true;
+    } catch (e) {
+      await _debugLog('verifyInstallerAuthenticity: FAILED -- $e');
+      return false;
+    }
+  }
+
   Future<bool> runInstallerSilently(String installerPath) async {
+    // W18: authenticity gate -- see verifyInstallerAuthenticity. Nothing
+    // below this point may run for an installer that doesn't pass it.
+    if (!await verifyInstallerAuthenticity(installerPath)) {
+      await _debugLog(
+          'runInstallerSilently: refusing to launch $installerPath -- failed authenticity check');
+      return false;
+    }
     try {
       // Detached and never awaited: setup.iss's CloseApplications will
       // close THIS running process as part of installing over it, so

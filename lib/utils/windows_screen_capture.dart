@@ -37,11 +37,12 @@ img.Image? captureWindowsDesktop() {
 
       try {
         final oldObj = SelectObject(hdcMem, hBitmap);
-
+        var copied = 0;
         try {
           // CAPTUREBLT also picks up layered windows (WS_EX_LAYERED), which
-          // a plain SRCCOPY can miss.
-          final copied = BitBlt(
+          // a plain SRCCOPY can miss. hBitmap must be selected into hdcMem
+          // for BitBlt to render into it.
+          copied = BitBlt(
             hdcMem,
             0,
             0,
@@ -52,12 +53,19 @@ img.Image? captureWindowsDesktop() {
             top,
             SRCCOPY | CAPTUREBLT,
           );
-          if (copied == 0) return null;
-
-          return _readBitmap(hdcMem, hBitmap, width, height);
         } finally {
+          // W26: restoring the previous selection *before* reading the
+          // bitmap is the actual fix, not just cleanup -- the Win32
+          // contract for GetDIBits (which _readBitmap calls) explicitly
+          // requires the bitmap not be selected into any device context
+          // when it's called. The previous version read the bitmap here,
+          // inside this same try block, before this finally ever ran --
+          // i.e. while hBitmap was still selected into hdcMem the entire
+          // time GetDIBits executed, on every single capture.
           SelectObject(hdcMem, oldObj);
         }
+        if (copied == 0) return null;
+        return _readBitmap(hdcMem, hBitmap, width, height);
       } finally {
         DeleteObject(hBitmap);
       }
@@ -94,7 +102,11 @@ img.Image? _readBitmap(int hdcMem, int hBitmap, int width, int height) {
       bmi,
       DIB_RGB_COLORS,
     );
-    if (linesCopied == 0) return null;
+    // W26: was `== 0` -- a partial copy (some rows copied, not all) is not
+    // success either; treating it as one would hand back a buffer with
+    // uninitialized/stale rows at the bottom silently mixed into a real
+    // frame.
+    if (linesCopied != height) return null;
 
     final bytes = pixels.asTypedList(bufferSize);
     return img.Image.fromBytes(

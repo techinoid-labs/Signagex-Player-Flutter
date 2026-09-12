@@ -105,19 +105,32 @@ Source: "{#SourceDir}\*"; DestDir: "{app}"; Flags: ignoreversion restartreplace 
 Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterinstall skipifsourcedoesntexist
 
 [UninstallDelete]
-; Inno Setup's uninstaller only removes files it tracked installing from
-; [Files] above -- anything the running app writes afterward into its own
-; install folder (shared_preferences.json holding pairing state/cached
-; campaign JSON, WebView2's own EBWebView cache/cookies/IndexedDB folder,
-; which defaults to living next to the exe when no custom user-data
-; folder is configured) is invisible to it, so {app} never ends up empty
-; and never actually gets removed on its own. Force-deleting the whole
-; tree here means uninstall actually leaves nothing behind, and a
-; reinstall always starts from a genuinely clean/unpaired state.
-Type: filesandordirs; Name: "{app}"
-; The debug log (lib/utils/debug_log.dart) lives in a completely separate
-; directory tree that [Files] never manages at all.
+; W01: Inno Setup's uninstaller only removes files it tracked installing
+; from [Files] above -- anything the running app writes afterward is
+; invisible to it. An earlier version of this section force-deleted the
+; entire {app} tree (`filesandordirs` on "{app}"), which is unsafe:
+; installation-directory selection isn't restricted to a directory newly
+; created and exclusively owned by this app (Inno Setup's own docs warn
+; against exactly this -- see jrsoftware.org/ishelp/topic_uninstalldeletesection.htm),
+; so a custom install location containing unrelated files would have had
+; them deleted too. Only the two specific, known runtime-created locations
+; are targeted by name now, and {app} itself is removed only if that
+; leaves it empty -- unrelated files anywhere under a custom {app} survive.
+;
+; WebView2's own cache/cookies/IndexedDB folder ("EBWebView") defaults to
+; living right next to the exe when no custom user-data folder is
+; configured -- i.e. inside {app}.
+Type: filesandordirs; Name: "{app}\EBWebView"
+; shared_preferences_windows and the debug log (lib/utils/debug_log.dart)
+; both resolve their storage directory from the same CompanyName/
+; ProductName pair in windows/runner/Runner.rc, which lands them both
+; under %AppData%\SignageX\SignageX Player -- NOT under {app} at all.
+; This holds pairing state, the cached campaign JSON, and the debug log.
 Type: filesandordirs; Name: "{userappdata}\SignageX\SignageX Player"
+; Only removes {app} if the two deletions above (plus [Files]'s own
+; tracked removal) left it empty -- never touches a non-empty directory,
+; so unrelated files in a custom install location are preserved.
+Type: dirifempty; Name: "{app}"
 
 [Icons]
 Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"
