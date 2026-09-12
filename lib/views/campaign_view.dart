@@ -265,6 +265,20 @@ class _CampaignViewState extends State<CampaignView> {
   Widget? _lastGoodContent;
   String? _lastGoodCampaignId;
 
+  // W23: the web-app-readiness gate below previously had no bounded
+  // timeout -- confirmed in practice: a real device stayed on the
+  // downloading/last-good-content fallback for minutes with a scheduled
+  // web-app campaign that DID load (its URL returns real content) but
+  // whose onPageReady/onLoadStop signal apparently never fired (or took
+  // far longer than any reasonable wait), with nothing to ever recover.
+  // Tracks how long the CURRENT campaign has been sitting in the gated
+  // "not ready yet" state; past _kWebAppReadyTimeout it stops waiting and
+  // renders normally instead of blocking forever on a signal that may
+  // never come.
+  String? _gatedCampaignId;
+  DateTime? _gatedSince;
+  static const Duration _kWebAppReadyTimeout = Duration(seconds: 8);
+
   bool _campaignIsWebAppOnly(Campaign campaign) {
     final zones = campaign.zones;
     if (zones == null || zones.isEmpty) return false;
@@ -449,27 +463,52 @@ class _CampaignViewState extends State<CampaignView> {
       // safely shown instead, or fall back to the existing DownloadingView
       // if this is the very first thing the player has ever shown.
       if (_campaignIsWebAppOnly(campaign) && !_campaignWebAppsReady(campaign)) {
-        // Must still build the prefetch layer here -- this gated campaign
-        // isn't being rendered by _buildZones below, so it's the only thing
-        // that will ever start its web app(s) loading; without this the
-        // player would be permanently stuck on this fallback, since no
-        // build path would exist to ever make _campaignWebAppsReady true.
-        // _lastGoodCampaignId (if showing) IS excluded -- it's actively
-        // rendering itself as the fallback below, so it must not also be
-        // duplicated here under the same GlobalKey(s).
-        final gatedPrefetch = _buildGlobalWebAppPrefetchLayer(
-          campaigns,
-          excludeCampaignIds: {
-            if (_lastGoodCampaignId != null) _lastGoodCampaignId!,
-          },
-        );
-        final fallback = _lastGoodContent ?? const DownloadingView();
+        if (_gatedCampaignId != campaign.campaignId) {
+          _gatedCampaignId = campaign.campaignId;
+          _gatedSince = DateTime.now();
+        }
+        final waited = DateTime.now().difference(_gatedSince!);
+        if (waited < _kWebAppReadyTimeout) {
+          // Must still build the prefetch layer here -- this gated campaign
+          // isn't being rendered by _buildZones below, so it's the only thing
+          // that will ever start its web app(s) loading; without this the
+          // player would be permanently stuck on this fallback, since no
+          // build path would exist to ever make _campaignWebAppsReady true.
+          // _lastGoodCampaignId (if showing) IS excluded -- it's actively
+          // rendering itself as the fallback below, so it must not also be
+          // duplicated here under the same GlobalKey(s).
+          final gatedPrefetch = _buildGlobalWebAppPrefetchLayer(
+            campaigns,
+            excludeCampaignIds: {
+              if (_lastGoodCampaignId != null) _lastGoodCampaignId!,
+            },
+          );
+          final fallback = _lastGoodContent ?? const DownloadingView();
+          _debugLog(
+              'campaign ${campaign.campaignId} is web-app-only and not ready yet '
+              '(waited ${waited.inSeconds}s), '
+              '${_lastGoodContent != null ? "keeping $_lastGoodCampaignId on screen" : "showing downloading screen"}');
+          return gatedPrefetch == null
+              ? fallback
+              : Stack(children: [fallback, gatedPrefetch]);
+        }
+        // W23: past the bounded wait -- stop blocking on a readiness signal
+        // that may never come and render the web app anyway. It may still
+        // be genuinely mid-load (a real, if slower-than-ideal, blank/loading
+        // moment) rather than permanently stuck, but that's a normal,
+        // recoverable state -- unlike waiting forever with zero recourse.
         _debugLog(
-            'campaign ${campaign.campaignId} is web-app-only and not ready yet, '
-            '${_lastGoodContent != null ? "keeping $_lastGoodCampaignId on screen" : "showing downloading screen"}');
-        return gatedPrefetch == null
-            ? fallback
-            : Stack(children: [fallback, gatedPrefetch]);
+            'campaign ${campaign.campaignId} exceeded ${_kWebAppReadyTimeout.inSeconds}s '
+            'waiting for web-app readiness -- rendering anyway instead of blocking forever');
+      }
+      // Falling through to render normally -- either this campaign was
+      // never gated, its web app(s) actually became ready, or the timeout
+      // above just fired. Clear the gate tracking so a LATER re-gating of
+      // this same campaign ID (e.g. it's swapped out and back in) starts a
+      // fresh timeout window instead of reusing a stale start time.
+      if (_gatedCampaignId == campaign.campaignId) {
+        _gatedCampaignId = null;
+        _gatedSince = null;
       }
 
       final zonesContent = _buildZones(campaign, campaigns, campaignCanPlay);
