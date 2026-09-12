@@ -315,6 +315,13 @@ class _CampaignViewState extends State<CampaignView> {
 
     _restrictionCheckTimer =
         Timer.periodic(const Duration(seconds: 8), (timer) {
+      // Confirms whether this timer is actually ticking at all -- a live
+      // "screen never updates again" report showed zero _buildScreen
+      // activity for 6+ minutes straight while every other timer in the
+      // app (heartbeat, screenshots) kept firing normally, which points at
+      // either this timer never firing, or firing but not on a mounted
+      // widget.
+      _debugLog('_restrictionCheckTimer tick: mounted=$mounted');
       if (mounted) {
         setState(() {});
       } else {
@@ -325,6 +332,7 @@ class _CampaignViewState extends State<CampaignView> {
 
   @override
   void dispose() {
+    _debugLog('_CampaignViewState disposed');
     _restrictionCheckTimer?.cancel();
     _focusNode.dispose();
     super.dispose();
@@ -374,6 +382,15 @@ class _CampaignViewState extends State<CampaignView> {
     final campaignModel = mqttViewModel.campaignModel;
 
     final campaigns = campaignModel?.data?.playerCampaigns;
+    // Logging blind spot found while chasing a live "stuck on no content"
+    // report: this early return had zero logging, so if _buildScreen even
+    // gets called again after a campaign was already showing (or never gets
+    // called again at all, e.g. _restrictionCheckTimer not actually
+    // re-triggering a rebuild), there was no way to tell which of those two
+    // very different problems was happening.
+    _debugLog(
+        '_buildScreen called: campaignModel=${campaignModel != null} '
+        'campaignsCount=${campaigns?.length ?? 0} state=${mqttViewModel.state}');
     if (campaigns == null || campaigns.isEmpty) {
       return const NoContentView();
     }
