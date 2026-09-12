@@ -29,6 +29,7 @@ import 'package:digital_signage/models/intractivity_model.dart'
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/utils/cache_path_utils.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
+import 'package:digital_signage/utils/time_range_utils.dart';
 import 'package:digital_signage/utils/url_encoding_utils.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/utils/windows_screen_capture.dart'
@@ -410,16 +411,17 @@ class MqttViewModel extends ChangeNotifier {
           _currentIndex = 0;
           _timer?.cancel();
 
-          for (var playlist in _playListModel!.data.playlist) {
-            // Check if the playlist contains any media
-            if (playlist.media != null && playlist.media!.isNotEmpty) {
-              for (var media in playlist.media!) {
-                print("Media URL: ${media.mediaUrl}");
-
-                // Start downloading for each media item
-                _startDownloadingForPlaylist();
-              }
-            }
+          // W07 follow-up: _startDownloadingForPlaylist() already iterates
+          // every playlist/media item itself -- calling it again per media
+          // item here queued one full redundant download pass per item
+          // (confirmed: an N-item playlist launched N complete passes, with
+          // only the last one's generation actually allowed to commit final
+          // state). One call is enough, same as the campaign path below.
+          final hasPlaylistMedia = _playListModel!.data.playlist.any(
+            (playlist) => playlist.media?.isNotEmpty ?? false,
+          );
+          if (hasPlaylistMedia) {
+            _startDownloadingForPlaylist();
           }
         } else if (storedJsonObj["action"] == "publish_campaign") {
           await _mqttClientService.connect();
@@ -437,13 +439,11 @@ class MqttViewModel extends ChangeNotifier {
           _selectCompositionCampaignIndexIfPresent();
 
           print(_mediaList);
-          for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
-            for (var zone in campaign.zones ?? []) {
-              for (var media in zone.mediaItems ?? []) {
-                print("Media URL: ${media.mediaUrl}");
-                _startDownloadingForCampaign();
-              }
-            }
+          // W07 follow-up: same redundant-call issue as the playlist branch
+          // above -- _startDownloadingForCampaign() already walks every
+          // campaign/zone/media item itself.
+          if ((_campaignModel?.data?.playerCampaigns ?? []).isNotEmpty) {
+            _startDownloadingForCampaign();
           }
         } else {
           print("elssssssssssssssssssssse caseeeeeee}");
@@ -458,15 +458,12 @@ class MqttViewModel extends ChangeNotifier {
           _currentIndex = 0;
           _timer?.cancel();
           print(_mediaList);
-          for (var playlist in _playListModel!.data.playlist) {
-            // Check if the playlist contains any media
-            if (playlist.media != null && playlist.media!.isNotEmpty) {
-              for (var media in playlist.media!) {
-                print("Media URL: ${media.mediaUrl}");
-
-                // Start downloading for each media item
-                _startDownloadingForPlaylist();
-              }
+          {
+            final hasPlaylistMedia = _playListModel!.data.playlist.any(
+              (playlist) => playlist.media?.isNotEmpty ?? false,
+            );
+            if (hasPlaylistMedia) {
+              _startDownloadingForPlaylist();
             }
           }
         } else if (storedJsonObj["action"] == "publish_campaign") {
@@ -476,13 +473,8 @@ class MqttViewModel extends ChangeNotifier {
           );
           _selectCompositionCampaignIndexIfPresent();
 
-          for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
-            for (var zone in campaign.zones ?? []) {
-              for (var media in zone.mediaItems ?? []) {
-                print("Media URL: ${media.mediaUrl}");
-                _startDownloadingForCampaign();
-              }
-            }
+          if ((_campaignModel?.data?.playerCampaigns ?? []).isNotEmpty) {
+            _startDownloadingForCampaign();
           }
         } else {
           _state = MqttState.noInternet;
@@ -2733,17 +2725,12 @@ EOF
       // }
       print("model data ${_playListModel!.data.playlist}");
 
-      for (var playlist in _playListModel!.data.playlist) {
-        // Check if the playlist contains any media
-        if (playlist.media != null && playlist.media!.isNotEmpty) {
-          for (var media in playlist.media!) {
-            print("Media URL: ${media.mediaUrl}");
-
-            // Start downloading for each media item
-            _startDownloadingForPlaylist();
-          }
-        }
-      }
+      // W07 follow-up: _startDownloadingForPlaylist() already iterates every
+      // playlist/media item itself -- calling it once per media item queued
+      // one full redundant download pass per item (an N-item playlist
+      // launched N complete passes, with only the last generation allowed to
+      // commit final state). hasPlaylistMedia was already computed above.
+      _startDownloadingForPlaylist();
     } else if (jsonObj["action"] == "publish_campaign") {
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
@@ -3395,18 +3382,7 @@ EOF
   }
 
   bool _isTimeInRangeForCampaign(String timeFrom, String timeTo) {
-    DateTime currentTime = DateTime.now();
-    DateTime fromTime = DateTime.now().copyWith(
-      hour: int.parse(timeFrom.split(':')[0]),
-      minute: int.parse(timeFrom.split(':')[1]),
-    );
-
-    DateTime toTime = DateTime.now().copyWith(
-      hour: int.parse(timeTo.split(':')[0]),
-      minute: int.parse(timeTo.split(':')[1]),
-    );
-
-    return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
+    return isNowInTimeRange(timeFrom, timeTo);
   }
 
   void _updateMessage() {
@@ -3581,22 +3557,7 @@ EOF
   }
 
   bool _isTimeInRange(String timeFrom, String timeTo) {
-    DateTime currentTime = DateTime.now();
-    DateTime fromTime = DateTime.now().copyWith(
-      hour: int.parse(timeFrom.split(':')[0]),
-      minute: int.parse(timeFrom.split(':')[1]),
-      second: int.parse(timeFrom.split(':')[2]),
-    );
-
-    DateTime toTime = DateTime.now().copyWith(
-        hour: int.parse(timeTo.split(':')[0]),
-        minute: int.parse(timeTo.split(':')[1]),
-        // Was int.parse(timeFrom...) -- a copy-paste bug that made the end
-        // boundary's seconds always equal the start boundary's seconds
-        // instead of the end time's own seconds.
-        second: int.parse(timeTo.split(':')[2]));
-
-    return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
+    return isNowInTimeRange(timeFrom, timeTo);
   }
 
   /// Check if restrictions allow the campaign/media to play

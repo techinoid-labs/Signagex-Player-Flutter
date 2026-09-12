@@ -11,6 +11,7 @@ import 'package:media_kit/media_kit.dart' as media_kit;
 import 'package:media_kit_video/media_kit_video.dart' as media_kit_video;
 
 import 'package:digital_signage/models/play_list_model.dart';
+import 'package:digital_signage/utils/time_range_utils.dart';
 import 'package:digital_signage/view_models/mqtt_view_model.dart';
 
 class PlaylistScreen extends StatefulWidget {
@@ -131,20 +132,7 @@ class _PlaylistScreenState extends State<PlaylistScreen> {
   }
 
   bool _isTimeInRange(String timeFrom, String timeTo) {
-    DateTime currentTime = DateTime.now();
-    DateTime fromTime = DateTime.now().copyWith(
-      hour: int.parse(timeFrom.split(':')[0]),
-      minute: int.parse(timeFrom.split(':')[1]),
-      second: int.parse(timeFrom.split(':')[2]),
-    );
-
-    DateTime toTime = DateTime.now().copyWith(
-      hour: int.parse(timeTo.split(':')[0]),
-      minute: int.parse(timeTo.split(':')[1]),
-      second: int.parse(timeTo.split(':')[2]),
-    );
-
-    return currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
+    return isNowInTimeRange(timeFrom, timeTo);
   }
 }
 
@@ -217,19 +205,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     final timeFrom = media.schedule.period!.time.from;
     final timeTo = media.schedule.period!.time.to;
-    final currentTime = DateTime.now();
-    final fromTime = DateTime.now().copyWith(
-      hour: int.parse(timeFrom.split(':')[0]),
-      minute: int.parse(timeFrom.split(':')[1]),
-      second: int.parse(timeFrom.split(':')[2]),
-    );
-    final toTime = DateTime.now().copyWith(
-      hour: int.parse(timeTo.split(':')[0]),
-      minute: int.parse(timeTo.split(':')[1]),
-      second: int.parse(timeTo.split(':')[2]),
-    );
-    final isTimeInRange =
-        currentTime.isAfter(fromTime) && currentTime.isBefore(toTime);
+    final isTimeInRange = isNowInTimeRange(timeFrom, timeTo, now: now);
 
     return isDateInRange && isDayAllowed && isTimeInRange;
   }
