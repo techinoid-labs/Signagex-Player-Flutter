@@ -1414,14 +1414,31 @@ EOF
   // cancel the timer on its very first tick and fix nothing.
   void _startNetworkRecovery() {
     _needsReconnect = true;
+    // Slightly longer than the service's 20s connect timeout, so a tick
+    // normally lands between attempts rather than on top of one still
+    // running.
     _networkRecoveryTimer ??=
-        Timer.periodic(const Duration(seconds: 15), (_) async {
+        Timer.periodic(const Duration(seconds: 25), (_) async {
       if (!_needsReconnect) {
         _networkRecoveryTimer?.cancel();
         _networkRecoveryTimer = null;
         return;
       }
-      _debugLog('network recovery tick -- retrying (state=$_state)');
+      // The captured sandbox log showed four ticks logged as "retrying"
+      // while only the first actually did anything: a connect attempt could
+      // outlast three 15s ticks, and the rest hit the _mqttConnecting guard
+      // and returned silently. Reading that log, the retry looked broken
+      // when it was merely busy. Say which it is.
+      if (_mqttConnecting) {
+        _debugLog('network recovery tick -- SKIPPED, attempt still in flight');
+        return;
+      }
+      // Rebuild the client before retrying. A retry against the same
+      // poisoned client made no progress in that capture, while a fresh
+      // process connected in under a second -- see resetClient().
+      await _mqttClientService.resetClient();
+      _debugLog('network recovery tick -- retrying with a fresh client '
+          '(state=$_state)');
       if (_state == MqttState.noInternet ||
           _state == MqttState.failure ||
           _state == MqttState.initial) {
