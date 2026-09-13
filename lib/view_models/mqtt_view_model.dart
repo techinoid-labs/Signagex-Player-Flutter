@@ -423,7 +423,7 @@ class MqttViewModel extends ChangeNotifier {
         print("this is data $storedJsonObj");
 
         if (storedJsonObj["action"] == "publish_playlist") {
-          await _mqttClientService.connect();
+          await _tryConnect('publish_playlist');
 
           if (_topic.isNotEmpty) {
             subsibeMessage(_topic);
@@ -451,7 +451,7 @@ class MqttViewModel extends ChangeNotifier {
             _startDownloadingForPlaylist();
           }
         } else if (storedJsonObj["action"] == "publish_campaign") {
-          await _mqttClientService.connect();
+          await _tryConnect('publish_campaign');
 
           if (_topic.isNotEmpty) {
             subsibeMessage(_topic);
@@ -1322,7 +1322,40 @@ EOF
   String get receivedMessage =>
       _mqttClientService.receivedMessageNotifier.value;
 
+  // Guards against a recovery tick firing while the previous attempt is
+  // still in flight (each attempt does real network I/O and can outlast the
+  // interval), which would otherwise stack overlapping connects.
+  bool _mqttConnecting = false;
+  Timer? _networkRecoveryTimer;
+  // Whether a connect attempt has failed and not yet succeeded. This, not
+  // _state, is what the recovery timer stops on -- see _startNetworkRecovery.
+  bool _needsReconnect = false;
+
+  // The stored-content branches of the connectivity listener below called
+  // _mqttClientService.connect() bare. A throw there is an unhandled async
+  // error inside a stream listener callback: it aborts the REST of that
+  // callback (the subscribe + device-info publish that follow it) and
+  // schedules no retry, so an already-paired player that happened to start
+  // while the network was still settling would render its stored content
+  // but never reconnect to MQTT -- silently stuck on old content, with no
+  // no-internet screen to even hint at it. Same root gap as the catch in
+  // _mqttConnection(), just on the path that affects already-paired
+  // devices rather than fresh installs.
+  Future<bool> _tryConnect(String where) async {
+    try {
+      await _mqttClientService.connect();
+      return true;
+    } catch (error) {
+      _debugLog('$where: connect FAILED: ${error.runtimeType} -- $error '
+          '-- scheduling recovery retry');
+      _startNetworkRecovery();
+      return false;
+    }
+  }
+
   Future<void> _mqttConnection() async {
+    if (_mqttConnecting) return;
+    _mqttConnecting = true;
     try {
       debugPrint("Attempting to reconnect to MQTT.");
       await _mqttClientService.connect();
@@ -1334,10 +1367,100 @@ EOF
           Platform.isWindows) {
         await _checkPairingStatus();
       }
+      // Got through a full connect + pairing check, so whatever was wrong
+      // has cleared -- stop retrying.
+      _needsReconnect = false;
+      _networkRecoveryTimer?.cancel();
+      _networkRecoveryTimer = null;
     } catch (error) {
       _state = MqttState.noInternet;
       notifyListeners();
       debugPrint("Error during MQTT reinitialization: $error");
+      _debugLog('_mqttConnection FAILED: ${error.runtimeType} -- $error '
+          '-- scheduling recovery retry');
+      _startNetworkRecovery();
+    } finally {
+      _mqttConnecting = false;
+    }
+  }
+
+  // Reproduced end-to-end in Windows Sandbox: launching the player
+  // immediately on a fresh boot lands on "no internet", while launching the
+  // SAME build on the SAME sandbox about a minute later (after unrelated
+  // HTTPS requests had been made) connects and shows the pairing code
+  // normally. The network was verifiably fine in both cases -- a direct
+  // POST to the very pairing endpoint this blocks on returned HTTP 200 from
+  // inside that sandbox.
+  //
+  // So the first attempt can simply be too early: Windows hasn't finished
+  // establishing internet status (NCSI) when the player starts, and
+  // whatever the attempt sees at that instant used to be FINAL. This catch
+  // set MqttState.noInternet and scheduled nothing at all, so the only
+  // thing that could ever rescue the player was the OS connectivity stream
+  // firing again -- which on Windows does not reliably fire for an
+  // internet-reachability change (as opposed to an adapter appearing or
+  // disappearing). One unlucky moment at startup stranded the player
+  // permanently, which is exactly the "stuck on no internet over Ethernet"
+  // report.
+  //
+  // A plain periodic retry removes that entire class of failure: it no
+  // longer matters why the first attempt failed (too early, transient DNS,
+  // backend blip, adapter still negotiating), because the player keeps
+  // trying until it genuinely works and cancels itself the moment it does.
+  //
+  // Stops on _needsReconnect rather than on _state: the paired path arms
+  // this while the player is happily rendering stored content
+  // (_state == campaignScreen), so a state-based stop condition would
+  // cancel the timer on its very first tick and fix nothing.
+  void _startNetworkRecovery() {
+    _needsReconnect = true;
+    _networkRecoveryTimer ??=
+        Timer.periodic(const Duration(seconds: 15), (_) async {
+      if (!_needsReconnect) {
+        _networkRecoveryTimer?.cancel();
+        _networkRecoveryTimer = null;
+        return;
+      }
+      _debugLog('network recovery tick -- retrying (state=$_state)');
+      if (_state == MqttState.noInternet ||
+          _state == MqttState.failure ||
+          _state == MqttState.initial) {
+        // Nothing on screen worth preserving -- run the full flow, which
+        // also re-runs the pairing check and moves the UI off the
+        // no-internet screen once it succeeds.
+        await _mqttConnection();
+      } else {
+        // Already rendering content. Restore the MQTT session ONLY, and
+        // deliberately leave _state alone: flipping a playing campaign back
+        // to the Connecting screen to repair a background transport problem
+        // would be a visible regression on a screen that is otherwise fine.
+        await _reconnectSession();
+      }
+    });
+  }
+
+  /// Re-establishes the MQTT session (connect + resubscribe + republish
+  /// device info, mirroring what the connectivity listener does) without
+  /// touching the UI state.
+  Future<void> _reconnectSession() async {
+    if (_mqttConnecting) return;
+    _mqttConnecting = true;
+    try {
+      await _mqttClientService.connect();
+      if (_topic.isNotEmpty) {
+        subsibeMessage(_topic);
+      }
+      if (globleTopic.isNotEmpty) {
+        publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+      }
+      _needsReconnect = false;
+      _networkRecoveryTimer?.cancel();
+      _networkRecoveryTimer = null;
+      _debugLog('network recovery: MQTT session restored (state=$_state)');
+    } catch (error) {
+      _debugLog('network recovery: still failing -- ${error.runtimeType} -- $error');
+    } finally {
+      _mqttConnecting = false;
     }
   }
 
@@ -3858,6 +3981,7 @@ EOF
     _timer?.cancel();
     _pairingPollTimer?.cancel();
     _interactivityOverlayTimer?.cancel();
+    _networkRecoveryTimer?.cancel();
     _stopPeriodicReporting();
     // W03: releases the MQTT updates subscription too, not just this
     // view model's own timers.
