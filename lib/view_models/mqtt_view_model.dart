@@ -2364,6 +2364,19 @@ EOF
       notifyListeners();
     } catch (error) {
       debugPrint("Error during pairing check: $error");
+      // This catch is what puts the player on the "Connecting..." screen,
+      // and until now it only ever explained itself through debugPrint --
+      // invisible in a release build. That made every "it won't connect"
+      // report (notably: works on Wi-Fi, stuck on Connecting over
+      // Ethernet) an unreadable black box: no way to tell a DNS failure
+      // from a TLS failure from a timeout from an HTTP 4xx/5xx, which are
+      // four completely different problems with four different fixes.
+      // The error's runtimeType matters as much as its message here --
+      // SocketException vs HandshakeException vs TimeoutException is
+      // exactly the distinction that identifies an Ethernet-specific
+      // network fault.
+      _debugLog('_checkPairingStatus FAILED: ${error.runtimeType} -- $error '
+          '(retryCount=$_pairingRetryCount state=$_state)');
 
       // Don't restart or retry if already on the pairing screen, or
       // currently stopped -- both already have _pairingPollTimer quietly

@@ -2,6 +2,8 @@ import 'dart:async';
 
 import 'package:connectivity_plus/connectivity_plus.dart';
 
+import 'package:digital_signage/utils/debug_log.dart' as debug;
+
 // First attempt at this bug replaced InternetConnectionChecker's probe of
 // third-party DNS-resolver IPs with a raw TCP connect to this app's own
 // backend host:port instead -- reasoning that the specific *target* being
@@ -30,6 +32,17 @@ import 'package:connectivity_plus/connectivity_plus.dart';
 // considers some network connected, regardless of which transport it is.
 
 bool _isConnected(List<ConnectivityResult> results) {
+  // An EMPTY list is deliberately treated as connected, not disconnected.
+  // `results.any(...)` on an empty list is false, which would report "no
+  // network" -- and connectivity_plus on Windows returning an empty/unknown
+  // result for an adapter configuration it doesn't recognise is a very
+  // different thing from the OS actually saying "nothing is connected"
+  // (which comes through explicitly as [ConnectivityResult.none]). Failing
+  // OPEN here matters: a false "disconnected" strands the player on the
+  // no-internet screen with nothing to recover it, whereas a false
+  // "connected" just means the next real network call reports the real
+  // error, which is both recoverable and far easier to diagnose.
+  if (results.isEmpty) return true;
   return results.any((r) => r != ConnectivityResult.none);
 }
 
@@ -38,12 +51,23 @@ bool _isConnected(List<ConnectivityResult> results) {
 /// reference implementation treats this (no transport is special-cased).
 Future<bool> isOsNetworkConnected() async {
   final results = await Connectivity().checkConnectivity();
-  return _isConnected(results);
+  final connected = _isConnected(results);
+  // Logs the RAW transport list, not just the boolean -- "stuck on
+  // Connecting over Ethernet but fine on Wi-Fi" is impossible to diagnose
+  // without knowing whether Windows reported [ethernet], [none], [other],
+  // or nothing at all for that adapter.
+  debug.debugLog('Connectivity', 'checkConnectivity -> $results (connected=$connected)');
+  return connected;
 }
 
 /// Emits the OS-level connectivity state (see [isOsNetworkConnected]) once
 /// immediately and again on every change connectivity_plus reports.
 Stream<bool> osNetworkConnectivityStream() async* {
   yield await isOsNetworkConnected();
-  yield* Connectivity().onConnectivityChanged.map(_isConnected);
+  yield* Connectivity().onConnectivityChanged.map((results) {
+    final connected = _isConnected(results);
+    debug.debugLog(
+        'Connectivity', 'onConnectivityChanged -> $results (connected=$connected)');
+    return connected;
+  });
 }
