@@ -122,3 +122,9 @@ app.*.map.json
 
 # WebView2 bootstrapper fetched by CI at build time (not committed)
 windows/installer/MicrosoftEdgeWebview2Setup.exe
+
+# Windows Sandbox test harness: script + .wsb are tracked, but not the
+# 44MB installer dropped in for a run, nor the logs/diagnostics it emits.
+sandbox-share/*.exe
+sandbox-share/logs/
+sandbox-share/sandbox-diag.txt

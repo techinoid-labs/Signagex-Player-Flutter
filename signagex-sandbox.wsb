@@ -1,0 +1,26 @@
+<Configuration>
+  <!-- Windows Sandbox test harness for the SignageX player.
+
+       Double-click this file to launch a sandbox that automatically:
+         1. runs a network self-test (BEFORE the player starts)
+         2. silently installs whatever Setup .exe is in sandbox-share
+         3. mirrors the player's debug log + watchdog log back out to
+            sandbox-share\logs, updated every 3 seconds
+
+       The point of the mapped folder: Windows Sandbox is isolated and
+       wiped on close, so the player's own logs have been unreadable for
+       every sandbox test. Anything written to C:\share inside the sandbox
+       lands in sandbox-share on the host and can be read while the
+       sandbox is still open. -->
+  <Networking>Enable</Networking>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>D:\Signagex-Player-Flutter\sandbox-share</HostFolder>
+      <SandboxFolder>C:\share</SandboxFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -ExecutionPolicy Bypass -NoProfile -WindowStyle Minimized -File C:\share\run-in-sandbox.ps1</Command>
+  </LogonCommand>
+</Configuration>
