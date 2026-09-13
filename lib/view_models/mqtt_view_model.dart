@@ -504,8 +504,35 @@ class MqttViewModel extends ChangeNotifier {
             _startDownloadingForCampaign();
           }
         } else {
-          _state = MqttState.noInternet;
-          notifyListeners();
+          // Reproduced in Windows Sandbox (which connects through a Hyper-V
+          // virtual NIC that Windows presents as Ethernet): the sandbox has
+          // genuinely working internet, yet the player sat on the
+          // no-network screen forever. This branch is why -- with no stored
+          // content to restore, a false "disconnected" reading went straight
+          // to MqttState.noInternet and never attempted a single network
+          // call, so nothing could ever disprove it or recover.
+          //
+          // The OS connectivity signal is authoritative on Android (which is
+          // why the reference player can gate on it), but demonstrably is
+          // NOT on Windows: Network List Manager -- what connectivity_plus
+          // reads -- classifies some adapters (Hyper-V/virtual NICs, and
+          // evidently whatever the office Ethernet setup presents) as having
+          // no internet even while HTTP and MQTT to the real backend work
+          // fine. Treating that reading as proof is what produced every
+          // "works on Wi-Fi, dead on Ethernet" report.
+          //
+          // So the signal is now advisory: it still triggers a connection
+          // ATTEMPT, but only the attempt itself decides the outcome.
+          // _mqttConnection() already sets noInternet in its own catch if
+          // the connection genuinely fails, so a real outage still lands on
+          // the same screen -- the difference is that it's now decided by an
+          // actual failed network call rather than by an OS flag that can be
+          // wrong.
+          _debugLog(
+              'connectivity reported disconnected and there is no stored '
+              'content -- attempting to connect anyway rather than trusting '
+              'the OS flag (see Windows Sandbox/Ethernet false-negative)');
+          await _mqttConnection();
         }
       }
     });
