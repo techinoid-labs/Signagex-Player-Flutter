@@ -3405,8 +3405,37 @@ EOF
 
     int durationcampagin = 0;
 
+    // W12 (the part that was never actually fixed): this rotation-side
+    // eligibility check and CampaignView._buildScreen's render-side check
+    // were two completely different systems answering the same question,
+    // and they disagreed for any restriction-scheduled campaign.
+    //
+    // _buildScreen decides "can this campaign play" as:
+    //     alwaysPlay ? yes : (restrictions.isNotEmpty ? checkRestrictions(...) : no)
+    // while this function only ever looked at alwaysPlay or the LEGACY
+    // `period` block (date/days/time), never at `restrictions` at all.
+    //
+    // Confirmed end-to-end on a real device: a campaign with
+    // alwaysPlay=false, no period, and one time/is-after restriction that
+    // had genuinely passed rendered correctly (state -> campaignScreen,
+    // checkRestrictions -> true), and then ~200ms later CampaignView's own
+    // initState post-frame callback ran startPlaylistTimerForCampaign(),
+    // landed here, scored the campaign duration 0 because `restrictions`
+    // was invisible to this code, and _updateIndexForCampain concluded
+    // "no playable+eligible campaign" and set MqttState.noContent --
+    // tearing down the very screen the render path had just approved, and
+    // then re-confirming that same wrong answer every 30s forever. That is
+    // the "published with a restriction, player says No Content" report.
+    //
+    // Restrictions are checked here in the same order _buildScreen uses,
+    // and only when a non-empty restrictions list actually exists, so the
+    // legacy period path below is untouched for payloads that still use it.
+    final restrictions = campaignSchedule.restrictions;
+    final hasRestrictions = restrictions != null && restrictions.isNotEmpty;
+
     // Check if the item is in the schedule or should always play
     if ((campaignSchedule.alwaysPlay ?? false) ||
+        (hasRestrictions && checkRestrictions(restrictions)) ||
         (campaignSchedule.period != null &&
             campaignSchedule.period!.date != null &&
             campaignSchedule.period!.date!.start != null &&
@@ -3437,6 +3466,10 @@ EOF
     // Log the state
     print(
         "Index: $index, Duration: $durationcampagin seconds, Always Play: ${campaignSchedule.alwaysPlay}");
+    _debugLog('_durationForCampaignAt($index) -> $durationcampagin '
+        '(alwaysPlay=${campaignSchedule.alwaysPlay} '
+        'restrictions=${restrictions?.length ?? 0} '
+        'hasPeriod=${campaignSchedule.period != null})');
 
     // #region agent log
     _mqttAgentDebugLog(
@@ -3542,6 +3575,13 @@ EOF
       // permanently stuck -- but never by immediately recursing.
       debugPrint(
           'MQTT_LOGS:: _updateIndexForCampain: no playable+eligible campaign right now. Rechecking in 30s.');
+      // This line silently tore down an actively-rendering campaign screen
+      // and only ever announced it through debugPrint -- invisible in a
+      // release build, which is why "state -> noContent" appeared in the
+      // logs with no accompanying reason for it anywhere.
+      _debugLog(
+          '_updateIndexForCampain: no playable+eligible campaign among $count '
+          '(durations all 0) -> noContent, recheck in 30s');
       _timerOfCampaign?.cancel();
       _timerOfCampaign =
           Timer(const Duration(seconds: 30), _updateIndexForCampain);
