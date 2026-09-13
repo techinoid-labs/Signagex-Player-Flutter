@@ -264,6 +264,26 @@ class _CampaignViewState extends State<CampaignView> {
   // in _buildGlobalWebAppPrefetchLayer also triggers an immediate recheck).
   Widget? _lastGoodContent;
   String? _lastGoodCampaignId;
+  // Every web-app stableId actually embedded inside _lastGoodContent (its
+  // own zones' items plus its sibling prefetch layer's items) -- see the
+  // GlobalKey collision fix on _buildGlobalWebAppPrefetchLayer's
+  // excludeStableIds for why campaign-ID-level exclusion alone isn't enough.
+  Set<String> _lastGoodContentStableIds = {};
+
+  Set<String> _collectWebAppStableIds(List<Campaign> campaigns) {
+    final ids = <String>{};
+    for (final c in campaigns) {
+      for (final zone in c.zones ?? const <CampaignZone>[]) {
+        final zoneId = (zone.id ?? 0).toString();
+        for (final media in zone.mediaItems ?? const <MediaItem>[]) {
+          if (!_isWebAppMediaItem(media)) continue;
+          final playback = media.isAd ? media.playbackMedia : media;
+          ids.add(_webAppStableId(c.campaignId, zoneId, playback));
+        }
+      }
+    }
+    return ids;
+  }
 
   // W23: the web-app-readiness gate below previously had no bounded
   // timeout -- confirmed in practice: a real device stayed on the
@@ -493,12 +513,18 @@ class _CampaignViewState extends State<CampaignView> {
           // build path would exist to ever make _campaignWebAppsReady true.
           // _lastGoodCampaignId (if showing) IS excluded -- it's actively
           // rendering itself as the fallback below, so it must not also be
-          // duplicated here under the same GlobalKey(s).
+          // duplicated here under the same GlobalKey(s). excludeStableIds
+          // covers what campaign-ID exclusion alone can't: _lastGoodContent
+          // (the actual fallback about to be shown alongside this layer) can
+          // itself embed OTHER campaigns' web app widgets too, via its own
+          // sibling prefetch call from whenever it was built -- see
+          // _lastGoodContentStableIds' doc comment.
           final gatedPrefetch = _buildGlobalWebAppPrefetchLayer(
             campaigns,
             excludeCampaignIds: {
               if (_lastGoodCampaignId != null) _lastGoodCampaignId!,
             },
+            excludeStableIds: _lastGoodContentStableIds,
           );
           final fallback = _lastGoodContent ?? const DownloadingView();
           _debugLog(
@@ -535,6 +561,7 @@ class _CampaignViewState extends State<CampaignView> {
           prefetch == null ? zonesContent : Stack(children: [zonesContent, prefetch]);
       _lastGoodContent = content;
       _lastGoodCampaignId = campaign.campaignId;
+      _lastGoodContentStableIds = _collectWebAppStableIds(campaigns);
       return content;
     } else {
       return Scaffold(
@@ -597,9 +624,29 @@ class _CampaignViewState extends State<CampaignView> {
   // (nothing else is rendering it while it's gated) -- otherwise, if it's
   // the only one with unready web apps, nothing would ever start loading
   // them and the player would be stuck on the fallback forever.
+  // W23 follow-up / GlobalKey collision fix: excludeCampaignIds alone isn't
+  // enough once _lastGoodContent gets reused as a fallback. _lastGoodContent
+  // is a cached widget SUBTREE from an earlier successful build -- it
+  // embeds a GlobalKeyed WBViewWidget for every OTHER campaign's web app
+  // too (via this exact function, called with only THAT build's own current
+  // campaign excluded). Confirmed live: CampaignView's whole State got
+  // disposed less than 200ms after a build that created several
+  // GlobalKey-bearing widgets in one frame -- the signature of Flutter's
+  // "Multiple widgets used the same GlobalKey" build error. If a LATER,
+  // different campaign is gated and falls back to showing that same cached
+  // _lastGoodContent, this function's own fresh call (excluding only the
+  // new current campaign) can recreate a widget for a campaign that's
+  // ALREADY embedded inside the cached fallback being shown alongside it in
+  // the same Stack -- two live widgets, one GlobalKey, same frame.
+  // excludeStableIds names every stableId already present in whatever
+  // fallback this call's result will be stacked with (see
+  // _lastGoodContentStableIds), at the precise stableId granularity the
+  // GlobalKey is actually keyed on -- excludeCampaignIds alone can't express
+  // "this specific item, from this specific campaign+zone" collisions.
   Widget? _buildGlobalWebAppPrefetchLayer(
     List<Campaign> campaigns, {
     Set<String> excludeCampaignIds = const {},
+    Set<String> excludeStableIds = const {},
   }) {
     final children = <Widget>[];
     for (final c in campaigns) {
@@ -620,6 +667,8 @@ class _CampaignViewState extends State<CampaignView> {
           // real render path looks up once this item's turn arrives.
           final playback = media.isAd ? media.playbackMedia : media;
           final stableId = _webAppStableId(c.campaignId, zoneId, playback);
+          // See the doc comment above -- this is the actual collision guard.
+          if (excludeStableIds.contains(stableId)) continue;
           final mediaUrl = playback.mediaType?.toLowerCase() == 'content' &&
                   mediaItemIsWebAppIframe(playback)
               ? mediaItemWebAppIframeUrl(playback)
