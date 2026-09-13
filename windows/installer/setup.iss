@@ -117,10 +117,40 @@ Source: "MicrosoftEdgeWebview2Setup.exe"; DestDir: "{tmp}"; Flags: deleteafterin
 ; are targeted by name now, and {app} itself is removed only if that
 ; leaves it empty -- unrelated files anywhere under a custom {app} survive.
 ;
-; WebView2's own cache/cookies/IndexedDB folder ("EBWebView") defaults to
-; living right next to the exe when no custom user-data folder is
-; configured -- i.e. inside {app}.
+; WebView2's own cache/cookies/IndexedDB storage. The name below was
+; WRONG and the deletion therefore never matched anything: verified on a
+; real install, the actual path is
+;   {app}\SignageXPlayer.exe.WebView2\EBWebView
+; When no custom user-data folder is configured, WebView2 defaults the UDF
+; to "<exe-name>.WebView2" next to the exe and creates EBWebView INSIDE
+; that -- so "{app}\EBWebView" is one level too high. (EBWebView is only
+; the top-level name when an app explicitly passes its own UDF.)
+;
+; Consequence was not cosmetic: because that folder survived, the
+; "dirifempty" on {app} below could never succeed either, so EVERY
+; uninstall/upgrade orphaned its entire install directory. Measured on the
+; test machine: five leftover SignageX Player-* folders totalling 263 MB,
+; none of which any uninstall had been able to remove. On a kiosk that
+; auto-updates unattended for months this grows without bound -- and a
+; full disk on a signage box is an outage, not an inconvenience.
+;
+; Uses the exe-name define rather than a hardcoded string so renaming the
+; exe can't silently reintroduce the same mismatch.
+Type: filesandordirs; Name: "{app}\{#MyAppExeName}.WebView2"
+; Kept as a harmless fallback in case a future build sets an explicit
+; user-data folder, which would put EBWebView directly under {app}.
 Type: filesandordirs; Name: "{app}\EBWebView"
+; The watchdog writes its own rotating log into the install directory
+; (windows/runner/watchdog_main.cpp's Log(), which rotates to
+; watchdog.log.previous at 1 MB). Both are created at RUNTIME, so [Files]
+; does not track them and they too would keep {app} non-empty forever --
+; the leftover "SignageX Player-99" on the test machine contained nothing
+; but the WebView2 folder and exactly this log.
+Type: files; Name: "{app}\watchdog.log"
+Type: files; Name: "{app}\watchdog.log.previous"
+; Same reasoning -- the post-install WebView2 check (CurStepChanged)
+; writes this at runtime, so it is untracked by [Files] too.
+Type: files; Name: "{app}\WEBVIEW2-MISSING.txt"
 ; shared_preferences_windows and the debug log (lib/utils/debug_log.dart)
 ; both resolve their storage directory from the same CompanyName/
 ; ProductName pair in windows/runner/Runner.rc, which lands them both
@@ -195,18 +225,74 @@ end;
   (per-machine on 64-bit Windows, else per-user); a missing/empty/"0.0.0.0"
   version means absent. Returns False (nothing to do) if the bootstrapper file
   wasn't bundled into this build. }
-function NeedsWebView2(): Boolean;
+function WebView2Version(): String;
 var
   pv: String;
+begin
+  pv := '';
+  RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', pv);
+  if pv = '' then
+    RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', pv);
+  if pv = '0.0.0.0' then
+    pv := '';
+  Result := pv;
+end;
+
+function NeedsWebView2(): Boolean;
 begin
   if not FileExists(ExpandConstant('{tmp}\MicrosoftEdgeWebview2Setup.exe')) then
   begin
     Result := False;
     exit;
   end;
-  pv := '';
-  RegQueryStringValue(HKLM, 'SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', pv);
-  if pv = '' then
-    RegQueryStringValue(HKCU, 'SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}', 'pv', pv);
-  Result := (pv = '') or (pv = '0.0.0.0');
+  Result := (WebView2Version() = '');
+end;
+
+{ Verifies AFTER install that the WebView2 runtime is actually present.
+  The [Run] entry above cannot do this: Inno ignores a [Run] program's exit
+  code, so a FAILED WebView2 install let setup report success and produced
+  an installation that dies at launch with
+
+    SignageXPlayer.exe - Bad Image
+    ...flutter_inappwebview_windows_plugin.dll is either not designed to
+    run on Windows or it contains an error. Error status 0xc0e90002.
+
+  which is precisely the failure reported from a customer site. The plugin
+  DLL is loaded during Flutter's plugin registration at startup, so this is
+  not a degraded mode -- the app cannot start at all.
+
+  The default bundled bootstrapper (~2 MB) DOWNLOADS the runtime at install
+  time, so it fails on exactly the machines most likely to be kiosks:
+  offline, captive-portal, or firewall-restricted. Rather than let that
+  surface hours later as an unexplained crash loop, fail loudly here and
+  leave a marker file naming the fix. For genuinely offline fleets, set the
+  WEBVIEW2_INSTALLER_URL repo variable to the pinned Evergreen STANDALONE
+  installer so no download is needed -- see .github/workflows/build-windows.yml. }
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  Marker: String;
+  Msg: String;
+begin
+  if CurStep <> ssPostInstall then
+    exit;
+  Marker := ExpandConstant('{app}\WEBVIEW2-MISSING.txt');
+  if WebView2Version() = '' then
+  begin
+    Msg := 'The Microsoft Edge WebView2 runtime is not installed, and this' + #13#10 +
+           'installer could not install it (it is downloaded at install time,' + #13#10 +
+           'so this usually means no internet access during setup).' + #13#10#13#10 +
+           'SignageX Player CANNOT START without it -- it will fail with a' + #13#10 +
+           '"Bad Image" error naming flutter_inappwebview_windows_plugin.dll.' + #13#10#13#10 +
+           'Install the WebView2 Evergreen Runtime on this machine, then' + #13#10 +
+           'launch the player again.';
+    { Written unconditionally: a silent/unattended install (how fleet
+      deployments run) suppresses the dialog entirely, so the marker file is
+      the only trace whoever investigates later will have. }
+    SaveStringToFile(Marker, Msg, False);
+    if not WizardSilent() then
+      MsgBox(Msg, mbError, MB_OK);
+  end
+  else
+    { Clear a marker left by an earlier broken install once it is fixed. }
+    DeleteFile(Marker);
 end;

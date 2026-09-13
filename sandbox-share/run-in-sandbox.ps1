@@ -99,12 +99,62 @@ try {
   Say ("  TCP 443 reachable = {0} (latency {1}ms)" -f $t.TcpTestSucceeded, $t.PingReplyDetails.RoundtripTime)
 } catch { Say "  TCP 443 test FAILED: $_" }
 
+# ---------- 1b. runtime dependencies ----------
+# A customer site hit:
+#   SignageXPlayer.exe - Bad Image
+#   flutter_inappwebview_windows_plugin.dll is either not designed to run on
+#   Windows or it contains an error. Error status 0xc0e90002.
+# That is a DLL load/init failure, and the app dies at STARTUP because the
+# plugin DLL is loaded during Flutter's plugin registration -- not a
+# degraded mode. The two things that cause it are a missing Edge WebView2
+# runtime and a missing MSVC runtime, so check both explicitly BEFORE the
+# install rather than inferring it from a crash later.
+#
+# Windows Sandbox is the interesting case precisely because it is a clean,
+# ephemeral image: it is a good proxy for a freshly-imaged kiosk, which is
+# where this failure actually shows up.
+Say "=== RUNTIME DEPENDENCIES (cause of the 'Bad Image' failure) ==="
+
+$wv = ''
+foreach ($k in @(
+  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}',
+  'HKCU:\SOFTWARE\Microsoft\EdgeUpdate\Clients\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}')) {
+  if (Test-Path $k) { $v = (Get-ItemProperty $k -ErrorAction SilentlyContinue).pv; if ($v -and $v -ne '0.0.0.0') { $wv = $v } }
+}
+if ($wv) { Say "  WebView2 Evergreen runtime: PRESENT (version $wv)" }
+else     { Say "  WebView2 Evergreen runtime: *** MISSING *** -- installer must supply it" }
+
+# The VC++ runtime is shipped app-local (CI copies the CRT redist next to
+# the exe), so a machine-wide redist is NOT required. Reported anyway to
+# tell the two situations apart if a Bad Image ever recurs.
+$sysCrt = Test-Path (Join-Path $env:SystemRoot 'System32\vcruntime140.dll')
+Say "  machine-wide VC++ runtime (System32\vcruntime140.dll): $(if ($sysCrt) {'present'} else {'absent -- fine, app ships its own'})"
+
 # ---------- 2. install ----------
 $installer = Get-ChildItem -Path $share -Filter '*.exe' | Where-Object { $_.Name -like '*Setup*' -or $_.Name -like '*SignageX*' } | Select-Object -First 1
 if ($installer) {
   Say "=== INSTALLING $($installer.Name) ==="
   $p = Start-Process -FilePath $installer.FullName -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/RESTARTPLAYER=1' -PassThru -Wait
   Say "  installer exited with $($p.ExitCode)"
+
+  # Confirms the shipped payload is complete -- an installer can exit 0 and
+  # still leave the app unable to start if these are absent.
+  $appDir = Get-ChildItem "$env:LOCALAPPDATA" -Directory -Filter 'SignageX*' -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime | Select-Object -Last 1
+  if ($appDir) {
+    Say "  installed to: $($appDir.FullName)"
+    foreach ($dll in @('vcruntime140.dll','vcruntime140_1.dll','msvcp140.dll',
+                       'WebView2Loader.dll','flutter_inappwebview_windows_plugin.dll',
+                       'flutter_windows.dll')) {
+      $present = Test-Path (Join-Path $appDir.FullName $dll)
+      Say ("    {0,-45} {1}" -f $dll, $(if ($present) {'ok'} else {'*** MISSING ***'}))
+    }
+    if (Test-Path (Join-Path $appDir.FullName 'WEBVIEW2-MISSING.txt')) {
+      Say "    *** installer flagged WEBVIEW2-MISSING.txt -- app will not start ***"
+    }
+  } else {
+    Say "  could not locate the installed app directory"
+  }
 } else {
   Say "=== NO INSTALLER FOUND in C:\share -- put the Setup .exe there ==="
 }
