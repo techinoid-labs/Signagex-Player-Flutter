@@ -1353,11 +1353,65 @@ EOF
     }
   }
 
+  // Set once a plain HTTPS request to the broker host has succeeded.
+  bool _tlsWarmedUp = false;
+
+  /// Makes one ordinary HTTPS request to the broker's host before the MQTT
+  /// connection is attempted, and ignores the result.
+  ///
+  /// This is not a reachability probe -- the OS connectivity reading and the
+  /// MQTT attempt itself already cover that. Its only job is to force
+  /// Windows to build and cache the TLS certificate chain for this host.
+  ///
+  /// Reproduced repeatedly in Windows Sandbox: the FIRST connection on a
+  /// brand-new Windows image times out, and every attempt afterward
+  /// succeeds in under a second -- including after merely closing and
+  /// reopening the exe, or reinstalling into the same sandbox. So whatever
+  /// is missing survives app restarts but dies with the machine image,
+  /// which rules out app state and points at a machine-level cache. On a
+  /// fresh image the intermediate-certificate cache is empty, and the first
+  /// handshake to an unseen host makes Windows fetch the intermediate/CRL
+  /// from Windows Update -- which can stall for roughly the 60s we measured
+  /// and then fail.
+  ///
+  /// The strongest evidence is accidental: the old sandbox harness ran an
+  /// HTTPS GET to this same host as part of its diagnostics BEFORE
+  /// launching the player, and under that harness the player always
+  /// connected fine. The same build launched with no prior HTTPS request
+  /// failed. That difference was originally misread as the harness's
+  /// startup delay; it was the harness warming this cache.
+  ///
+  /// Deliberately best-effort: a failure here is not reported and does not
+  /// block the connection attempt, because a failed warm-up still performs
+  /// the chain fetch that the next attempt benefits from.
+  Future<void> _warmUpTlsChain() async {
+    if (_tlsWarmedUp) return;
+    HttpClient? client;
+    try {
+      client = HttpClient()..connectionTimeout = const Duration(seconds: 10);
+      final request = await client.getUrl(Uri.parse('https://$mqttBroker/'));
+      final response =
+          await request.close().timeout(const Duration(seconds: 10));
+      await response.drain<void>();
+      _tlsWarmedUp = true;
+      _debugLog('TLS warm-up OK (HTTP ${response.statusCode}) for $mqttBroker');
+    } catch (error) {
+      // Left false so the next attempt tries again -- the chain may still
+      // be downloading in the background.
+      _debugLog('TLS warm-up failed (continuing anyway): ${error.runtimeType} -- $error');
+    } finally {
+      try {
+        client?.close(force: true);
+      } catch (_) {}
+    }
+  }
+
   Future<void> _mqttConnection() async {
     if (_mqttConnecting) return;
     _mqttConnecting = true;
     try {
       debugPrint("Attempting to reconnect to MQTT.");
+      await _warmUpTlsChain();
       await _mqttClientService.connect();
       _state = MqttState.connectionScreen;
       notifyListeners();
@@ -1463,6 +1517,7 @@ EOF
     if (_mqttConnecting) return;
     _mqttConnecting = true;
     try {
+      await _warmUpTlsChain();
       await _mqttClientService.connect();
       if (_topic.isNotEmpty) {
         subsibeMessage(_topic);
