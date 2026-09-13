@@ -9,6 +9,7 @@ import 'package:provider/provider.dart';
 import 'package:win32/win32.dart' as win32;
 
 import '../services/mqtt_client_service.dart';
+import '../utils/debug_log.dart' as debug;
 import '../view_models/mqtt_view_model.dart';
 import '../view_models/system_apply_settings_vm.dart';
 import '../views/campaign_view.dart';
@@ -167,8 +168,20 @@ class _MqttProviderState extends State<MqttProvider> {
     }
   }
 
+  // Confirmed real blind spot: CampaignView's own State got disposed with
+  // no Flutter framework error logged at all -- the only remaining
+  // explanation is that this function returned something OTHER than
+  // CampaignView on the very next call, meaning viewModel.state itself
+  // changed to something other than campaignScreen right after. print()
+  // here was invisible in a release build the whole time, so there was no
+  // way to see it happen. This logs every single call, not just changes,
+  // so the exact sequence around a disposal is fully visible.
+  MqttState? _lastLoggedState;
   Widget _getScreenForState(MqttState state) {
-    print("State: $state");
+    if (state != _lastLoggedState) {
+      debug.debugLog('MqttProvider', 'state -> $state (was $_lastLoggedState)');
+      _lastLoggedState = state;
+    }
     switch (state) {
       case MqttState.initial:
         return const ConnectingView();
