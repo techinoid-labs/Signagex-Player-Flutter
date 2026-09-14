@@ -2,6 +2,7 @@
 // download + silently run its installer -- the player-side half of the
 // player-releases backend feature (D:\SignageX\signageX-backend,
 // src/modules/player-releases). See UpdateBanner (main.dart) for the UI.
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dio/dio.dart';
@@ -90,6 +91,13 @@ const String _kAttemptTarget = 'update_attempt_target';
 const String _kAttemptCount = 'update_attempt_count';
 const String _kAbandonedTarget = 'update_abandoned_target';
 
+/// Set when an update attempt has just concluded, for the view model to
+/// publish and clear. Written here rather than reported directly because the
+/// outcome is only knowable AFTER the restart the update itself causes: this
+/// process is the new build, and the code that launched the installer died
+/// with the old one. SharedPreferences is what survives that gap.
+const String _kOutcomePending = 'update_outcome_pending';
+
 // W19: isNewerBuild already compares build ids by their normalized numeric
 // identity (parsing "v13"/"V13"/" v13 " down to 13), but recordAttempt and
 // reconcileAndGate below originally compared the raw strings directly.
@@ -170,6 +178,64 @@ UpdateGate reconcileAndGate({
   );
 }
 
+/// Notes whether the update we last attempted actually took.
+///
+/// Until now an update that silently failed left no trace anywhere a person
+/// would look: the player simply kept running the old build and quietly
+/// retried until its budget ran out. The only evidence was in a local log
+/// file nobody could reach.
+///
+/// Three outcomes are distinguishable here:
+///  * the running build IS the target       -> succeeded
+///  * the target was abandoned by the gate  -> failed, budget exhausted
+///  * neither yet                           -> still in flight, say nothing
+Future<void> _recordUpdateOutcome(
+  SharedPreferences prefs, {
+  required String? attemptTarget,
+  required String current,
+  required UpdateGate gate,
+}) async {
+  if (attemptTarget == null || attemptTarget.isEmpty) return;
+
+  String? result;
+  if (_sameBuildIdentity(current, attemptTarget)) {
+    result = 'succeeded';
+  } else if (_sameBuildIdentity(gate.abandonedTarget, attemptTarget)) {
+    result = 'failed';
+  }
+  if (result == null) return; // still mid-flight; nothing settled yet
+
+  await prefs.setString(
+    _kOutcomePending,
+    jsonEncode({
+      'target': attemptTarget,
+      'running': current,
+      'result': result,
+      'attempts': gate.attemptCount,
+      'at': DateTime.now().toIso8601String(),
+    }),
+  );
+  await _debugLog(
+      'update outcome: $result (target=$attemptTarget running=$current '
+      'attempts=${gate.attemptCount})');
+}
+
+/// Reads and clears any settled update outcome, for the caller to report.
+///
+/// Cleared on read so a single update is reported once and not on every
+/// subsequent launch.
+Future<Map<String, dynamic>?> takePendingUpdateOutcome() async {
+  final prefs = await SharedPreferences.getInstance();
+  final raw = prefs.getString(_kOutcomePending);
+  if (raw == null || raw.isEmpty) return null;
+  await prefs.remove(_kOutcomePending);
+  try {
+    return jsonDecode(raw) as Map<String, dynamic>;
+  } catch (_) {
+    return null;
+  }
+}
+
 Future<void> _saveUpdateGate(SharedPreferences prefs, UpdateGate gate) async {
   if (gate.attemptTarget == null) {
     await prefs.remove(_kAttemptTarget);
@@ -215,6 +281,14 @@ class UpdateCheckService {
         attemptTarget: prefs.getString(_kAttemptTarget),
         attemptCount: prefs.getInt(_kAttemptCount) ?? 0,
         abandonedTarget: prefs.getString(_kAbandonedTarget),
+      );
+      // Record how the previous attempt turned out, before _saveUpdateGate
+      // clears the bookkeeping it is derived from.
+      await _recordUpdateOutcome(
+        prefs,
+        attemptTarget: prefs.getString(_kAttemptTarget),
+        current: appBuildId,
+        gate: gate,
       );
       await _saveUpdateGate(prefs, gate);
       if (!gate.offer) {

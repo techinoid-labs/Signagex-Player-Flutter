@@ -31,6 +31,8 @@ import 'package:digital_signage/utils/connectivity_utils.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/interactivity_hit_test.dart';
 import 'package:digital_signage/services/diagnostic_upload_service.dart';
+import 'package:digital_signage/services/update_check_service.dart'
+    show takePendingUpdateOutcome;
 import 'package:digital_signage/utils/time_range_utils.dart';
 import 'package:digital_signage/utils/url_encoding_utils.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
@@ -414,6 +416,7 @@ class MqttViewModel extends ChangeNotifier {
     // just been restored above, and the backend files uploads by player
     // code. Unawaited -- diagnostics must never delay startup.
     unawaited(_reportPreviousCrashWhenIdentityReady());
+    unawaited(_reportUpdateOutcome());
 
     osNetworkConnectivityStream().listen((hasConnection) async {
       // Confirmed real-world symptom this is meant to catch: a
@@ -1338,6 +1341,42 @@ EOF
   bool _mqttConnecting = false;
   Timer? _networkRecoveryTimer;
   final DiagnosticUploadService _diagnostics = DiagnosticUploadService();
+
+  /// Reports how the last update turned out, once per update.
+  ///
+  /// An update that silently failed previously left no trace anywhere a
+  /// person would look: the player kept running the old build and quietly
+  /// retried until its budget ran out, with the only evidence in a local log
+  /// file nobody could reach. This surfaces it as an ordinary player event,
+  /// so a failed rollout is visible in the CMS beside everything else rather
+  /// than having to be inferred from a device that never changed version.
+  ///
+  /// The outcome is recorded by update_check_service during its next check
+  /// after the restart -- this process is the new build, and the code that
+  /// launched the installer died with the old one.
+  Future<void> _reportUpdateOutcome() async {
+    try {
+      final outcome = await takePendingUpdateOutcome();
+      if (outcome == null) return;
+      final result = outcome['result'];
+      _debugLog('update outcome to report: $outcome');
+      if (globleTopic.isEmpty) return;
+      publishMessage(
+          globleTopic,
+          jsonEncode({
+            'action': 'player_logs',
+            'name': 'Update $result',
+            'type': result == 'succeeded' ? 'info' : 'error',
+            'log': 'Update to ${outcome['target']} $result '
+                '(running ${outcome['running']}, '
+                '${outcome['attempts']} attempt(s))',
+            'dateTime': outcome['at'],
+            'sender': Platform.operatingSystem,
+          }));
+    } catch (error) {
+      _debugLog('update outcome report failed: $error');
+    }
+  }
 
   /// Uploads the crashed run's log once this device can identify itself.
   ///
