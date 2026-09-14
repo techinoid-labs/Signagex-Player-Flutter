@@ -152,7 +152,7 @@ RestrictionOutcome evaluateRestrictions(
       continue;
     }
 
-    final bool? pass;
+    bool? pass;
     switch (type) {
       case 'date':
         pass = _checkDate(op, values, context.now);
