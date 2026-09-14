@@ -5,6 +5,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart';
 import 'package:dio/dio.dart';
 import 'package:path_provider/path_provider.dart';
 
@@ -28,7 +29,15 @@ const String appBuildId =
 class UpdateInfo {
   final String version;
   final String downloadUrl;
-  const UpdateInfo({required this.version, required this.downloadUrl});
+
+  /// Lowercase hex SHA-256 the feed published for this installer, when it
+  /// provided one. See verifyInstallerAuthenticity for how it is used.
+  final String? sha256;
+  const UpdateInfo({
+    required this.version,
+    required this.downloadUrl,
+    this.sha256,
+  });
 }
 
 /// True only when [latest] is a *strictly newer* build than [current].
@@ -260,6 +269,7 @@ class UpdateCheckService {
           .fetchData('player-releases/latest?platform=windows');
       final latestVersion = (response?['version'] ?? '').toString();
       final downloadUrl = (response?['downloadUrl'] ?? '').toString();
+      final expectedSha = (response?['sha256'] ?? '').toString();
       if (latestVersion.isEmpty || downloadUrl.isEmpty) {
         return null;
       }
@@ -300,7 +310,11 @@ class UpdateCheckService {
 
       await _debugLog(
           'checkForUpdate: current=$appBuildId latest=$latestVersion -- update available');
-      return UpdateInfo(version: latestVersion, downloadUrl: downloadUrl);
+      return UpdateInfo(
+        version: latestVersion,
+        downloadUrl: downloadUrl,
+        sha256: expectedSha.isEmpty ? null : expectedSha,
+      );
     } catch (e) {
       // A 404 (no release published for this platform yet) lands here too --
       // that's an expected, quiet no-op, not a failure worth surfacing.
@@ -346,8 +360,40 @@ class UpdateCheckService {
   // closed: any missing/invalid signature, or the publisher placeholder
   // above not yet being replaced with the real signing certificate's
   // subject, refuses the install rather than proceeding anyway.
-  Future<bool> verifyInstallerAuthenticity(String installerPath) async {
+  /// Confirms the downloaded file is one we are willing to execute.
+  ///
+  /// Escalation ladder, strongest first:
+  ///
+  ///  1. Authenticode, when kTrustedInstallerPublisherSubject is set.
+  ///     Proves WHO built it. Needs a purchased code-signing cert.
+  ///  2. SHA-256 against the hash the release feed published, when no
+  ///     certificate is configured yet. Proves the bytes match what CI
+  ///     uploaded, not who produced them.
+  ///  3. Neither available -> refuse.
+  ///
+  /// Step 2 exists because step 1 was a hard stop with no certificate:
+  /// every auto-update failed here, so nothing could reach the fleet.
+  /// Confirmed on a real device -- detection and download were fine,
+  /// only verification was impossible:
+  ///   checkForUpdate: current=v131 latest=v135 -- update available
+  ///   downloadInstaller: SUCCESS
+  ///   runInstallerSilently: refusing to launch -- failed authenticity check
+  ///
+  /// The hash is weaker on purpose and is NOT a substitute for signing:
+  /// anyone who can alter the feed response can alter the hash with it.
+  /// It defends against a corrupted or truncated download and against
+  /// tampering with the installer object alone, which is the realistic
+  /// failure, and it beats the alternative of disabling the gate. Get
+  /// the certificate; this keeps updates flowing until then and stops
+  /// mattering once step 1 takes precedence.
+  Future<bool> verifyInstallerAuthenticity(
+    String installerPath, {
+    String? expectedSha256,
+  }) async {
     if (kTrustedInstallerPublisherSubject.startsWith('UNSET')) {
+      if (expectedSha256 != null && expectedSha256.isNotEmpty) {
+        return _verifyChecksum(installerPath, expectedSha256);
+      }
       await _debugLog(
           'verifyInstallerAuthenticity: kTrustedInstallerPublisherSubject is '
           'not configured -- refusing to install until CI signs releases '
@@ -385,14 +431,38 @@ class UpdateCheckService {
     }
   }
 
+  /// Streams the file through SHA-256 and compares, case-insensitively.
+  ///
+  /// Streamed rather than read whole: the installer is ~44 MB, and loading
+  /// that into memory on a low-end signage box just to hash it would be a
+  /// poor trade for a couple of lines of brevity.
+  Future<bool> _verifyChecksum(String installerPath, String expected) async {
+    try {
+      final digest =
+          await File(installerPath).openRead().transform(sha256).first;
+      final actual = digest.toString().toLowerCase();
+      final ok = actual == expected.trim().toLowerCase();
+      await _debugLog(
+          'verifyInstallerAuthenticity: checksum '
+          '${ok ? "MATCHED" : "MISMATCH"} (expected=$expected actual=$actual)');
+      return ok;
+    } catch (e) {
+      await _debugLog(
+          'verifyInstallerAuthenticity: checksum check FAILED -- $e');
+      return false;
+    }
+  }
+
   Future<bool> runInstallerSilently(
-      String installerPath, String targetVersion) async {
+      String installerPath, String targetVersion,
+      {String? expectedSha256}) async {
     // W18: authenticity gate -- see verifyInstallerAuthenticity. Nothing
     // below this point may run for an installer that doesn't pass it,
     // including the retry-bounding bookkeeping below: an installer that
     // fails this check is never actually launched, so it must not count
     // against targetVersion's attempt budget either.
-    if (!await verifyInstallerAuthenticity(installerPath)) {
+    if (!await verifyInstallerAuthenticity(installerPath,
+        expectedSha256: expectedSha256)) {
       await _debugLog(
           'runInstallerSilently: refusing to launch $installerPath -- failed authenticity check');
       return false;
