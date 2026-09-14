@@ -184,9 +184,27 @@ class MqttClientService {
     if (inFlight != null) return inFlight;
     final future = _connectInternal();
     _connectingFuture = future;
-    future.whenComplete(() {
+    // whenComplete() returns a NEW future that completes with the SAME error
+    // as the one it wraps. That derived future was discarded, so every
+    // failed connect produced an unhandled async error -- nobody was
+    // listening to it, even though the caller dutifully catches the original
+    // future returned below.
+    //
+    // On Windows release builds that was fatal, not cosmetic: an unhandled
+    // async error reaches PlatformDispatcher.onError, which returned false
+    // ("not handled"), and the process was then torn down with
+    // STATUS_FAIL_FAST_EXCEPTION (0xC0000602). Matches the watchdog log
+    // exactly -- "player exit=3221227010" roughly 23 seconds after launch,
+    // which is the 20s connect timeout plus startup. The watchdog then
+    // correctly restarted it, which is what the reopening loop actually was:
+    // not a watchdog bug, and not the window being closed, but the player
+    // killing itself every time a connection attempt timed out.
+    //
+    // catchError here only silences the ORPHAN. The real error still
+    // propagates to whoever awaits the future returned below.
+    unawaited(future.whenComplete(() {
       if (identical(_connectingFuture, future)) _connectingFuture = null;
-    });
+    }).catchError((Object _) {}));
     return future;
   }
 

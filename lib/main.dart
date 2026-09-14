@@ -55,7 +55,20 @@ void main() {
   };
   ui.PlatformDispatcher.instance.onError = (error, stack) {
     debug.debugLog('PlatformDispatcher', 'uncaught: $error\n$stack');
-    return false;
+    // Returns TRUE ("handled") deliberately. This used to return false,
+    // which tells the engine the error is unhandled and lets the process be
+    // torn down -- on Windows release builds with
+    // STATUS_FAIL_FAST_EXCEPTION (0xC0000602). A stray async error, such as
+    // a connection attempt that timed out on a background future nobody
+    // awaited, was therefore enough to kill the player outright; the
+    // watchdog then restarted it, which is what the "app keeps reopening"
+    // reports actually were.
+    //
+    // A digital-signage player must never take the screen down over a
+    // background error it could have survived. The error is written to the
+    // debug log above, so nothing is hidden -- it just no longer doubles as
+    // a process-suicide switch.
+    return true;
   };
   // Certificate validation is bypassed ONLY in debug builds (e.g. a local dev
   // server with a self-signed cert). Release builds -- production AND staging --
