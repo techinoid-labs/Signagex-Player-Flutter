@@ -54,11 +54,19 @@ class DiagnosticUploadService {
   /// take down the player it exists to diagnose.
   Future<String?> upload({
     required String playerCode,
+    required String macAddress,
     required String reason,
     bool previous = false,
   }) async {
     if (playerCode.trim().isEmpty) {
       await _debugLog('skipped: no player code yet');
+      return null;
+    }
+    // The backend requires this as a second factor: player_code on its own is
+    // six hex characters shown on screen during pairing, so it cannot gate an
+    // unauthenticated endpoint by itself.
+    if (macAddress.trim().isEmpty) {
+      await _debugLog('skipped: no MAC address known yet');
       return null;
     }
 
@@ -72,6 +80,7 @@ class DiagnosticUploadService {
       final bytes = await file.length();
       final form = FormData.fromMap({
         'player_code': playerCode,
+        'mac_address': macAddress,
         'reason': reason,
         'file': await MultipartFile.fromFile(
           file.path,
@@ -107,7 +116,8 @@ class DiagnosticUploadService {
   ///
   /// This is the valuable case: it arrives without anyone noticing there was
   /// a crash, and it carries the log of the run that actually died.
-  Future<void> uploadPreviousRunIfItCrashed(String playerCode) async {
+  Future<void> uploadPreviousRunIfItCrashed(
+      String playerCode, String macAddress) async {
     File? marker;
     try {
       final exeDir = File(Platform.resolvedExecutable).parent;
@@ -132,6 +142,7 @@ class DiagnosticUploadService {
     // them. ".previous" would usually be older history, or absent entirely.
     await upload(
       playerCode: playerCode,
+      macAddress: macAddress,
       reason: 'crash',
     );
 

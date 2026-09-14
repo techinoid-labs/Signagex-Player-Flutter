@@ -413,8 +413,7 @@ class MqttViewModel extends ChangeNotifier {
     // the run that actually died. Done here because _topic/globleTopic have
     // just been restored above, and the backend files uploads by player
     // code. Unawaited -- diagnostics must never delay startup.
-    unawaited(_diagnostics.uploadPreviousRunIfItCrashed(
-        globleTopic.isNotEmpty ? globleTopic : _topic));
+    unawaited(_reportPreviousCrashWhenIdentityReady());
 
     osNetworkConnectivityStream().listen((hasConnection) async {
       // Confirmed real-world symptom this is meant to catch: a
@@ -1339,6 +1338,53 @@ EOF
   bool _mqttConnecting = false;
   Timer? _networkRecoveryTimer;
   final DiagnosticUploadService _diagnostics = DiagnosticUploadService();
+
+  /// Uploads the crashed run's log once this device can identify itself.
+  ///
+  /// The backend needs player_code AND the registered MAC, and the MAC only
+  /// appears once getSystemDataForWindows() (started asynchronously in the
+  /// constructor) has finished its WMI query. Calling straight from
+  /// _monitorConnectivity lost the race and skipped the upload silently --
+  /// which would have been the worst kind of bug in a diagnostics feature:
+  /// it reports nothing and says nothing about why.
+  ///
+  /// Polls briefly rather than hooking the device-info path, so nothing in
+  /// startup has to know about crash reporting. Gives up quietly after the
+  /// deadline; the marker is left in place so the next launch retries.
+  Future<void> _reportPreviousCrashWhenIdentityReady() async {
+    const attempts = 20;
+    for (var i = 0; i < attempts; i++) {
+      final code = globleTopic.isNotEmpty ? globleTopic : _topic;
+      final mac = _registeredMacAddress;
+      if (code.isNotEmpty && mac.isNotEmpty) {
+        await _diagnostics.uploadPreviousRunIfItCrashed(code, mac);
+        return;
+      }
+      await Future.delayed(const Duration(seconds: 3));
+    }
+    _debugLog('crash report skipped: no player code/MAC after '
+        '${attempts * 3}s -- will retry next launch');
+  }
+
+  /// The MAC the backend has on record for this device.
+  ///
+  /// devicesinfo stores these as a list of {interface, mac} entries, only one
+  /// of which is normally populated (wlan0 or eth0 depending on the adapter
+  /// in use), and it is the first non-empty one that is registered against
+  /// the player at pairing time. Returns '' when device info has not been
+  /// collected yet, which callers treat as "cannot upload".
+  String get _registeredMacAddress {
+    try {
+      final entries = devicesinfo['mac_address']?['macAddress'];
+      if (entries is List) {
+        for (final entry in entries) {
+          final mac = (entry is Map ? entry['mac'] : null)?.toString() ?? '';
+          if (mac.trim().isNotEmpty) return mac;
+        }
+      }
+    } catch (_) {}
+    return '';
+  }
   // Whether a connect attempt has failed and not yet succeeded. This, not
   // _state, is what the recovery timer stops on -- see _startNetworkRecovery.
   bool _needsReconnect = false;
@@ -3186,6 +3232,7 @@ EOF
       // wrong file (a stale build's log, or one already rotated away).
       final url = await _diagnostics.upload(
         playerCode: globleTopic.isNotEmpty ? globleTopic : _topic,
+        macAddress: _registeredMacAddress,
         reason: 'manual',
       );
       publishMessage(
