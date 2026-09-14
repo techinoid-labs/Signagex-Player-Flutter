@@ -30,6 +30,7 @@ import 'package:digital_signage/utils/cache_path_utils.dart';
 import 'package:digital_signage/utils/connectivity_utils.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/interactivity_hit_test.dart';
+import 'package:digital_signage/utils/restriction_rules.dart';
 import 'package:digital_signage/utils/time_range_utils.dart';
 import 'package:digital_signage/utils/url_encoding_utils.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
@@ -167,6 +168,7 @@ class MqttViewModel extends ChangeNotifier {
       final jsonResponse = jsonDecode(jsonString) as Map<String, dynamic>;
       print('Retrieved stored response: $jsonResponse');
       _topic = jsonResponse["player_code"] ?? "";
+      _captureRestrictionContextFrom(jsonResponse);
       debugPrint("This is the response from the$topic API: $jsonResponse");
       if (_topic.isNotEmpty) {
         globleTopic = _topic;
@@ -4101,317 +4103,96 @@ EOF
   /// persisted signagex_debug.log file instead, so the next report of
   /// "restrictions aren't working" has real evidence instead of another
   /// unlogged black box.
+  // Device attributes a restriction can be evaluated against. Null means
+  // "the backend never told us", which is deliberately different from an
+  // empty list ("this device genuinely has none") -- see
+  // restriction_rules.dart. Location/tag rules could never work before
+  // because these were simply never read out of the pairing payload.
+  List<String>? _deviceTags;
+  List<String>? _devicePlayerGroups;
+  String? _deviceLocationName;
+
+  /// Pulls tags / playerGroups / locationName / lat-long out of the stored
+  /// pairing response. Verified against a real paired device: they live at
+  /// data.tags, data.playerGroups, data.locationName, and
+  /// settings.latitude / settings.longitude.
+  void _captureRestrictionContextFrom(Map<String, dynamic> response) {
+    try {
+      final data = response['data'];
+      if (data is Map) {
+        _deviceTags = _asStringList(data['tags']);
+        _devicePlayerGroups = _asStringList(data['playerGroups']);
+        final location = data['locationName'];
+        _deviceLocationName =
+            (location is String && location.trim().isNotEmpty) ? location : null;
+      }
+      final settings = response['settings'];
+      if (settings is Map) {
+        final lat = settings['latitude'];
+        final lon = settings['longitude'];
+        if (lat is num && lon is num && !(lat == 0 && lon == 0)) {
+          devicesinfo['latitude'] = lat.toDouble();
+          devicesinfo['longitude'] = lon.toDouble();
+        }
+      }
+      _debugLog('restriction context: tags=$_deviceTags '
+          'groups=$_devicePlayerGroups location=$_deviceLocationName '
+          'lat=${devicesinfo["latitude"]} lon=${devicesinfo["longitude"]}');
+    } catch (error) {
+      _debugLog('restriction context capture failed: $error');
+    }
+  }
+
+  /// Null when absent, so "unknown" stays distinguishable from "none".
+  /// A bare string is accepted too -- a single tag may not arrive as a list.
+  List<String>? _asStringList(dynamic value) {
+    if (value == null) return null;
+    if (value is List) {
+      return value
+          .map((e) => e is Map ? (e['name'] ?? e['title'] ?? '').toString() : e.toString())
+          .where((e) => e.trim().isNotEmpty)
+          .toList();
+    }
+    if (value is String) {
+      if (value.trim().isEmpty) return const <String>[];
+      return value.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList();
+    }
+    return null;
+  }
+
+  RestrictionContext _restrictionContext() {
+    final lat = devicesinfo['latitude'];
+    final lon = devicesinfo['longitude'];
+    return RestrictionContext(
+      now: DateTime.now(),
+      os: Platform.operatingSystem,
+      tags: _deviceTags,
+      playerGroups: _devicePlayerGroups,
+      locationName: _deviceLocationName,
+      latitude: (lat is num && lat != 0) ? lat.toDouble() : null,
+      longitude: (lon is num && lon != 0) ? lon.toDouble() : null,
+    );
+  }
+
   bool checkRestrictions(List<Restriction>? restrictions) {
-    const String reset = '\x1B[0m';
-    const String red = '\x1B[31m';
-    const String green = '\x1B[32m';
-    const String yellow = '\x1B[33m';
-    const String blue = '\x1B[34m';
-
-    if (restrictions == null || restrictions.isEmpty) {
-      print('$yellow⚠️  RESTRICTION: No restrictions provided → Allowed$reset');
-      _debugLog('checkRestrictions: no restrictions provided -> true');
-      return true; // No restrictions means allowed
+    // Delegates to restriction_rules.dart, which is pure and unit-tested
+    // (test/restriction_rules_test.dart covers every type x operator pair).
+    // The logic used to live inline here, where it could not be tested at
+    // all because constructing this view model needs an MQTT connection and
+    // several platform plugins -- which is how "date/on" shipped meaning
+    // "on or AFTER", and how location/tags/OS rules shipped silently
+    // ignored.
+    final context = _restrictionContext();
+    final outcome = evaluateRestrictions(restrictions, context);
+    for (final line in outcome.trace) {
+      _debugLog('checkRestrictions: $line');
     }
-
-    DateTime now = DateTime.now();
-    bool allRestrictionsPass = true;
-
-    print(
-        '$blue🔍 RESTRICTION: Checking ${restrictions.length} restriction(s)...$reset');
-
-    for (var restriction in restrictions) {
-      if (restriction.type == null ||
-          restriction.operator == null ||
-          restriction.values == null) {
-        print(
-            '$yellow⚠️  RESTRICTION: Skipping invalid restriction (missing type/operator/values)$reset');
-        _debugLog('checkRestrictions: skipping invalid restriction '
-            '(type=${restriction.type} operator=${restriction.operator} values=${restriction.values})');
-        continue; // Skip invalid restrictions
-      }
-
-      bool restrictionPass = false;
-
-      // Only apply restrictions for "date" or "time" types
-      if (restriction.type == "date") {
-        restrictionPass = _checkDateRestriction(restriction, now);
-      } else if (restriction.type == "time") {
-        restrictionPass = _checkTimeRestriction(restriction, now);
-      } else {
-        // If type is not "date" or "time", treat as always play
-        restrictionPass = true;
-        print(
-            "$yellow⚠️  RESTRICTION: Type '${restriction.type}' is not date/time → Treating as always play$reset");
-        _debugLog(
-            "checkRestrictions: type '${restriction.type}' is not date/time -> treated as pass");
-      }
-
-      _debugLog('checkRestrictions: type=${restriction.type} '
-          'operator=${restriction.operator} values=${restriction.values} '
-          'now=$now -> ${restrictionPass ? "PASS" : "FAIL"}');
-
-      // All restrictions must pass (AND logic)
-      if (!restrictionPass) {
-        allRestrictionsPass = false;
-        print(
-            '$red❌ RESTRICTION: Failed - type: ${restriction.type}, operator: ${restriction.operator}, values: ${restriction.values}$reset');
-        break;
-      } else {
-        print(
-            '$green✅ RESTRICTION: Passed - type: ${restriction.type}, operator: ${restriction.operator}, values: ${restriction.values}$reset');
-      }
-    }
-
-    if (allRestrictionsPass) {
-      print('$green✅ RESTRICTION: All restrictions PASSED$reset');
-    } else {
-      print('$red❌ RESTRICTION: At least one restriction FAILED$reset');
-    }
-    _debugLog('checkRestrictions: final result -> $allRestrictionsPass');
-
-    return allRestrictionsPass;
+    _debugLog('checkRestrictions: final result -> ${outcome.allowed} '
+        '(os=${context.os} tags=${context.tags} groups=${context.playerGroups} '
+        'location=${context.locationName} lat=${context.latitude} lon=${context.longitude})');
+    return outcome.allowed;
   }
 
-  /// Check date restriction based on operator
-  bool _checkDateRestriction(Restriction restriction, DateTime now) {
-    if (restriction.values == null || restriction.values!.isEmpty) {
-      return false;
-    }
-
-    final operator = _normalizeRestrictionOperator(restriction.operator);
-    final values = restriction.values!;
-
-    try {
-      switch (operator) {
-        case "is-between":
-          if (values.length >= 2) {
-            final startDate = DateTime.parse(values[0]);
-            final endDate = DateTime.parse(values[1]);
-            final startDateOnly =
-                DateTime(startDate.year, startDate.month, startDate.day);
-            final endDateOnly =
-                DateTime(endDate.year, endDate.month, endDate.day);
-            final nowDateOnly = DateTime(now.year, now.month, now.day);
-
-            final shouldPlay = (nowDateOnly.isAfter(startDateOnly) ||
-                    nowDateOnly.isAtSameMomentAs(startDateOnly)) &&
-                (nowDateOnly.isBefore(endDateOnly) ||
-                    nowDateOnly.isAtSameMomentAs(endDateOnly));
-
-            print(
-                "DATE_CHECK:: is-between - start: ${startDateOnly.toString().split(' ')[0]}, end: ${endDateOnly.toString().split(' ')[0]}, current: ${nowDateOnly.toString().split(' ')[0]}, shouldPlay: $shouldPlay");
-            return shouldPlay;
-          }
-          return false;
-
-        case "on":
-          if (values.isNotEmpty) {
-            final targetDate = DateTime.parse(values[0]);
-            final targetDateOnly =
-                DateTime(targetDate.year, targetDate.month, targetDate.day);
-            final nowDateOnly = DateTime(now.year, now.month, now.day);
-
-            final shouldPlay = nowDateOnly.isAtSameMomentAs(targetDateOnly) ||
-                nowDateOnly.isAfter(targetDateOnly);
-
-            print(
-                "DATE_CHECK:: on - target: ${targetDateOnly.toString().split(' ')[0]}, current: ${nowDateOnly.toString().split(' ')[0]}, shouldPlay: $shouldPlay");
-            return shouldPlay;
-          }
-          return false;
-
-        case "is-before":
-          if (values.isNotEmpty) {
-            final targetDate = DateTime.parse(values[0]);
-            return now.isBefore(targetDate);
-          }
-          return false;
-
-        case "is-after":
-          if (values.isNotEmpty) {
-            final targetDate = DateTime.parse(values[0]);
-            final targetDateOnly =
-                DateTime(targetDate.year, targetDate.month, targetDate.day);
-            final nowDateOnly = DateTime(now.year, now.month, now.day);
-
-            final shouldPlay = nowDateOnly.isAfter(targetDateOnly) ||
-                nowDateOnly.isAtSameMomentAs(targetDateOnly);
-
-            print(
-                "DATE_CHECK:: is-after - target: ${targetDateOnly.toString().split(' ')[0]}, current: ${nowDateOnly.toString().split(' ')[0]}, shouldPlay: $shouldPlay");
-            return shouldPlay;
-          }
-          return false;
-
-        case "not-on":
-          if (values.isNotEmpty) {
-            final targetDate = DateTime.parse(values[0]);
-            final targetDateOnly =
-                DateTime(targetDate.year, targetDate.month, targetDate.day);
-            final nowDateOnly = DateTime(now.year, now.month, now.day);
-            return !(nowDateOnly.isAtSameMomentAs(targetDateOnly));
-          }
-          return false;
-
-        default:
-          print("Unknown date restriction operator: $operator");
-          return false;
-      }
-    } catch (e) {
-      print("Error parsing date restriction: $e");
-      return false;
-    }
-  }
-
-  /// Check time restriction based on operator
-  bool _checkTimeRestriction(Restriction restriction, DateTime now) {
-    const String reset = '\x1B[0m';
-    const String red = '\x1B[31m';
-    const String cyan = '\x1B[36m';
-
-    if (restriction.values == null || restriction.values!.isEmpty) {
-      print("${red}TIME_CHECK:: No values provided for time restriction$reset");
-      return false;
-    }
-
-    final operator = _normalizeRestrictionOperator(restriction.operator);
-    final values = restriction.values!;
-
-    print(
-        "${cyan}TIME_CHECK:: Checking time restriction - operator: $operator, values: $values, current time: ${now.hour}:${now.minute.toString().padLeft(2, '0')}$reset");
-
-    try {
-      switch (operator) {
-        case "is-between":
-          if (values.length >= 2) {
-            final startTime = _parseTimeString(values[0]);
-            final endTime = _parseTimeString(values[1]);
-            final currentTime =
-                DateTime(now.year, now.month, now.day, now.hour, now.minute);
-            // W12: both start/end are anchored to *today's* date by
-            // _parseTimeString, so an overnight window (e.g. 22:00-06:00)
-            // used to always fail: end (06:00 today) is chronologically
-            // before start (22:00 today), so "start <= now <= end" can
-            // never be true no matter what "now" actually is (confirmed:
-            // 22:00-06:00 at 23:00 returned false). When end is before
-            // start, the valid range wraps past midnight -- it's "at/after
-            // start" OR "at/before end", not AND.
-            final result = endTime.isBefore(startTime)
-                ? (!currentTime.isBefore(startTime) ||
-                    !currentTime.isAfter(endTime))
-                : (!currentTime.isBefore(startTime) &&
-                    !currentTime.isAfter(endTime));
-            print(
-                "${cyan}TIME_CHECK:: is-between - start: ${startTime.hour}:${startTime.minute.toString().padLeft(2, '0')}, end: ${endTime.hour}:${endTime.minute.toString().padLeft(2, '0')}, current: ${currentTime.hour}:${currentTime.minute.toString().padLeft(2, '0')}, result: $result$reset");
-            return result;
-          }
-          return false;
-
-        case "on":
-          if (values.isNotEmpty) {
-            final targetTime = _parseTimeString(values[0]);
-            final targetHour = targetTime.hour;
-            final targetMinute = targetTime.minute;
-            final currentHour = now.hour;
-            final currentMinute = now.minute;
-
-            final shouldPlay =
-                currentHour == targetHour && currentMinute == targetMinute;
-
-            print(
-                "${cyan}TIME_CHECK:: on - target: ${targetHour.toString().padLeft(2, '0')}:${targetMinute.toString().padLeft(2, '0')}, current: ${currentHour.toString().padLeft(2, '0')}:${currentMinute.toString().padLeft(2, '0')}, result: $shouldPlay$reset");
-            return shouldPlay;
-          }
-          return false;
-
-        case "is-before":
-          if (values.isNotEmpty) {
-            final targetTime = _parseTimeString(values[0]);
-            final currentTime =
-                DateTime(now.year, now.month, now.day, now.hour, now.minute);
-            final result = currentTime.isBefore(targetTime);
-            print(
-                "TIME_CHECK:: is-before - target: ${targetTime.hour}:${targetTime.minute.toString().padLeft(2, '0')}, current: ${currentTime.hour}:${currentTime.minute.toString().padLeft(2, '0')}, result: $result");
-            return result;
-          }
-          return false;
-
-        case "is-after":
-          if (values.isNotEmpty) {
-            final targetTime = _parseTimeString(values[0]);
-            final currentTime =
-                DateTime(now.year, now.month, now.day, now.hour, now.minute);
-            final result = currentTime.isAfter(targetTime) ||
-                currentTime.isAtSameMomentAs(targetTime);
-            print(
-                "${cyan}TIME_CHECK:: is-after - target: ${targetTime.hour}:${targetTime.minute.toString().padLeft(2, '0')}, current: ${currentTime.hour}:${currentTime.minute.toString().padLeft(2, '0')}, result: $result$reset");
-            return result;
-          }
-          return false;
-
-        case "not-on":
-          if (values.isNotEmpty) {
-            final targetTime = _parseTimeString(values[0]);
-            final currentTime =
-                DateTime(now.year, now.month, now.day, now.hour, now.minute);
-            final result = !(currentTime.isAtSameMomentAs(targetTime));
-            print(
-                "TIME_CHECK:: not-on - target: ${targetTime.hour}:${targetTime.minute.toString().padLeft(2, '0')}, current: ${currentTime.hour}:${currentTime.minute.toString().padLeft(2, '0')}, result: $result");
-            return result;
-          }
-          return false;
-
-        default:
-          print("TIME_CHECK:: Unknown time restriction operator: $operator");
-          return false;
-      }
-    } catch (e) {
-      print("TIME_CHECK:: Error parsing time restriction: $e");
-      return false;
-    }
-  }
-
-  /// Parse time string (HH:mm or HH:mm:ss) to DateTime
-  DateTime _parseTimeString(String timeStr) {
-    // Trim whitespace from the time string to handle cases like "07: 04"
-    final trimmed = timeStr.trim();
-    final parts = trimmed.split(':');
-    if (parts.length < 2) {
-      throw FormatException("Invalid time format: $timeStr");
-    }
-    // Trim whitespace from each part to handle cases like "07: 04"
-    final hour = int.parse(parts[0].trim());
-    final minute = int.parse(parts[1].trim());
-    final second = parts.length > 2 ? int.parse(parts[2].trim()) : 0;
-    return DateTime(DateTime.now().year, DateTime.now().month,
-        DateTime.now().day, hour, minute, second);
-  }
-
-  /// Normalize operator strings coming from backend.
-  /// Accepts variants like: isbetween / is-between / is_between, noton / not-on, etc.
-  String _normalizeRestrictionOperator(String? op) {
-    if (op == null) return '';
-    final raw = op.trim().toLowerCase();
-    final compact = raw
-        .replaceAll(RegExp(r'\s+'), '')
-        .replaceAll('_', '')
-        .replaceAll('-', '');
-
-    switch (compact) {
-      case 'isbetween':
-        return 'is-between';
-      case 'isbefore':
-        return 'is-before';
-      case 'isafter':
-        return 'is-after';
-      case 'noton':
-        return 'not-on';
-      default:
-        // Best-effort: normalize underscores to hyphens.
-        return raw.replaceAll('_', '-');
-    }
-  }
 
   Future<void> launchUrl(String url) async {
     if (await canLaunch(url)) {
