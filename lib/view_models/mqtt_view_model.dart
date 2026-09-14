@@ -30,6 +30,7 @@ import 'package:digital_signage/utils/cache_path_utils.dart';
 import 'package:digital_signage/utils/connectivity_utils.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/interactivity_hit_test.dart';
+import 'package:digital_signage/services/diagnostic_upload_service.dart';
 import 'package:digital_signage/utils/time_range_utils.dart';
 import 'package:digital_signage/utils/url_encoding_utils.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
@@ -405,6 +406,16 @@ class MqttViewModel extends ChangeNotifier {
     // queued) and again every time the stream below reports connectivity
     // restored.
     unawaited(retryQueuedAdProofOfPlay());
+
+    // If the watchdog recorded that the previous run exited abnormally, hand
+    // over that run's log now. This is the upload that matters: it arrives
+    // without anyone noticing there was a crash, and it carries the log of
+    // the run that actually died. Done here because _topic/globleTopic have
+    // just been restored above, and the backend files uploads by player
+    // code. Unawaited -- diagnostics must never delay startup.
+    unawaited(_diagnostics.uploadPreviousRunIfItCrashed(
+        globleTopic.isNotEmpty ? globleTopic : _topic));
+
     osNetworkConnectivityStream().listen((hasConnection) async {
       // Confirmed real-world symptom this is meant to catch: a
       // publish_campaign message can be received and parsed correctly, but
@@ -1327,6 +1338,7 @@ EOF
   // interval), which would otherwise stack overlapping connects.
   bool _mqttConnecting = false;
   Timer? _networkRecoveryTimer;
+  final DiagnosticUploadService _diagnostics = DiagnosticUploadService();
   // Whether a connect attempt has failed and not yet succeeded. This, not
   // _state, is what the recovery timer stops on -- see _startNetworkRecovery.
   bool _needsReconnect = false;
@@ -3167,6 +3179,22 @@ EOF
       await _applySettingsMap(jsonObj["settings"] as Map<String, dynamic>?);
       var data = {"success": true};
       publishMessage(globleTopic, jsonEncode(data));
+    } else if (jsonObj["action"] == "action_send_logs") {
+      // Lets an operator pull this device's debug log from the CMS instead
+      // of asking whoever is near the screen to find it on disk and send it
+      // over -- a round trip that costs hours and repeatedly produced the
+      // wrong file (a stale build's log, or one already rotated away).
+      final url = await _diagnostics.upload(
+        playerCode: globleTopic.isNotEmpty ? globleTopic : _topic,
+        reason: 'manual',
+      );
+      publishMessage(
+          globleTopic,
+          jsonEncode({
+            'action': 'logs_uploaded',
+            'success': url != null,
+            if (url != null) 'url': url,
+          }));
     } else if (jsonObj["action"] == "action click") {
       print(" i am in action  click");
     } else if (jsonObj["action"] == "publish_playlist") {

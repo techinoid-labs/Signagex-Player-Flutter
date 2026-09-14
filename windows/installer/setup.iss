@@ -151,6 +151,10 @@ Type: files; Name: "{app}\watchdog.log.previous"
 ; Same reasoning -- the post-install WebView2 check (CurStepChanged)
 ; writes this at runtime, so it is untracked by [Files] too.
 Type: files; Name: "{app}\WEBVIEW2-MISSING.txt"
+; Written at runtime by the watchdog after an abnormal exit, so the
+; next player run can upload that run's log. Untracked by [Files] for
+; the same reason as the logs above.
+Type: files; Name: "{app}\crash-marker.txt"
 ; shared_preferences_windows and the debug log (lib/utils/debug_log.dart)
 ; both resolve their storage directory from the same CompanyName/
 ; ProductName pair in windows/runner/Runner.rc, which lands them both

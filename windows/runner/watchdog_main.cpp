@@ -39,6 +39,22 @@ bool WaitUnlessStopped(HANDLE stop, DWORD milliseconds) {
   return false;
 }
 
+// Left next to the exe for the next player process to find.
+// Deliberately a file rather than an event or registry value: it must
+// survive the supervisor itself being killed or the machine losing
+// power, which is exactly when a crash is most worth reporting.
+void WriteCrashMarker(const std::wstring& directory, DWORD exit_code) {
+  const auto path = directory + L"\\crash-marker.txt";
+  KioskHandle file(CreateFileW(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+                               nullptr, CREATE_ALWAYS,
+                               FILE_ATTRIBUTE_NORMAL, nullptr));
+  if (file.get() == INVALID_HANDLE_VALUE) return;
+  const auto text = std::to_string(exit_code);
+  DWORD written = 0;
+  WriteFile(file.get(), text.c_str(), static_cast<DWORD>(text.size()),
+            &written, nullptr);
+}
+
 void Log(const std::wstring& directory, const std::string& message) {
   // One bounded log per installation; no dependency on Flutter/plugin startup.
   const auto path = directory + L"\\watchdog.log";
@@ -161,6 +177,15 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, wchar_t*, int) {
     const unsigned delay = policy.DelayAfterExit(code, GetTickCount64() - started);
     Log(directory, "player exit=" + std::to_string(code) +
         " restart delay seconds=" + std::to_string(delay));
+    // Record an abnormal exit so the NEXT player run can upload the log
+    // of the run that died. Only the supervisor knows an exit was
+    // abnormal -- the replacement process starts with no memory of it --
+    // and by then the interesting log has been rotated to ".previous".
+    // Without this handover a crash on an unattended screen leaves no
+    // trace anybody sees until someone is asked to fetch a file by hand.
+    if (code != 0) {
+      WriteCrashMarker(directory, code);
+    }
     if (delay == 0 || !WaitUnlessStopped(stop.get(), delay * 1000)) break;
   }
   DestroyWindow(window);
