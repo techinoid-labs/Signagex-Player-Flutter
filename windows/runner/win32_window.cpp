@@ -3,6 +3,7 @@
 #include <dwmapi.h>
 #include <flutter_windows.h>
 
+#include "kiosk_identity.h"
 #include "resource.h"
 
 namespace {
@@ -244,6 +245,29 @@ Win32Window::MessageHandler(HWND hwnd,
       // the window -- WM_DESTROY below then posts WM_QUIT, and main.cpp
       // signals the watchdog to stand down before exiting, so the player
       // stays closed instead of being restarted.
+      // A close requested by the SUPERVISOR must never prompt. The
+      // watchdog stops the player by posting WM_CLOSE to its window
+      // (ClosePlayerWindow in watchdog_main.cpp), and it does that for
+      // maintenance -- most importantly so the installer can overwrite
+      // SignageXPlayer.exe during an update, which Windows forbids while
+      // the file is running. Prompting there would block on a click that
+      // never comes on an unattended screen: the player would stay open,
+      // the exe stay locked, and every update fail.
+      //
+      // The supervisor always signals the stop event before closing the
+      // player (both the maintenance path and --stop, which is what the
+      // installer calls via PrepareToInstall), so a signalled stop event
+      // distinguishes "the system asked" from "a person asked".
+      {
+        KioskHandle supervisor_stop(OpenEventW(
+            SYNCHRONIZE, FALSE,
+            KioskObjectName(KioskDirectory(), L"stop").c_str()));
+        if (supervisor_stop.get() &&
+            WaitForSingleObject(supervisor_stop.get(), 0) ==
+                WAIT_OBJECT_0) {
+          break;
+        }
+      }
       if (MessageBoxW(hwnd,
                       L"Close SignageX Player?\n\n"
                       L"This screen will stop showing content until the "
