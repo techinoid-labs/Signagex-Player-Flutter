@@ -232,6 +232,29 @@ Win32Window::MessageHandler(HWND hwnd,
       }
       break;
 
+    case WM_CLOSE:
+      // Closing the player takes a screen out of service, and on a kiosk
+      // that is almost always an accident -- a stray Alt+F4, or someone
+      // clicking the close button after pressing Escape to leave
+      // fullscreen. Confirm it, so the only way a screen goes dark is
+      // somebody deliberately saying yes.
+      //
+      // Answering No swallows the message and the player keeps running.
+      // Answering Yes falls through to the default handler, which destroys
+      // the window -- WM_DESTROY below then posts WM_QUIT, and main.cpp
+      // signals the watchdog to stand down before exiting, so the player
+      // stays closed instead of being restarted.
+      if (MessageBoxW(hwnd,
+                      L"Close SignageX Player?\n\n"
+                      L"This screen will stop showing content until the "
+                      L"player is started again.",
+                      L"SignageX Player",
+                      MB_YESNO | MB_ICONQUESTION | MB_DEFBUTTON2 |
+                          MB_SETFOREGROUND | MB_TOPMOST) != IDYES) {
+        return 0;
+      }
+      break;
+
     case WM_DESTROY:
       window_handle_ = nullptr;
       Destroy();
