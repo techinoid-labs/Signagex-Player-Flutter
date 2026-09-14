@@ -248,8 +248,11 @@ List<double>? _tryCoordinates(List<String> values) {
   final lon = double.tryParse(values[1].trim());
   if (lat == null || lon == null) return null;
   if (lat.abs() > 90 || lon.abs() > 180) return null;
-  final radius =
-      values.length > 2 ? double.tryParse(values[2].trim()) ?? 500 : 500;
+  // 500.0 rather than 500: `double? ?? int` widens to num, which cannot go
+  // into a List<double>.
+  final double radius = values.length > 2
+      ? (double.tryParse(values[2].trim()) ?? 500.0)
+      : 500.0;
   return <double>[lat, lon, radius];
 }
 
