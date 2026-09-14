@@ -40,7 +40,11 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_SOURCE_DIR}")
 add_dependencies(${BINARY_NAME} flutter_assemble)
 
 # Standalone supervisor: no Flutter/plugin dependency, also copied into ZIPs.
-add_executable(SignageXWatchdog WIN32 "watchdog_main.cpp")
+# watchdog.rc supplies the app icon. Without it the watchdog exe had no
+# icon resource, and since every installer shortcut points at the
+# watchdog (it is the launcher), the app showed a generic icon on the
+# desktop, in the Start menu and in search.
+add_executable(SignageXWatchdog WIN32 "watchdog_main.cpp" "watchdog.rc")
 apply_standard_settings(SignageXWatchdog)
 target_compile_definitions(SignageXWatchdog PRIVATE NOMINMAX)
 target_link_libraries(SignageXWatchdog PRIVATE shell32 user32)

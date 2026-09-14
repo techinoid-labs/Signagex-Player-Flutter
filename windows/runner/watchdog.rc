@@ -1,0 +1,18 @@
+#include "resource.h"
+
+/////////////////////////////////////////////////////////////////////////////
+// Icon
+//
+// The watchdog was built from watchdog_main.cpp alone, with no resource
+// script, so SignageXWatchdog.exe carried no icon at all and Windows fell
+// back to the generic executable glyph.
+//
+// That is what the desktop, Start menu and search results actually show:
+// every shortcut the installer creates points at the watchdog, because it is
+// the launcher that supervises the player. So the app appeared unbranded
+// everywhere a user looks for it, even though SignageXPlayer.exe itself has
+// always had the correct icon.
+//
+// Same icon as the player deliberately -- to anyone using the machine these
+// are one application, and the supervisor is an implementation detail.
+IDI_APP_ICON            ICON                    "resources\\app_icon.ico"

@@ -167,10 +167,15 @@ Type: filesandordirs; Name: "{userappdata}\SignageX\SignageX Player"
 Type: dirifempty; Name: "{app}"
 
 [Icons]
-Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"
+; IconFilename points every shortcut at the PLAYER's icon even though the
+; shortcut launches the watchdog. The watchdog now carries the icon itself
+; (windows/runner/watchdog.rc), but stating it here too means shortcuts are
+; branded correctly even where the watchdog predates that, and it makes the
+; intent explicit rather than dependent on which exe happens to be launcher.
+Name: "{group}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"; IconFilename: "{app}\{#MyAppExeName}"
 Name: "{group}\Uninstall {#MyAppName}"; Filename: "{uninstallexe}"
-Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"; Tasks: desktopicon
-Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"; Tasks: startupicon
+Name: "{userdesktop}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: desktopicon
+Name: "{userstartup}\{#MyAppName}"; Filename: "{app}\{#MyLauncherExeName}"; IconFilename: "{app}\{#MyAppExeName}"; Tasks: startupicon
 
 [Run]
 ; Ensure the Edge WebView2 runtime is present before first launch -- per-user,
