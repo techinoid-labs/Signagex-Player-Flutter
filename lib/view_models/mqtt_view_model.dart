@@ -3942,6 +3942,27 @@ EOF
     // never reported here, so the dashboard timeline never saw them.
     publishLogsForCampaign(currentCampaignName);
 
+    // Puts the screen back. The ineligible branch above parks the player on
+    // MqttState.noContent when every campaign is outside its window, and
+    // nothing here ever undid that -- so once a restriction window closed,
+    // the player stayed on "No Content Available for Playback" even after a
+    // later recheck found a campaign eligible again and rotated to it.
+    //
+    // Captured end to end: a window of [19:43, 19:49] correctly failed at
+    // 19:42 and set noContent, durations went back to 30 and 35 at 19:43:17
+    // and stayed positive for six minutes -- and no "state -> campaignScreen"
+    // was ever logged, because this assignment did not exist. The player had
+    // chosen a campaign to play and was still rendering the empty screen.
+    //
+    // Only noContent is overridden: downloading, playerStopped and the
+    // pairing states are set deliberately elsewhere and must not be
+    // clobbered by a rotation tick.
+    if (_state == MqttState.noContent) {
+      _debugLog('_updateIndexForCampain: campaign eligible again '
+          '-> leaving noContent for campaignScreen');
+      _state = MqttState.campaignScreen;
+    }
+
     notifyListeners();
     // Sets the timer directly from the duration the bounded scan above
     // already confirmed is positive for this index, rather than calling
