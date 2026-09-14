@@ -60,6 +60,36 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
     ::DispatchMessage(&msg);
   }
 
+  // Reaching here means the message loop ended because WM_QUIT arrived, and
+  // the only thing that posts WM_QUIT is Win32Window's WM_DESTROY handler
+  // under SetQuitOnClose(true) -- i.e. somebody deliberately closed the
+  // window. A crash never gets here; it terminates the process outright.
+  // So this point is a reliable "the operator meant to close it" signal,
+  // and the supervisor is told to stand down.
+  //
+  // Signalling here rather than relying on the exit code is deliberate,
+  // because the exit code turned out not to be trustworthy. Observed
+  // repeatedly on real installs: closing the window produced
+  //   player exit=3221227010   (0xC0000602, STATUS_FAIL_FAST_EXCEPTION)
+  // instead of 0, because something faults during native teardown after
+  // this point -- so the process never reached `return EXIT_SUCCESS` and
+  // the watchdog, whose policy correctly ignores a clean exit, saw a crash
+  // code every single time and dutifully restarted a player the user had
+  // just closed.
+  //
+  // This runs BEFORE the FlutterWindow destructor (which is where that
+  // teardown fault happens), so the stop is recorded even if the process
+  // dies on the way out. Fixing the teardown fault itself is separate and
+  // still worth doing; this makes a deliberate close mean "stay closed"
+  // regardless of how messily the process manages to exit.
+  {
+    KioskHandle stop(OpenEventW(EVENT_MODIFY_STATE, FALSE,
+        KioskObjectName(directory, L"stop").c_str()));
+    // Absent when the player was launched directly rather than by the
+    // watchdog, which is fine -- there is nothing supervising it.
+    if (stop.get()) SetEvent(stop.get());
+  }
+
   ::CoUninitialize();
   return EXIT_SUCCESS;
 }
