@@ -41,6 +41,10 @@ Map<String, dynamic> deviceInfoMap = {
   "android_version": "",
   "webview_version": "",
   "player_version": "",
+  // CI run number of the running binary ("v137"). player_version comes
+  // from pubspec.yaml and never changes between builds, so this is the
+  // only field that identifies which build a device is actually on.
+  "build_id": "",
   "system_version": "",
   "last_seen": "",
   "device_model": "",

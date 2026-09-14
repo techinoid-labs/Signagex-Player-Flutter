@@ -32,7 +32,7 @@ import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/interactivity_hit_test.dart';
 import 'package:digital_signage/services/diagnostic_upload_service.dart';
 import 'package:digital_signage/services/update_check_service.dart'
-    show takePendingUpdateOutcome;
+    show appBuildId, takePendingUpdateOutcome;
 import 'package:digital_signage/utils/time_range_utils.dart';
 import 'package:digital_signage/utils/url_encoding_utils.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
@@ -245,8 +245,24 @@ class MqttViewModel extends ChangeNotifier {
     try {
       final info = await PackageInfo.fromPlatform();
       devicesinfo["player_version"] = "Version: ${info.version}";
+      // The CI run number this binary was built from ("v137"), published as
+      // its own field.
+      //
+      // player_version is read from pubspec.yaml and is therefore ALWAYS
+      // "Version: 1.0.0" -- it does not change between builds, so the CMS
+      // has had no way to tell which build any device is actually running.
+      // Verifying a rollout meant reading a log file on each machine one at
+      // a time, and "is this device updated?" was unanswerable from the
+      // dashboard.
+      //
+      // Deliberately a separate key rather than folded into player_version:
+      // that field's "Version: x.y.z" shape is matched to the Android
+      // player and the backend already reads it, so changing its format
+      // risks breaking something that parses it.
+      devicesinfo["build_id"] = appBuildId;
       notifyListeners();
-      _debugLog('_populateAppVersion OK: player_version="Version: ${info.version}"');
+      _debugLog('_populateAppVersion OK: player_version="Version: ${info.version}" '
+          'build_id="$appBuildId"');
     } catch (e) {
       debugPrint("Failed to read app version: $e");
       _debugLog('_populateAppVersion FAILED: $e');
