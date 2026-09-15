@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/material.dart';
@@ -170,6 +171,7 @@ class MqttViewModel extends ChangeNotifier {
       final jsonResponse = jsonDecode(jsonString) as Map<String, dynamic>;
       print('Retrieved stored response: $jsonResponse');
       _topic = jsonResponse["player_code"] ?? "";
+      _captureRestrictionContext(jsonResponse);
       debugPrint("This is the response from the$topic API: $jsonResponse");
       if (_topic.isNotEmpty) {
         globleTopic = _topic;
@@ -4252,67 +4254,296 @@ EOF
   /// persisted signagex_debug.log file instead, so the next report of
   /// "restrictions aren't working" has real evidence instead of another
   /// unlogged black box.
+  /// Whether this campaign/media may play right now.
+  ///
+  /// The CMS can produce six restriction types, each with its own operator
+  /// set (see the editors under components/players/tabs/triggers/restrictions
+  /// and the backend's CampaignRestrictionTypeEnum):
+  ///
+  ///   date        is-between | is-before | is-after | on | not-on
+  ///   time        is-between | is-before | is-after | on | not-on
+  ///   location    is-inside | is-not-inside | is-inside-any | is-not-inside-any
+  ///   player_tag  is | contains | empty | not-empty
+  ///   player_name is | contains | empty | not-empty
+  ///   player_os   is | is-not | contains | not-contains | empty | not-empty
+  ///
+  /// Only date and time were implemented. Everything else fell through to a
+  /// branch that marked the restriction passed and logged "treating as always
+  /// play", so location, tag, name and OS rules were not merely broken --
+  /// they were silently ignored, and content played on every device
+  /// regardless of what was configured.
+  ///
+  /// Restrictions also carry a logic_operator joining each to the previous
+  /// one, which was never read: every set was evaluated as a flat AND, so an
+  /// OR condition withheld content it should have played.
   bool checkRestrictions(List<Restriction>? restrictions) {
-    const String reset = '\x1B[0m';
-    const String red = '\x1B[31m';
-    const String green = '\x1B[32m';
-    const String yellow = '\x1B[33m';
-    const String blue = '\x1B[34m';
-
     if (restrictions == null || restrictions.isEmpty) {
-      print('$yellow⚠️  RESTRICTION: No restrictions provided → Allowed$reset');
-      return true; // No restrictions means allowed
+      _debugLog('checkRestrictions: none provided -> allowed');
+      return true;
     }
 
-    DateTime now = DateTime.now();
-    bool allRestrictionsPass = true;
+    final now = DateTime.now();
 
-    print(
-        '$blue🔍 RESTRICTION: Checking ${restrictions.length} restriction(s)...$reset');
-
-    for (var restriction in restrictions) {
-      if (restriction.type == null ||
-          restriction.operator == null ||
-          restriction.values == null) {
-        print(
-            '$yellow⚠️  RESTRICTION: Skipping invalid restriction (missing type/operator/values)$reset');
-        continue; // Skip invalid restrictions
+    // AND binds tighter than OR, the usual reading: A AND B OR C is
+    // (A AND B) OR C. Consecutive AND-joined restrictions are collected into
+    // a group, a group ends at each OR, and the result is true if any group
+    // passes. The first restriction's operator is ignored -- there is
+    // nothing before it to join to.
+    final groups = <List<Restriction>>[];
+    var current = <Restriction>[];
+    for (var i = 0; i < restrictions.length; i++) {
+      final joinsWithOr =
+          i > 0 && (restrictions[i].logicOperator ?? 'AND').toUpperCase() == 'OR';
+      if (joinsWithOr) {
+        groups.add(current);
+        current = <Restriction>[];
       }
+      current.add(restrictions[i]);
+    }
+    groups.add(current);
 
-      bool restrictionPass = false;
-
-      // Only apply restrictions for "date" or "time" types
-      if (restriction.type == "date") {
-        restrictionPass = _checkDateRestriction(restriction, now);
-      } else if (restriction.type == "time") {
-        restrictionPass = _checkTimeRestriction(restriction, now);
-      } else {
-        // If type is not "date" or "time", treat as always play
-        restrictionPass = true;
-        print(
-            "$yellow⚠️  RESTRICTION: Type '${restriction.type}' is not date/time → Treating as always play$reset");
+    var allowed = false;
+    final trace = <String>[];
+    for (final group in groups) {
+      var groupPasses = true;
+      for (final restriction in group) {
+        final pass = _evaluateRestriction(restriction, now);
+        trace.add('${restriction.type}/${restriction.operator}/'
+            '${restriction.values} -> ${pass ? "PASS" : "FAIL"}');
+        if (!pass) {
+          groupPasses = false;
+          break; // rest of an AND group cannot rescue it
+        }
       }
-
-      // All restrictions must pass (AND logic)
-      if (!restrictionPass) {
-        allRestrictionsPass = false;
-        print(
-            '$red❌ RESTRICTION: Failed - type: ${restriction.type}, operator: ${restriction.operator}, values: ${restriction.values}$reset');
-        break;
-      } else {
-        print(
-            '$green✅ RESTRICTION: Passed - type: ${restriction.type}, operator: ${restriction.operator}, values: ${restriction.values}$reset');
+      if (groupPasses) {
+        allowed = true;
+        break; // any passing OR group is enough
       }
     }
 
-    if (allRestrictionsPass) {
-      print('$green✅ RESTRICTION: All restrictions PASSED$reset');
-    } else {
-      print('$red❌ RESTRICTION: At least one restriction FAILED$reset');
-    }
-
-    return allRestrictionsPass;
+    _debugLog('checkRestrictions: ${trace.join(" | ")} '
+        '-> $allowed (groups=${groups.length})');
+    return allowed;
   }
+
+  /// One restriction, independent of how it joins to its neighbours.
+  ///
+  /// Returns true for anything it cannot evaluate -- an unknown type, or a
+  /// device attribute the backend never sent. Failing OPEN is deliberate: a
+  /// rule the player does not understand must not be able to blank an entire
+  /// fleet at once, which is far worse on signage than showing content that
+  /// should have been withheld. Every such case is logged rather than passed
+  /// over silently.
+  bool _evaluateRestriction(Restriction restriction, DateTime now) {
+    if (restriction.type == null || restriction.operator == null) {
+      _debugLog('checkRestrictions: malformed restriction '
+          '(type=${restriction.type} operator=${restriction.operator}) -> pass');
+      return true;
+    }
+
+    switch (restriction.type) {
+      case "date":
+        return _checkDateRestriction(restriction, now);
+      case "time":
+        return _checkTimeRestriction(restriction, now);
+      case "location":
+        return _checkLocationRestriction(restriction);
+      case "player_tag":
+        return _checkTextRestriction(
+            restriction, _devicePlayerTags, 'player_tag');
+      case "player_name":
+        return _checkTextRestriction(
+            restriction, _devicePlayerName, 'player_name');
+      case "player_os":
+        return _checkTextRestriction(
+            restriction, [Platform.operatingSystem], 'player_os');
+      default:
+        _debugLog("checkRestrictions: unknown type '${restriction.type}' "
+            "-> pass (not evaluated)");
+        return true;
+    }
+  }
+
+  // -- Device attributes the non-date/time restrictions test against --
+  //
+  // All of these already arrive in the pairing payload and were simply never
+  // read out of it: data.name, data.tags, data.locationName and
+  // settings.latitude / settings.longitude.
+  List<String> _devicePlayerTags = const [];
+  List<String> _devicePlayerName = const [];
+  String? _deviceLocationName;
+
+  /// Pulls the attributes restrictions are evaluated against out of the
+  /// stored pairing response.
+  void _captureRestrictionContext(Map<String, dynamic> response) {
+    try {
+      final data = response['data'];
+      if (data is Map) {
+        _devicePlayerTags = _asStringList(data['tags']);
+        final name = data['name'];
+        _devicePlayerName =
+            (name is String && name.trim().isNotEmpty) ? [name] : const [];
+        final location = data['locationName'];
+        _deviceLocationName = (location is String && location.trim().isNotEmpty)
+            ? location
+            : null;
+      }
+      final settings = response['settings'];
+      if (settings is Map) {
+        final lat = settings['latitude'];
+        final lon = settings['longitude'];
+        if (lat is num && lon is num && !(lat == 0 && lon == 0)) {
+          devicesinfo['latitude'] = lat.toDouble();
+          devicesinfo['longitude'] = lon.toDouble();
+        }
+      }
+      _debugLog('restriction context: tags=$_devicePlayerTags '
+          'name=$_devicePlayerName location=$_deviceLocationName '
+          'os=${Platform.operatingSystem}');
+    } catch (error) {
+      _debugLog('restriction context capture failed: $error');
+    }
+  }
+
+  /// Tolerates a bare string as well as a list -- a single tag does not
+  /// necessarily arrive wrapped in one, and objects carry their label under
+  /// name or title.
+  List<String> _asStringList(dynamic value) {
+    if (value == null) return const [];
+    if (value is List) {
+      return value
+          .map((e) =>
+              e is Map ? (e['name'] ?? e['title'] ?? '').toString() : e.toString())
+          .where((e) => e.trim().isNotEmpty)
+          .toList();
+    }
+    if (value is String) {
+      return value
+          .split(',')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+    }
+    return const [];
+  }
+
+  /// player_tag, player_name and player_os:
+  /// is | is-not | contains | not-contains | empty | not-empty.
+  ///
+  /// [deviceValues] is what this device carries for that attribute -- one
+  /// entry for name and OS, potentially several for tags. A positive
+  /// operator passes when ANY entry matches, which is what makes
+  /// "tag is lobby" behave as expected on a device tagged lobby AND retail.
+  /// Comparison ignores case and surrounding whitespace, since these are
+  /// free text typed into the CMS.
+  bool _checkTextRestriction(
+      Restriction restriction, List<String> deviceValues, String label) {
+    final operator = _normalizeRestrictionOperator(restriction.operator);
+    final wanted = (restriction.values ?? const [])
+        .map((v) => v.trim().toLowerCase())
+        .where((v) => v.isNotEmpty)
+        .toList();
+    final have = deviceValues
+        .map((v) => v.trim().toLowerCase())
+        .where((v) => v.isNotEmpty)
+        .toList();
+
+    switch (operator) {
+      case 'empty':
+        return have.isEmpty;
+      case 'not-empty':
+        return have.isNotEmpty;
+      case 'is':
+        if (wanted.isEmpty) return true;
+        return have.any(wanted.contains);
+      case 'is-not':
+        if (wanted.isEmpty) return true;
+        return !have.any(wanted.contains);
+      case 'contains':
+        if (wanted.isEmpty) return true;
+        return have.any((h) => wanted.any((w) => h.contains(w)));
+      case 'not-contains':
+        if (wanted.isEmpty) return true;
+        return !have.any((h) => wanted.any((w) => h.contains(w)));
+      default:
+        _debugLog("checkRestrictions: $label has no handler for operator "
+            "'$operator' -> pass (not evaluated)");
+        return true;
+    }
+  }
+
+  /// location: is-inside | is-not-inside | is-inside-any | is-not-inside-any.
+  ///
+  /// Matches the location NAME assigned to the player in the CMS. The "-any"
+  /// variants differ only in that the CMS lets several locations be listed;
+  /// the membership test is the same either way, so they share it.
+  ///
+  /// Coordinates are also accepted: when the values parse as latitude and
+  /// longitude, the device's own reported position is compared against them
+  /// with a radius (third value, default 500 m).
+  bool _checkLocationRestriction(Restriction restriction) {
+    final operator = _normalizeRestrictionOperator(restriction.operator);
+    final values = restriction.values ?? const <String>[];
+    final negated =
+        operator == 'is-not-inside' || operator == 'is-not-inside-any';
+
+    final coords = _tryParseCoordinates(values);
+    if (coords != null) {
+      final lat = devicesinfo['latitude'];
+      final lon = devicesinfo['longitude'];
+      if (lat is! num || lon is! num || (lat == 0 && lon == 0)) {
+        _debugLog('checkRestrictions: location rule needs coordinates this '
+            'device has not reported -> pass (not evaluated)');
+        return true;
+      }
+      final metres =
+          _metresBetween(lat.toDouble(), lon.toDouble(), coords[0], coords[1]);
+      final inside = metres <= coords[2];
+      _debugLog('checkRestrictions: location ${metres.round()}m from target, '
+          'radius ${coords[2].round()}m -> inside=$inside');
+      return negated ? !inside : inside;
+    }
+
+    if (_deviceLocationName == null) {
+      _debugLog('checkRestrictions: no location assigned to this player '
+          '-> pass (not evaluated)');
+      return true;
+    }
+    final have = _deviceLocationName!.trim().toLowerCase();
+    final wanted = values
+        .map((v) => v.trim().toLowerCase())
+        .where((v) => v.isNotEmpty)
+        .toList();
+    if (wanted.isEmpty) return true;
+    final inside = wanted.contains(have);
+    return negated ? !inside : inside;
+  }
+
+  /// [lat, lon, radiusMetres] when the values look like coordinates.
+  List<double>? _tryParseCoordinates(List<String> values) {
+    if (values.length < 2) return null;
+    final lat = double.tryParse(values[0].trim());
+    final lon = double.tryParse(values[1].trim());
+    if (lat == null || lon == null) return null;
+    if (lat.abs() > 90 || lon.abs() > 180) return null;
+    final radius =
+        values.length > 2 ? (double.tryParse(values[2].trim()) ?? 500.0) : 500.0;
+    return <double>[lat, lon, radius];
+  }
+
+  /// Great-circle distance in metres (haversine).
+  double _metresBetween(double lat1, double lon1, double lat2, double lon2) {
+    const earthRadius = 6371000.0;
+    final dLat = _toRadians(lat2 - lat1);
+    final dLon = _toRadians(lon2 - lon1);
+    final a = math.pow(math.sin(dLat / 2), 2) +
+        math.cos(_toRadians(lat1)) *
+            math.cos(_toRadians(lat2)) *
+            math.pow(math.sin(dLon / 2), 2);
+    return 2 * earthRadius * math.asin(math.min(1.0, math.sqrt(a)));
+  }
+
+  double _toRadians(double degrees) => degrees * math.pi / 180.0;
 
   /// Check date restriction based on operator
   bool _checkDateRestriction(Restriction restriction, DateTime now) {
@@ -4430,10 +4661,23 @@ EOF
             final endTime = _parseTimeString(values[1]);
             final currentTime =
                 DateTime(now.year, now.month, now.day, now.hour, now.minute);
-            final result = (currentTime.isAfter(startTime) ||
-                    currentTime.isAtSameMomentAs(startTime)) &&
-                (currentTime.isBefore(endTime) ||
-                    currentTime.isAtSameMomentAs(endTime));
+            // Both ends are anchored to TODAY by _parseTimeString, so an
+            // overnight window such as 22:00-06:00 could never be true: end
+            // (06:00 today) is chronologically before start (22:00 today), so
+            // "start <= now <= end" fails at every instant. When end is before
+            // start the range wraps past midnight and the test is
+            // "at/after start" OR "at/before end", not AND.
+            //
+            // Only reachable when end < start, a case that previously always
+            // returned false, so this can turn "never plays" into "plays in
+            // the intended window" and cannot change any window that works
+            // today.
+            final wrapsMidnight = endTime.isBefore(startTime);
+            final atOrAfterStart = !currentTime.isBefore(startTime);
+            final atOrBeforeEnd = !currentTime.isAfter(endTime);
+            final result = wrapsMidnight
+                ? (atOrAfterStart || atOrBeforeEnd)
+                : (atOrAfterStart && atOrBeforeEnd);
             print(
                 "${cyan}TIME_CHECK:: is-between - start: ${startTime.hour}:${startTime.minute.toString().padLeft(2, '0')}, end: ${endTime.hour}:${endTime.minute.toString().padLeft(2, '0')}, current: ${currentTime.hour}:${currentTime.minute.toString().padLeft(2, '0')}, result: $result$reset");
             return result;
@@ -4539,6 +4783,31 @@ EOF
         return 'is-after';
       case 'noton':
         return 'not-on';
+      // location
+      case 'isinside':
+        return 'is-inside';
+      case 'isnotinside':
+        return 'is-not-inside';
+      case 'isinsideany':
+        return 'is-inside-any';
+      case 'isnotinsideany':
+        return 'is-not-inside-any';
+      // player_tag / player_name / player_os
+      case 'is':
+        return 'is';
+      case 'isnot':
+        return 'is-not';
+      case 'contains':
+        return 'contains';
+      case 'notcontains':
+      case 'doesnotcontain':
+        return 'not-contains';
+      case 'empty':
+      case 'isempty':
+        return 'empty';
+      case 'notempty':
+      case 'isnotempty':
+        return 'not-empty';
       default:
         // Best-effort: normalize underscores to hyphens.
         return raw.replaceAll('_', '-');

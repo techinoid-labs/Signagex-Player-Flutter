@@ -2671,14 +2671,31 @@ class Date {
 // ============================================
 
 class Restriction {
-  String? type; // "date" or "time"
-  String? operator; // "is-between", "on", "is-before", "is-after", "not-on"
-  List<String>? values; // Array of values (1 or 2 depending on operator)
+  /// date | time | location | player_tag | player_name | player_os
+  /// (CampaignRestrictionTypeEnum in the backend).
+  String? type;
+
+  /// Depends on the type -- see checkRestrictions in MqttViewModel for the
+  /// full matrix the CMS can produce.
+  String? operator;
+
+  /// 1 or 2 entries depending on the operator; absent for the
+  /// empty / not-empty operators, which test the device value itself.
+  List<String>? values;
+
+  /// How this restriction joins to the PREVIOUS one: "AND" or "OR".
+  ///
+  /// Persisted per-restriction by the backend (LogicOperatorEnum) and was
+  /// simply not read here, so every restriction set was evaluated as a flat
+  /// AND -- an OR condition configured in the CMS silently behaved as AND
+  /// and withheld content it should have played.
+  String? logicOperator;
 
   Restriction({
     this.type,
     this.operator,
     this.values,
+    this.logicOperator,
   });
 
   factory Restriction.fromJson(Map<String, dynamic> json) => Restriction(
@@ -2687,6 +2704,8 @@ class Restriction {
         values: json["values"] == null
             ? null
             : List<String>.from(json["values"].map((x) => x.toString())),
+        logicOperator: json["logic_operator"]?.toString() ??
+            json["logicOperator"]?.toString(),
       );
 
   Map<String, dynamic> toJson() => {
@@ -2694,6 +2713,7 @@ class Restriction {
         "operator": operator,
         "values":
             values == null ? null : List<dynamic>.from(values!.map((x) => x)),
+        "logic_operator": logicOperator,
       };
 }
 
