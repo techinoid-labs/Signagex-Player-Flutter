@@ -280,8 +280,22 @@ jobs:
             echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping staging publish to player-releases. This is a deliberate skip, not a failure."
             exit 0
           fi
-          curl -sf -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
+          # Never fails the job. The production installer is published by the
+          # step above and has already succeeded by the time this runs, so a
+          # staging problem must not mark a shipped production release as a
+          # failed build -- customers are only ever given production builds.
+          #
+          # This is not hypothetical: run #142 went red here while the upload
+          # had in fact worked, with stage.signagexai.com serving that exact
+          # version afterwards. curl reported failure after the server had
+          # accepted a 44 MB upload, so the step is also inherently prone to
+          # reporting a failure that did not happen.
+          if curl -sf -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
             -H "x-release-key: $RELEASE_KEY" \
             -F "platform=windows" \
             -F "version=$build_id" \
-            -F "file=@dist/SignageX-Player-Setup-Staging.exe"
+            -F "file=@dist/SignageX-Player-Setup-Staging.exe"; then
+            echo "Staging installer published."
+          else
+            echo "::warning::Staging publish to player-releases failed (exit $?). The production release above succeeded and is unaffected. Check stage.signagexai.com if the staging update loop is needed."
+          fi
