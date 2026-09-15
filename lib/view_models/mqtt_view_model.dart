@@ -4477,7 +4477,16 @@ EOF
     try {
       final data = response['data'];
       if (data is Map) {
-        _devicePlayerTags = _asStringList(data['tags']);
+        // Tags applied directly AND tags inherited from player groups. The
+        // backend models the latter separately (players.service.ts exposes
+        // tagsFromGroups from player.playerGroups), and a tag inherited from
+        // a group is still a tag as far as anyone configuring a restriction
+        // is concerned -- reading only data['tags'] silently ignored every
+        // group-assigned one.
+        _devicePlayerTags = [
+          ..._asStringList(data['tags']),
+          ..._asStringList(data['playerGroups']),
+        ];
         final name = data['name'];
         _devicePlayerName =
             (name is String && name.trim().isNotEmpty) ? [name] : const [];
@@ -4496,6 +4505,8 @@ EOF
         }
       }
       _debugLog('restriction context: tags=$_devicePlayerTags '
+          '(direct=${_asStringList((response['data'] as Map?)?['tags'])} '
+          'fromGroups=${_asStringList((response['data'] as Map?)?['playerGroups'])}) '
           'name=$_devicePlayerName location=$_deviceLocationName '
           'os=${Platform.operatingSystem}');
     } catch (error) {
