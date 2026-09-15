@@ -1705,6 +1705,9 @@ EOF
     }
 
     int completedDownloads = 0;
+    // Counted separately so the end of the loop can tell "some assets were
+    // unreachable" apart from "nothing downloaded at all".
+    int failedDownloads = 0;
     _overallProgress = 0.0;
     _completedDownloadCount = 0;
     _currentFileProgress = 0.0;
@@ -1738,8 +1741,17 @@ EOF
             _mediaPath[playlist.id]!.add(filePath);
             completedDownloads++;
             _updateOverallProgress(completedDownloads);
-          } catch (error) {
+          } catch (error, stackTrace) {
             print("Error downloading file: $error");
+            // Was print() only, so on a release build a failed asset left no
+            // evidence anywhere -- a playlist stuck mid-download looked
+            // identical to one still downloading, with nothing in the log
+            // between heartbeats. The URL matters most: it names which asset
+            // is unreachable.
+            failedDownloads++;
+            _debugLog('downloadFileForPlaylist FAILED playlist=${playlist.id} '
+                'url=$mediaUrl -- ${error.runtimeType}: $error\n$stackTrace');
+
             Map<String, dynamic> errorLog = {
               "action": "player_logs",
               "log": "Download Playlist",
@@ -1748,12 +1760,33 @@ EOF
               "type": "error",
               "date_time": DateTime.now().toIso8601String(),
             };
-
             _mqttClientService.publish(topic, jsonEncode(errorLog));
-            _state = MqttState.failure;
-            notifyListeners();
+
+            // Counted even though it failed. Without this the check below can
+            // never satisfy completedDownloads == _downloadCount, so the
+            // playlist is never committed and the player sits on the
+            // downloading screen at whatever percentage the last success
+            // reached -- permanently. Seen in the field as "stuck at 29%".
+            //
+            // One unreachable asset must not take the whole playlist down: a
+            // screen showing the rest of its content is strictly better than
+            // a screen showing a frozen progress bar.
+            completedDownloads++;
+            _updateOverallProgress(completedDownloads);
           }
         }
+      }
+    }
+
+    if (failedDownloads > 0) {
+      _debugLog('playlist download finished with $failedDownloads of '
+          '$_downloadCount asset(s) unavailable -- playing the rest');
+      if (failedDownloads == _downloadCount) {
+        // Nothing arrived, so there is genuinely nothing to show.
+        _debugLog('playlist download: every asset failed -> failure state');
+        _state = MqttState.failure;
+        notifyListeners();
+        return;
       }
     }
 
@@ -2575,6 +2608,17 @@ EOF
       SharedPreferences prefs = await SharedPreferences.getInstance();
       bool isSaved = await prefs.setString('apiResponse', jsonResponse);
       print("check status ::::$isSaved");
+
+      // Also captured HERE, not only in retrieveStoredResponse(). That one
+      // reads a response saved by a PREVIOUS launch, so a freshly paired
+      // device had no tags, name or location until it was restarted -- and
+      // player_name / player_tag / location restrictions were evaluated
+      // against empty values on exactly the devices most likely to be under
+      // test. Capturing at both ends means it is populated from the moment
+      // the device knows who it is.
+      if (response is Map<String, dynamic>) {
+        _captureRestrictionContext(response);
+      }
 
       _topic = response["player_code"] ?? "";
 
