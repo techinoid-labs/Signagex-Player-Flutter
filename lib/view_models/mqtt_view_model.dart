@@ -3267,6 +3267,10 @@ EOF
 
     if (jsonObj["action"] == "publish_playlist" ||
         jsonObj["action"] == "publish_campaign") {
+      // Refresh tags / name / location before the restrictions attached to
+      // this publication are evaluated, so a tag added in the CMS moments ago
+      // is actually visible to them. Only on publish, so this is not a poll.
+      unawaited(_refreshDeviceAttributes());
       SharedPreferences prefs = await SharedPreferences.getInstance();
       bool isSaved = await prefs.setString('jsonObj', jsonEncode(jsonObj));
       // Keep the in-memory restore payload in sync with what was just published.
@@ -4416,6 +4420,56 @@ EOF
   List<String> _devicePlayerTags = const [];
   List<String> _devicePlayerName = const [];
   String? _deviceLocationName;
+
+  /// Re-reads this device's own tags, name and location from the backend.
+  ///
+  /// These were captured once, from the pairing response, and never refreshed
+  /// -- so a tag added in the CMS after the player paired never reached it.
+  /// Confirmed in the field: a player tagged "windows9" in the CMS evaluated
+  /// player_tag/is/[windows9] as FAIL, because its stored copy of data.tags
+  /// was still the empty list it paired with. The rule was correct, the
+  /// device's idea of itself was stale.
+  ///
+  /// Deliberately separate from _checkPairingStatus even though it calls the
+  /// same endpoint: that method also drives pairing state and handles
+  /// action_stop_player, and none of that should run just because a campaign
+  /// was published. This only updates the attributes and is otherwise silent.
+  Future<void> _refreshDeviceAttributes() async {
+    if (!Platform.isWindows && !Platform.isLinux && !Platform.isAndroid) return;
+    try {
+      Map<String, dynamic> requestBody;
+      if (Platform.isAndroid) {
+        requestBody = {
+          "platform": "android",
+          "macAddress": [
+            {"mac": macAddresses['wlan0'] ?? "123123", "interface": "wlan0"},
+            {"mac": macAddresses['eth0'] ?? "123213", "interface": "eth0"}
+          ]
+        };
+      } else if (Platform.isLinux) {
+        requestBody = {"platform": "linux", "uuid": await getDeviceIDForLinux()};
+      } else {
+        requestBody = {"platform": "windows", "uuid": await getDeviceID()};
+      }
+
+      final response = await ApiRepository().postData(
+        "player/connection/",
+        requestBody,
+        null,
+      );
+      if (response is Map<String, dynamic>) {
+        _captureRestrictionContext(response);
+        // Kept in step so a later launch restores the refreshed attributes
+        // rather than the ones this device originally paired with.
+        final prefs = await SharedPreferences.getInstance();
+        await prefs.setString('apiResponse', jsonEncode(response));
+      }
+    } catch (error) {
+      // Best effort: a failed refresh must not stop content being published.
+      // The previously captured attributes stay in use.
+      _debugLog('device attribute refresh failed: $error');
+    }
+  }
 
   /// Pulls the attributes restrictions are evaluated against out of the
   /// stored pairing response.
