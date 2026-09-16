@@ -214,7 +214,15 @@ jobs:
   # that genuinely fails must show as a failed job, not a silently-green
   # one. The one non-failing exit (missing secret) is a deliberate skip,
   # logged as a warning, not a swallowed failure.
-  promote:
+  # Publishes every push to the STAGING feed only.
+  #
+  # Production is deliberately NOT published from here. A build reaching
+  # customers automatically on every push means an untested commit can be on
+  # a customer's screen minutes after it is written, and the installer given
+  # to a client cannot be superseded without warning. Production is promoted
+  # by hand, from a build that has been tested on staging -- see
+  # promote-production.yml.
+  publish-staging:
     needs: [test, package]
     if: github.ref == 'refs/heads/windows'
     runs-on: ubuntu-latest
@@ -225,21 +233,15 @@ jobs:
           name: build-identity
           path: identity
 
-      - name: Verify promoted artifact identity matches the tested commit
+      - name: Verify artifact identity matches the tested commit
         shell: bash
         run: |
           recorded_sha="$(cat identity/commit.txt)"
           if [ "$recorded_sha" != "${{ github.sha }}" ]; then
-            echo "::error::Artifact identity mismatch: built from $recorded_sha, promoting for ${{ github.sha }}."
+            echo "::error::Artifact identity mismatch: built from $recorded_sha, publishing for ${{ github.sha }}."
             exit 1
           fi
           echo "build_id=$(cat identity/build_id.txt)" >> "$GITHUB_ENV"
-
-      - name: Download production installer
-        uses: actions/download-artifact@v4
-        with:
-          name: SignageX-Player-Setup
-          path: dist
 
       - name: Download staging installer
         uses: actions/download-artifact@v4
@@ -247,55 +249,19 @@ jobs:
           name: SignageX-Player-Setup-Staging
           path: dist
 
-      - name: Publish production installer for player auto-update
-        # Uploads to signageX-backend's player-releases module -- the stable
-        # public download URL, and what the in-app "update available" banner
-        # polls. Needs PLAYER_RELEASE_UPLOAD_KEY set as a secret here AND as
-        # the same value in that backend's own environment.
-        shell: bash
-        env:
-          RELEASE_KEY: ${{ secrets.PLAYER_RELEASE_UPLOAD_KEY }}
-        run: |
-          if [ -z "$RELEASE_KEY" ]; then
-            echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping publish to player-releases (in-app auto-update won't see this build). This is a deliberate skip, not a failure."
-            exit 0
-          fi
-          curl -sf -X POST "https://signagexai.com/v1/player-releases/upload" \
-            -H "x-release-key: $RELEASE_KEY" \
-            -F "platform=windows" \
-            -F "version=$build_id" \
-            -F "file=@dist/SignageX-Player-Setup.exe"
-
       - name: Publish staging installer for player auto-update
-        # Same idea as the production publish step above, but against
-        # stage.signagexai.com -- a staging-built app's own apiHost (see
-        # lib/utils/constants.dart) points there, so this is what lets the
-        # whole CI -> backend -> in-app update banner loop be tested for
-        # real on staging before anything touches production.
         shell: bash
         env:
           RELEASE_KEY: ${{ secrets.PLAYER_RELEASE_UPLOAD_KEY }}
         run: |
           if [ -z "$RELEASE_KEY" ]; then
-            echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping staging publish to player-releases. This is a deliberate skip, not a failure."
+            echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping staging publish. This is a deliberate skip, not a failure."
             exit 0
           fi
-          # Never fails the job. The production installer is published by the
-          # step above and has already succeeded by the time this runs, so a
-          # staging problem must not mark a shipped production release as a
-          # failed build -- customers are only ever given production builds.
-          #
-          # This is not hypothetical: run #142 went red here while the upload
-          # had in fact worked, with stage.signagexai.com serving that exact
-          # version afterwards. curl reported failure after the server had
-          # accepted a 44 MB upload, so the step is also inherently prone to
-          # reporting a failure that did not happen.
-          if curl -sf -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
+          curl -sf -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
             -H "x-release-key: $RELEASE_KEY" \
             -F "platform=windows" \
             -F "version=$build_id" \
-            -F "file=@dist/SignageX-Player-Setup-Staging.exe"; then
-            echo "Staging installer published."
-          else
-            echo "::warning::Staging publish to player-releases failed (exit $?). The production release above succeeded and is unaffected. Check stage.signagexai.com if the staging update loop is needed."
-          fi
+            -F "file=@dist/SignageX-Player-Setup-Staging.exe"
+          echo "Staging installer published as $build_id."
+          echo "To release this build to customers, run the \"Promote to production\" workflow with run id ${{ github.run_id }}."
