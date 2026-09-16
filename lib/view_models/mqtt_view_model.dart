@@ -494,6 +494,8 @@ class MqttViewModel extends ChangeNotifier {
             campaignModelFromJson(jsonEncode(storedJsonObj)),
             storedJsonObj,
           );
+          _adoptPlayerTagsFromCampaigns(
+              _campaignModel?.data?.playerCampaigns);
           _selectCompositionCampaignIndexIfPresent();
 
           print(_mediaList);
@@ -529,6 +531,8 @@ class MqttViewModel extends ChangeNotifier {
             campaignModelFromJson(jsonEncode(storedJsonObj)),
             storedJsonObj,
           );
+          _adoptPlayerTagsFromCampaigns(
+              _campaignModel?.data?.playerCampaigns);
           _selectCompositionCampaignIndexIfPresent();
 
           if ((_campaignModel?.data?.playerCampaigns ?? []).isNotEmpty) {
@@ -3423,6 +3427,9 @@ EOF
           '${campaigns?.map((c) => "[id=${c.campaignId} name=${c.campaignName} composition=${c.isCompositionLayout}]").join(" ")}');
       if (count == 0) {
         _campaignModel = incomingCampaignModel;
+        // The device tags the backend attached to this publication.
+        _adoptPlayerTagsFromCampaigns(
+            _campaignModel?.data?.playerCampaigns);
         _timerOfCampaign?.cancel();
         _timerOfCampaign = null;
         _currentIndexOfCapmaign = 0;
@@ -3433,6 +3440,9 @@ EOF
         return;
       }
       _campaignModel = incomingCampaignModel;
+      // The device tags the backend attached to this publication.
+      _adoptPlayerTagsFromCampaigns(
+          _campaignModel?.data?.playerCampaigns);
       for (var i = 0; i < count; i++) {
         final c = campaigns![i];
         print(
@@ -4420,6 +4430,34 @@ EOF
   List<String> _devicePlayerTags = const [];
   List<String> _devicePlayerName = const [];
   String? _deviceLocationName;
+
+  /// Adopts the device tags that arrive alongside a published campaign.
+  ///
+  /// The backend resolves this device's tags and attaches them to the
+  /// campaign as player_tags. That -- not the pairing response -- is where
+  /// they actually arrive, which is why player_tag restrictions never
+  /// matched: the player was reading data['tags'] from the pairing payload,
+  /// which stays empty, so the comparison ran against nothing.
+  ///
+  /// Anything already known from the pairing payload is kept and merged, so
+  /// a device that does have tags there does not lose them when a campaign
+  /// arrives without any.
+  void _adoptPlayerTagsFromCampaigns(List<Campaign>? campaigns) {
+    if (campaigns == null || campaigns.isEmpty) return;
+    final fromCampaigns = <String>{};
+    for (final campaign in campaigns) {
+      for (final tag in campaign.playerTags ?? const <String>[]) {
+        if (tag.trim().isNotEmpty) fromCampaigns.add(tag.trim());
+      }
+    }
+    if (fromCampaigns.isEmpty) return;
+    final merged = <String>{..._devicePlayerTags, ...fromCampaigns}.toList();
+    if (merged.length != _devicePlayerTags.length) {
+      _devicePlayerTags = merged;
+      _debugLog('player tags from campaign payload: $fromCampaigns '
+          '-> device tags now $_devicePlayerTags');
+    }
+  }
 
   /// Re-reads this device's own tags, name and location from the backend.
   ///

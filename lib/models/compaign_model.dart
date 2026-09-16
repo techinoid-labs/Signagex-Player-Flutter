@@ -173,6 +173,15 @@ class Campaign {
   List<CampaignZone>? zones;
   bool? isPaused;
 
+  /// The tags this DEVICE carries, as resolved by the backend and sent with
+  /// the campaign.
+  ///
+  /// This is where a player's tags actually arrive. They are not in the
+  /// pairing response, which is where the player looked for them -- so a
+  /// player_tag restriction was always evaluated against an empty list and
+  /// could never match, however the tag was configured in the CMS.
+  List<String>? playerTags;
+
   Campaign({
     this.playbackType,
     this.campaignId,
@@ -182,6 +191,7 @@ class Campaign {
     this.campaignSettings,
     this.zones,
     this.isPaused,
+    this.playerTags,
   });
 
   /// Full multi-zone layouts published with `composition_*` campaign id.
@@ -196,6 +206,10 @@ class Campaign {
         playbackType: json["playback_type"],
         campaignId: json["campaign_id"],
         campaignName: json["campaign_name"],
+        playerTags: json["player_tags"] == null
+            ? null
+            : List<String>.from(
+                json["player_tags"].map((x) => x.toString())),
         // A composition-type campaign's canvas size doesn't always arrive as
         // a top-level "resolution" key -- fall back to the composition
         // blob's own width/height (same fallback _campaignFromCompositionMediaMap
