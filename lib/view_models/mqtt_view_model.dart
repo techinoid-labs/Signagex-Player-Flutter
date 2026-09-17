@@ -2704,6 +2704,13 @@ EOF
         _stopReason = null;
         _pairingPollTimer?.cancel();
         _pairingPollTimer = null;
+        // A healthy player must keep asking, or it never finds out it has
+        // been stopped. The fast poll above exists only to notice a RESUME;
+        // cancelling it here left a running player asking nothing at all, so
+        // a licence removed while it was playing was invisible until the app
+        // happened to restart or reconnect. Reported as "removed the licence
+        // and the player showed no reason at all".
+        _startStatusPoll();
 
         // Persist paired=true so the action_setup_player handler's
         // `storeState == false` gate (mqtt_view_model.dart ~2280) stops
@@ -2889,6 +2896,81 @@ EOF
   // pairing screen forever with no way to recover except an app restart,
   // which looked identical to "player not connecting" from the CMS side.
   Timer? _pairingPollTimer;
+
+  /// Slow poll that runs while the player is healthy, so a stop issued by
+  /// the backend is actually noticed.
+  ///
+  /// PLAYER_STOP_REASON_CONTRACT assumes the player keeps asking
+  /// /v1/player/connection on its normal cadence -- that is how both the
+  /// stop and the later resume reach it, since neither is pushed. A paired
+  /// player polled nothing, so removing a licence changed nothing on screen
+  /// until the next restart.
+  ///
+  /// Deliberately does NOT call _checkPairingStatus: that re-persists
+  /// pairing state, republishes device info and re-subscribes, none of which
+  /// should happen once a minute underneath content that is playing fine.
+  /// This only looks for a stop, and hands over to the existing fast poll if
+  /// it finds one.
+  Timer? _statusPollTimer;
+
+  void _startStatusPoll() {
+    _statusPollTimer ??=
+        Timer.periodic(const Duration(seconds: 60), (_) async {
+      // While stopped, the 10s pairing poll is already running and is the
+      // one that detects a resume -- no need for both.
+      if (_state == MqttState.playerStopped) return;
+      try {
+        Map<String, dynamic> requestBody;
+        if (Platform.isAndroid) {
+          requestBody = {
+            "platform": "android",
+            "macAddress": [
+              {"mac": macAddresses['wlan0'] ?? "123123", "interface": "wlan0"},
+              {"mac": macAddresses['eth0'] ?? "123213", "interface": "eth0"}
+            ]
+          };
+        } else if (Platform.isLinux) {
+          requestBody = {
+            "platform": "linux",
+            "uuid": await getDeviceIDForLinux()
+          };
+        } else if (Platform.isWindows) {
+          requestBody = {"platform": "windows", "uuid": await getDeviceID()};
+        } else {
+          return;
+        }
+
+        final response = await ApiRepository().postData(
+          "player/connection/",
+          requestBody,
+          null,
+        );
+        if (response is! Map<String, dynamic>) return;
+
+        // Attributes are free here -- this response carries the same tags,
+        // name and location the restriction rules are evaluated against.
+        _captureRestrictionContext(response);
+
+        if (response["paired"] == false &&
+            response["action"] == "action_stop_player") {
+          _stopReason = (response["reason"] ?? "").toString();
+          _debugLog('status poll: backend stopped this player '
+              '(reason=$_stopReason)');
+          _state = MqttState.playerStopped;
+          notifyListeners();
+          // Hand over to the fast poll so the resume is picked up promptly.
+          _pairingPollTimer ??=
+              Timer.periodic(const Duration(seconds: 10), (_) async {
+            await _checkPairingStatus();
+          });
+        }
+      } catch (error) {
+        // A failed status poll must never interrupt playback; the next tick
+        // tries again.
+        _debugLog('status poll failed: $error');
+      }
+    });
+  }
 
   void setTapPosition(double x, double y) {
     tapX = x;
@@ -4263,6 +4345,7 @@ EOF
     _timerOfCampaign?.cancel();
     _timer?.cancel();
     _pairingPollTimer?.cancel();
+    _statusPollTimer?.cancel();
     _interactivityOverlayTimer?.cancel();
     _networkRecoveryTimer?.cancel();
     _stopPeriodicReporting();
