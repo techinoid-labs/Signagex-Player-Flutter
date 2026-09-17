@@ -2798,7 +2798,16 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       );
     }
 
-    return Video(controller: _videoController, controls: NoVideoControls);
+    // fit: BoxFit.fill to match ImageWidget. media_kit's Video defaults to
+    // BoxFit.contain, which letterboxes a video whose shape differs from its
+    // zone -- leaving bars inside an area the campaign was authored to fill,
+    // and making video behave differently from the images beside it in the
+    // same composition.
+    return Video(
+      controller: _videoController,
+      controls: NoVideoControls,
+      fit: BoxFit.fill,
+    );
   }
 
   @override
@@ -2812,6 +2821,18 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   }
 }
 
+/// Campaign imagery, drawn to fill its zone exactly.
+///
+/// BoxFit.fill, not .cover. Cover keeps the image's proportions and crops
+/// whatever overflows, which is what cut the edges off nested-campaign
+/// content: a zone whose shape differs from the image's silently lost the
+/// top and bottom, or the sides.
+///
+/// Filling trades that for distortion when the two shapes differ, which is
+/// the deliberate choice here -- a published design is expected to occupy
+/// its whole zone, and losing part of it outright is worse than showing all
+/// of it slightly stretched. .contain would avoid both but letterboxes,
+/// leaving bars inside a zone that was authored to be full.
 class ImageWidget extends StatelessWidget {
   final String filePath;
   final VoidCallback onImageEnd;
@@ -2866,7 +2887,7 @@ class ImageWidget extends StatelessWidget {
     if (bytes != null) {
       imageChild = Image.memory(
         bytes,
-        fit: BoxFit.cover,
+        fit: BoxFit.fill,
         errorBuilder: (_, __, ___) {
           onLoadFailed?.call();
           return const Center(
@@ -2877,7 +2898,7 @@ class ImageWidget extends StatelessWidget {
     } else if (_isNetworkUrl) {
       imageChild = Image.network(
         filePath,
-        fit: BoxFit.cover,
+        fit: BoxFit.fill,
         height: MediaQuery.sizeOf(context).height,
         width: MediaQuery.sizeOf(context).width,
         errorBuilder: (_, __, ___) {
@@ -2890,7 +2911,7 @@ class ImageWidget extends StatelessWidget {
     } else {
       imageChild = Image.file(
         File(filePath),
-        fit: BoxFit.cover,
+        fit: BoxFit.fill,
         height: MediaQuery.sizeOf(context).height,
         width: MediaQuery.sizeOf(context).width,
         errorBuilder: (_, __, ___) {
