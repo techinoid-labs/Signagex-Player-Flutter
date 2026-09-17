@@ -8,6 +8,9 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:media_kit/media_kit.dart' as media_kit;
+
+import 'package:digital_signage/views/campaign_view.dart'
+    show normalizeTransitionName;
 import 'package:media_kit_video/media_kit_video.dart' as media_kit_video;
 
 import 'package:digital_signage/models/play_list_model.dart';
@@ -421,9 +424,16 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         child: AnimatedSwitcher(
           duration: const Duration(milliseconds: 500),
           transitionBuilder: (child, animation) {
-            print("this is transition${currentMedia.settings.transition}");
+            // Same normalisation as campaign_view: the CMS's playlist
+            // picker emits fade-in / fade-out / slide / none, none of which
+            // match the cases below, so every transition fell through to the
+            // default and nothing animated.
+            final transitionName =
+                normalizeTransitionName(currentMedia.settings.transition);
+            print("this is transition "
+                "${currentMedia.settings.transition} -> $transitionName");
 
-            switch (currentMedia.settings.transition) {
+            switch (transitionName) {
               case "fadeIn":
                 return FadeTransition(opacity: animation, child: child);
               case "slideOverLeftToRight":

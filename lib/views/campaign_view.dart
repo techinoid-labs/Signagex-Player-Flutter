@@ -150,6 +150,77 @@ Widget _stickerRasterImage(Uint8List bytes, {Key? key}) {
   );
 }
 
+/// Maps a transition name from the CMS onto the animations this file
+/// implements.
+///
+/// The switch below was written against names the CMS does not produce. It
+/// expects fadeIn / slideOverLeftToRight / slideInOutBottomToTop and the
+/// like, while the CMS emits, depending on which picker was used:
+///
+///   campaign  : no-transition | fade | slide
+///   playlist  : fade-in | fade-out | slide | none
+///   ad camp.  : fade-in | fade-out | slide | none
+///
+/// and payloads have been seen carrying "Fade" capitalised. None of those
+/// matched any case, so every one of them fell through to `default: return
+/// child` and no transition ever played, whichever option was chosen.
+///
+/// Comparison ignores case, spaces, hyphens and underscores, so "Fade",
+/// "fade-in" and "FADE_IN" all resolve. An unrecognised name returns 'none'
+/// rather than something arbitrary -- a transition nobody asked for is more
+/// jarring than none at all, and new CMS options should be added here
+/// deliberately.
+String normalizeTransitionName(String? raw) {
+  final key = (raw ?? '')
+      .trim()
+      .toLowerCase()
+      .replaceAll('-', '')
+      .replaceAll('_', '')
+      .replaceAll(' ', '');
+
+  switch (key) {
+    case '':
+    case 'none':
+    case 'notransition':
+      return 'none';
+
+    // Fade. fade-out is rendered as a fade too: this is an AnimatedSwitcher
+    // cross-fade, so the outgoing item is already fading out as the incoming
+    // one fades in -- there is no separate direction to honour.
+    case 'fade':
+    case 'fadein':
+    case 'fadeout':
+      return 'fadeIn';
+
+    // A plain "slide" has no direction, so it gets the conventional one:
+    // new content entering from the right, as reading order suggests.
+    case 'slide':
+    case 'slidein':
+      return 'slideOverRightToLeft';
+
+    // Explicit directions, already implemented below.
+    case 'slideoverlefttoright':
+      return 'slideOverLeftToRight';
+    case 'slideoverrighttoleft':
+      return 'slideOverRightToLeft';
+    case 'slideovertoptobottom':
+      return 'slideOverTopToBottom';
+    case 'slideoverbottomtotop':
+      return 'slideOverBottomToTop';
+    case 'slideinoutlefttoright':
+      return 'slideInOutLeftToRight';
+    case 'slideinoutrighttoleft':
+      return 'slideInOutRightToLeft';
+    case 'slideinouttoptobottom':
+      return 'slideInOutTopToBottom';
+    case 'slideinoutbottomtotop':
+      return 'slideInOutBottomToTop';
+
+    default:
+      return 'none';
+  }
+}
+
 Widget _buildStickerSvgContent(
   String svg, {
   required String transition,
@@ -1886,10 +1957,16 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         key: ValueKey(currentMedia.id),
         duration: const Duration(milliseconds: 500),
         transitionBuilder: (child, animation) {
-          print(
-              "this is transition${currentMedia.settings?.transition ?? 'none'}");
+          // Normalised first -- the CMS's names ("fade", "slide",
+          // "no-transition", "fade-in", and "Fade" capitalised) match none of
+          // the cases below, so without this every transition fell through to
+          // the default and nothing animated.
+          final transitionName =
+              normalizeTransitionName(currentMedia.settings?.transition);
+          print("this is transition "
+              "${currentMedia.settings?.transition} -> $transitionName");
 
-          switch (currentMedia.settings?.transition ?? 'none') {
+          switch (transitionName) {
             case "fadeIn":
               return FadeTransition(opacity: animation, child: child);
             case "slideOverLeftToRight":
