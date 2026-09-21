@@ -1534,10 +1534,20 @@ EOF
       await _mqttClientService.connect();
       _state = MqttState.connectionScreen;
       notifyListeners();
+      // Linux was missing from this list, so _checkPairingStatus() never ran
+      // there at all -- and with it nothing that depends on the pairing
+      // response: no player_code, no MQTT topic, no stored apiResponse, and
+      // no restriction context (tags, name, location). Every restriction
+      // therefore evaluated against an empty device on Linux, which is why
+      // "everything that works on Windows" did not.
+      //
+      // Every platform this app ships on needs the pairing check; the list
+      // existed to exclude web, which this build does not target.
       if (Platform.isAndroid ||
           Platform.isIOS ||
           Platform.isMacOS ||
-          Platform.isWindows) {
+          Platform.isWindows ||
+          Platform.isLinux) {
         await _checkPairingStatus();
       }
       // Got through a full connect + pairing check, so whatever was wrong

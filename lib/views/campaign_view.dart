@@ -2870,6 +2870,27 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
             if (_errorDescription != null)
               Text("Error: $_errorDescription",
                   style: const TextStyle(fontSize: 12, color: Colors.red)),
+            // On Linux, media_kit plays through the system libmpv; unlike
+            // Windows it is NOT bundled with the app, so a machine without
+            // it fails every video with a generic initialisation error that
+            // names nothing actionable. Saying which package is missing
+            // turns "video not initialized" into something the person at
+            // the screen can actually fix.
+            if (Platform.isLinux) ...[
+              const SizedBox(height: 12),
+              const Text(
+                "On Linux this usually means libmpv is not installed.",
+                style: TextStyle(fontSize: 12),
+              ),
+              const Text(
+                "Install it with:  sudo apt install libmpv2 mpv",
+                style: TextStyle(fontSize: 12, color: Colors.blueGrey),
+              ),
+              const Text(
+                "(older distributions: sudo apt install libmpv1 mpv)",
+                style: TextStyle(fontSize: 11, color: Colors.grey),
+              ),
+            ],
           ],
         ),
       );
