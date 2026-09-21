@@ -196,6 +196,67 @@ String _stripUnsupportedSvgBlocks(String svg) {
   return s;
 }
 
+
+/// Maps a transition name from the CMS onto the animations implemented here.
+///
+/// The switch was written against names the CMS does not produce. It expects
+/// fadeIn / slideOverLeftToRight / slideInOutBottomToTop and the like, while
+/// the CMS emits:
+///
+///   campaign  : no-transition | fade | slide
+///   playlist  : fade-in | fade-out | slide | none
+///
+/// and payloads have been seen carrying "Fade" capitalised. Comparison
+/// ignores case, spaces, hyphens and underscores.
+///
+/// fade-out renders as a fade: this is an AnimatedSwitcher cross-fade, so the
+/// outgoing item already fades out as the incoming one fades in. A plain
+/// "slide" has no direction, so it gets the conventional one -- new content
+/// entering from the right.
+///
+/// An unrecognised name returns 'none' rather than something arbitrary: a
+/// transition nobody asked for is more jarring than none at all.
+String normalizeTransitionName(String? raw) {
+  final key = (raw ?? '')
+      .trim()
+      .toLowerCase()
+      .replaceAll('-', '')
+      .replaceAll('_', '')
+      .replaceAll(' ', '');
+
+  switch (key) {
+    case '':
+    case 'none':
+    case 'notransition':
+      return 'none';
+    case 'fade':
+    case 'fadein':
+    case 'fadeout':
+      return 'fadeIn';
+    case 'slide':
+    case 'slidein':
+      return 'slideOverRightToLeft';
+    case 'slideoverlefttoright':
+      return 'slideOverLeftToRight';
+    case 'slideoverrighttoleft':
+      return 'slideOverRightToLeft';
+    case 'slideovertoptobottom':
+      return 'slideOverTopToBottom';
+    case 'slideoverbottomtotop':
+      return 'slideOverBottomToTop';
+    case 'slideinoutlefttoright':
+      return 'slideInOutLeftToRight';
+    case 'slideinoutrighttoleft':
+      return 'slideInOutRightToLeft';
+    case 'slideinouttoptobottom':
+      return 'slideInOutTopToBottom';
+    case 'slideinoutbottomtotop':
+      return 'slideInOutBottomToTop';
+    default:
+      return 'none';
+  }
+}
+
 class CampaignView extends StatefulWidget {
   const CampaignView({super.key});
 
@@ -1521,7 +1582,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           print(
               "this is transition${currentMedia.settings?.transition ?? 'none'}");
 
-          switch (currentMedia.settings?.transition ?? 'none') {
+            // Normalised first: the CMS emits no-transition / fade /
+            // slide (campaign) and fade-in / fade-out / slide / none
+            // (playlist), sometimes capitalised -- none of which match
+            // the case labels below, so every transition fell through to
+            // the default and nothing animated, whichever was selected.
+            switch (normalizeTransitionName(
+                currentMedia.settings?.transition ?? 'none')) {
             case "fadeIn":
               return FadeTransition(opacity: animation, child: child);
             case "slideOverLeftToRight":
@@ -2367,6 +2434,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   }
 }
 
+/// Campaign imagery, drawn to fill its zone exactly.
+///
+/// BoxFit.fill, not .cover. Cover keeps the image's proportions and crops
+/// whatever overflows, which cut the edges off nested-campaign content: a
+/// zone whose shape differed from the image silently lost the top and
+/// bottom, or the sides. Filling trades that for distortion when the shapes
+/// differ -- the deliberate choice, since losing part of a published design
+/// outright is worse than showing all of it stretched.
 class ImageWidget extends StatelessWidget {
   final String filePath;
   final VoidCallback onImageEnd;
@@ -2413,7 +2488,7 @@ class ImageWidget extends StatelessWidget {
     if (bytes != null) {
       imageChild = Image.memory(
         bytes,
-        fit: BoxFit.cover,
+        fit: BoxFit.fill,
         errorBuilder: (_, __, ___) => const Center(
           child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
         ),
@@ -2421,7 +2496,7 @@ class ImageWidget extends StatelessWidget {
     } else if (_isNetworkUrl) {
       imageChild = Image.network(
         filePath,
-        fit: BoxFit.cover,
+        fit: BoxFit.fill,
         height: MediaQuery.sizeOf(context).height,
         width: MediaQuery.sizeOf(context).width,
         errorBuilder: (_, __, ___) => const Center(
@@ -2431,7 +2506,7 @@ class ImageWidget extends StatelessWidget {
     } else {
       imageChild = Image.file(
         File(filePath),
-        fit: BoxFit.cover,
+        fit: BoxFit.fill,
         height: MediaQuery.sizeOf(context).height,
         width: MediaQuery.sizeOf(context).width,
         errorBuilder: (_, __, ___) => const Center(

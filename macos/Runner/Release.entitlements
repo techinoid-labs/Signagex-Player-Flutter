@@ -16,6 +16,13 @@
 	<true/>
 	<key>com.apple.security.network.server</key>
 	<true/>
+	<!-- Required by the `location` restriction type: without it geolocator
+	     is denied inside the sandbox and every location rule evaluates
+	     against coordinates the player can never obtain. Debug already had
+	     this; release did not, so location rules worked under `flutter run`
+	     and silently did nothing in a shipped build. -->
+	<key>com.apple.security.personal-information.location</key>
+	<true/>
 	<key>com.apple.security.print</key>
 	<true/>
 </dict>
