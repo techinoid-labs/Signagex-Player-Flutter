@@ -2997,9 +2997,16 @@ class _LinuxWebViewWidgetState extends State<_LinuxWebViewWidget> {
   void initState() {
     super.initState();
     print('[LOG] _LinuxWebViewWidget - initState url=${widget.url}');
+    // injectUserScripts is deliberately not passed.
+    //
+    // It is optional, and what was passed was an EMPTY InjectUserScripts --
+    // no scripts, so no behaviour. It is also the one symbol webview_cef
+    // 0.2.2 does not export from its main library (it lives under src/),
+    // which is what made it the visible failure when CI resolved that
+    // version. Dropping a no-op argument is a better answer than reaching
+    // into another package's src/ to keep it.
     _controller = cef.WebviewManager().createWebView(
       loading: const Center(child: CircularProgressIndicator()),
-      injectUserScripts: cef.InjectUserScripts(),
     );
     _controller.addListener(_onReadyChanged);
     _controller.initialize(widget.url).then((_) {
