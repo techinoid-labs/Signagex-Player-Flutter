@@ -201,16 +201,30 @@ jobs:
       # error with clang 18 in the cache means something other than the
       # compiler, while the same error with clang 14 means CC/CXX never
       # took.
-      - name: Report the compiler CMake actually used
+      - name: Report the compiler and flags CMake actually used
         if: always()
         run: |
-          cache=build/linux/x64/release/CMakeCache.txt
-          if [ -f "$cache" ]; then
-            grep -E '^CMAKE_(C|CXX)_COMPILER:|^CMAKE_CXX_STANDARD' "$cache" || true
-            "$(grep -m1 '^CMAKE_CXX_COMPILER:' "$cache" | cut -d= -f2)" --version || true
+          out=build/linux/x64/release
+          echo "=================== CMakeCache ==================="
+          if [ -f "$out/CMakeCache.txt" ]; then
+            grep -E '^CMAKE_(C|CXX)_COMPILER:|^CMAKE_CXX_STANDARD|^CMAKE_CXX_EXTENSIONS' "$out/CMakeCache.txt" || true
+            cxx=$(grep -m1 '^CMAKE_CXX_COMPILER:' "$out/CMakeCache.txt" | cut -d= -f2)
+            [ -n "$cxx" ] && "$cxx" --version || true
           else
-            echo "No CMakeCache.txt -- the build did not get as far as configuring."
+            echo "No CMakeCache.txt -- the build never configured."
           fi
+          echo "=========== webview_cef compile command ==========="
+          # The decisive line: which binary compiles CEF, and with which
+          # -std flag. Everything about this failure turns on those two, and
+          # the error output shows neither.
+          if [ -f "$out/compile_commands.json" ]; then
+            jq -r '[.[] | select(.file | test("webview_cef"))][0] | .file, .command' \
+              "$out/compile_commands.json" 2>/dev/null | head -c 2000 \
+              || echo "(no webview_cef entry)"
+          else
+            echo "No compile_commands.json."
+          fi
+          echo ""
 
       # The .desktop entry is what gives the app its name and icon in the
       # launcher. A malformed one is not a build error -- it installs

@@ -23,6 +23,14 @@ project(runner LANGUAGES CXX)
 # which is exactly what is needed here.
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS OFF)
+
+# Writes build/linux/x64/release/compile_commands.json, which records the
+# exact command line used for every source file. CI prints webview_cef's
+# entry, because the compiler and the -std flag it is really given are the
+# one thing the error output does not reveal, and everything about this
+# failure hinges on them.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
