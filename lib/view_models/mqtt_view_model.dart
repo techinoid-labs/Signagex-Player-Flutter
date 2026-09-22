@@ -1,7 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:ui';
+
+import 'package:digital_signage/utils/debug_log.dart' as debug;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -51,10 +54,23 @@ enum MqttState {
   noInternet,
   downloading,
   pairedScreen,
-  playlistScreen
+  playlistScreen,
+  // PLAYER_STOP_REASON_CONTRACT: paired:false + action:"action_stop_player"
+  // on a player/connection/ response. Distinct from pairedScreen (a
+  // genuinely never-paired device) -- this player IS paired, just
+  // temporarily stopped by the backend (licence/subscription/account
+  // issue), so it must keep its cache and pairing state exactly as-is and
+  // just stop showing content until the next poll comes back paired again.
+  playerStopped,
 }
 
 class MqttViewModel extends ChangeNotifier {
+  // Release builds have no console -- print() output goes nowhere visible on
+  // Linux just as on Windows -- so diagnostics go to a file next to the
+  // app's support directory instead. See debug_log.dart.
+  Future<void> _debugLog(String message) =>
+      debug.debugLog('MqttViewModel', message);
+
   final MqttClientService _mqttClientService;
   final DeviceSettingsViewModel deviceSettings = DeviceSettingsViewModel();
 
@@ -72,6 +88,14 @@ class MqttViewModel extends ChangeNotifier {
   String _topic = "";
   String get topic => _topic;
   String get playerCode => _topic;
+
+  // PLAYER_STOP_REASON_CONTRACT: the backend's stopReason() value from the
+  // most recent action_stop_player response (licence_removed, org_expired,
+  // demo_expired, org_inactive, org_suspended, or an older/unrecognised
+  // value -- see PlayerStoppedView for how each is rendered). Null when not
+  // currently stopped.
+  String? _stopReason;
+  String? get stopReason => _stopReason;
 
   PlayListModel? _playListModel;
 
@@ -156,6 +180,7 @@ class MqttViewModel extends ChangeNotifier {
       final jsonResponse = jsonDecode(jsonString) as Map<String, dynamic>;
       print('Retrieved stored response: $jsonResponse');
       _topic = jsonResponse["player_code"] ?? "";
+      _captureRestrictionContext(jsonResponse);
       debugPrint("This is the response from the$topic API: $jsonResponse");
       if (_topic.isNotEmpty) {
         globleTopic = _topic;
@@ -282,7 +307,7 @@ class MqttViewModel extends ChangeNotifier {
         print("this is data $storedJsonObj");
 
         if (storedJsonObj["action"] == "publish_playlist") {
-          await _mqttClientService.connect(playerCode: _topic);
+          await _tryConnect('publish_playlist');
 
           if (_topic.isNotEmpty) {
             subsibeMessage(_topic);
@@ -304,7 +329,7 @@ class MqttViewModel extends ChangeNotifier {
             }
           }
         } else if (storedJsonObj["action"] == "publish_campaign") {
-          await _mqttClientService.connect(playerCode: _topic);
+          await _tryConnect('publish_campaign');
 
           if (_topic.isNotEmpty) {
             subsibeMessage(_topic);
@@ -316,6 +341,10 @@ class MqttViewModel extends ChangeNotifier {
             campaignModelFromJson(jsonEncode(storedJsonObj)),
             storedJsonObj,
           );
+          // Device tags ride on the campaign payload, not the pairing
+          // response -- adopt them before any player_tag restriction is
+          // evaluated against them.
+          _adoptPlayerTagsFromCampaigns(_campaignModel?.data?.playerCampaigns);
           _selectCompositionCampaignIndexIfPresent();
 
           print(_mediaList);
@@ -351,6 +380,10 @@ class MqttViewModel extends ChangeNotifier {
             campaignModelFromJson(jsonEncode(storedJsonObj)),
             storedJsonObj,
           );
+          // Device tags ride on the campaign payload, not the pairing
+          // response -- adopt them before any player_tag restriction is
+          // evaluated against them.
+          _adoptPlayerTagsFromCampaigns(_campaignModel?.data?.playerCampaigns);
           _selectCompositionCampaignIndexIfPresent();
 
           for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
@@ -362,8 +395,28 @@ class MqttViewModel extends ChangeNotifier {
             }
           }
         } else {
-          _state = MqttState.noInternet;
-          notifyListeners();
+          // With no stored content to restore, a "disconnected" reading used
+          // to go straight to MqttState.noInternet without attempting a
+          // single network call -- so nothing could ever disprove that
+          // reading or recover from it. The player was blocked by the flag
+          // itself, not by any actual network failure.
+          //
+          // That reading is not proof. InternetConnectionChecker decides by
+          // probing public DNS resolvers, which a managed or firewalled
+          // network blocks outright while the backend stays perfectly
+          // reachable -- the classic "works at home, dead in the office"
+          // shape.
+          //
+          // So the signal is now advisory: it triggers a connection ATTEMPT,
+          // and only the attempt decides the outcome. _mqttConnection()
+          // already sets noInternet from its own catch when a connection
+          // genuinely fails, so a real outage still lands on exactly the
+          // same screen.
+          _debugLog(
+              'connectivity reported disconnected and there is no stored '
+              'content -- attempting to connect anyway rather than trusting '
+              'the reachability probe');
+          await _mqttConnection();
         }
       }
     });
@@ -985,7 +1038,38 @@ EOF
   String get receivedMessage =>
       _mqttClientService.receivedMessageNotifier.value;
 
+  // Guards against a recovery tick firing while the previous attempt is
+  // still in flight (each attempt does real network I/O and can outlast the
+  // interval), which would otherwise stack overlapping connects.
+  bool _mqttConnecting = false;
+  Timer? _networkRecoveryTimer;
+  // Whether a connect attempt has failed and not yet succeeded. This, not
+  // _state, is what the recovery timer stops on -- see _startNetworkRecovery.
+  bool _needsReconnect = false;
+
+  // The stored-content branches of the connectivity handler call
+  // _mqttClientService.connect() bare. A throw there is an unhandled async
+  // error inside a stream listener callback: it aborts the REST of that
+  // callback (the subscribe and device-info publish that follow it) and
+  // schedules no retry, so an already-paired player that happened to start
+  // while the network was still settling would render its stored content
+  // and never reconnect to MQTT -- silently stuck on old content, with no
+  // no-internet screen to even hint at it.
+  Future<bool> _tryConnect(String where) async {
+    try {
+      await _mqttClientService.connect(playerCode: _topic);
+      return true;
+    } catch (error) {
+      _debugLog('$where: connect FAILED: ${error.runtimeType} -- $error '
+          '-- scheduling recovery retry');
+      _startNetworkRecovery();
+      return false;
+    }
+  }
+
   Future<void> _mqttConnection() async {
+    if (_mqttConnecting) return;
+    _mqttConnecting = true;
     try {
       debugPrint("Attempting to reconnect to MQTT.");
       await _mqttClientService.connect(playerCode: _topic);
@@ -994,10 +1078,109 @@ EOF
       if (Platform.isAndroid || Platform.isIOS || Platform.isMacOS) {
         await _checkPairingStatus();
       }
+      // Got through a full connect and pairing check, so whatever was
+      // wrong has cleared -- stop retrying.
+      _needsReconnect = false;
+      _networkRecoveryTimer?.cancel();
+      _networkRecoveryTimer = null;
     } catch (error) {
       _state = MqttState.noInternet;
       notifyListeners();
       debugPrint("Error during MQTT reinitialization: $error");
+      _debugLog('_mqttConnection FAILED: ${error.runtimeType} -- $error '
+          '-- scheduling recovery retry');
+      _startNetworkRecovery();
+    } finally {
+      _mqttConnecting = false;
+    }
+  }
+
+  /// Retries a failed connection until it works, instead of giving up.
+  ///
+  /// The catch above used to set MqttState.noInternet and schedule nothing,
+  /// so whatever the very first attempt saw was FINAL and the only thing
+  /// that could ever rescue the player was the connectivity stream firing
+  /// again. That makes startup timing decisive: a player launched from a
+  /// desktop session or a systemd unit routinely starts before
+  /// NetworkManager has finished bringing the link up and DHCP has settled,
+  /// so the first attempt fails for a reason that clears itself seconds
+  /// later -- and the player sat on "no internet" indefinitely with a
+  /// perfectly working network.
+  ///
+  /// A plain periodic retry removes that whole class of failure: it no
+  /// longer matters why the first attempt failed (too early, transient DNS,
+  /// backend blip, link still negotiating), because the player keeps trying
+  /// until it genuinely works and cancels itself the moment it does.
+  ///
+  /// Stops on _needsReconnect rather than on _state: the paired path arms
+  /// this while the player is happily rendering stored content
+  /// (_state == campaignScreen), so a state-based stop condition would
+  /// cancel the timer on its very first tick and fix nothing.
+  void _startNetworkRecovery() {
+    _needsReconnect = true;
+    // Slightly longer than the service's 20s connect timeout, so a tick
+    // normally lands between attempts rather than on top of one still
+    // running.
+    _networkRecoveryTimer ??=
+        Timer.periodic(const Duration(seconds: 25), (_) async {
+      if (!_needsReconnect) {
+        _networkRecoveryTimer?.cancel();
+        _networkRecoveryTimer = null;
+        return;
+      }
+      // A connect attempt can outlast a tick, and the ticks that land on
+      // top of one hit the _mqttConnecting guard and return silently --
+      // which in a log reads as a retry that is broken rather than one that
+      // is merely busy. Say which it is.
+      if (_mqttConnecting) {
+        _debugLog('network recovery tick -- SKIPPED, attempt still in flight');
+        return;
+      }
+      _debugLog('network recovery tick -- retrying (state=$_state)');
+      // Rebuild the client before retrying. Retrying against the same
+      // poisoned client makes no progress, while a fresh process connects
+      // in under a second -- see resetClient().
+      await _mqttClientService.resetClient();
+      if (_state == MqttState.noInternet ||
+          _state == MqttState.failure ||
+          _state == MqttState.initial) {
+        // Nothing on screen worth preserving -- run the full flow, which
+        // also re-runs the pairing check and moves the UI off the
+        // no-internet screen once it succeeds.
+        await _mqttConnection();
+      } else {
+        // Already rendering content. Restore the MQTT session ONLY, and
+        // deliberately leave _state alone: flipping a playing campaign back
+        // to the Connecting screen to repair a background transport problem
+        // would be a visible regression on a screen that is otherwise fine.
+        await _reconnectSession();
+      }
+    });
+  }
+
+  /// Re-establishes the MQTT session (connect, resubscribe, republish device
+  /// info, mirroring what the connectivity handler does) without touching
+  /// the UI state.
+  Future<void> _reconnectSession() async {
+    if (_mqttConnecting) return;
+    _mqttConnecting = true;
+    try {
+      await _mqttClientService.connect(playerCode: _topic);
+      if (_topic.isNotEmpty) {
+        subsibeMessage(_topic);
+      }
+      if (globleTopic.isNotEmpty) {
+        publishMessage(globleTopic, jsonEncode(deviceInfoMap));
+      }
+      _needsReconnect = false;
+      _networkRecoveryTimer?.cancel();
+      _networkRecoveryTimer = null;
+      _debugLog('network recovery: MQTT session restored (state=$_state)');
+    } catch (error) {
+      _debugLog(
+          'network recovery: still failing -- ${error.runtimeType} -- $error');
+    } finally {
+      _mqttConnecting = false;
     }
   }
 
@@ -1053,6 +1236,9 @@ EOF
     }
 
     int completedDownloads = 0;
+    // Counted separately so the end of the loop can tell "some assets were
+    // unreachable" apart from "nothing downloaded at all".
+    int failedDownloads = 0;
     _overallProgress = 0.0;
     _completedDownloadCount = 0;
     _currentFileProgress = 0.0;
@@ -1092,22 +1278,56 @@ EOF
             _mediaPath[playlist.id]!.add(filePath);
             completedDownloads++;
             _updateOverallProgress(completedDownloads);
-          } catch (error) {
+          } catch (error, stackTrace) {
             print("Error downloading file: $error");
-            // Map<String, dynamic> errorLog = {
-            //   "action": "player_logs",
-            //   "log": "Download Playlist",
-            //   "name":
-            //       "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
-            //   "type": "error",
-            //   "date_time": DateTime.now().toIso8601String(),
-            // };
+            // Was print() only, so on a release build a failed asset left no
+            // evidence anywhere -- a playlist stuck mid-download looked
+            // identical to one still downloading, with nothing in the log
+            // between heartbeats. The URL matters most: it names which asset
+            // is unreachable.
+            failedDownloads++;
+            _debugLog('downloadFileForPlaylist FAILED playlist=${playlist.id} '
+                'url=$mediaUrl -- ${error.runtimeType}: $error\n$stackTrace');
 
-            // _mqttClientService.publish(topic, jsonEncode(errorLog));
-            _state = MqttState.failure;
-            notifyListeners();
+            Map<String, dynamic> errorLog = {
+              "action": "player_logs",
+              "log": "Download Playlist",
+              "name":
+                  "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
+              "type": "error",
+              "date_time": DateTime.now().toIso8601String(),
+            };
+            _mqttClientService.publish(topic, jsonEncode(errorLog));
+
+            // Counted even though it failed. Without this the check below
+            // can never satisfy completedDownloads == _downloadCount, so the
+            // playlist is never committed and the player sits on the
+            // downloading screen at whatever percentage the last success
+            // reached -- permanently. Seen in the field as "stuck at 29%".
+            //
+            // One unreachable asset must not take the whole playlist down: a
+            // screen showing the rest of its content is strictly better than
+            // a screen showing a frozen progress bar. The per-file
+            // `_state = MqttState.failure` that used to sit here is gone
+            // with it -- it fought the progress UI on every subsequent file
+            // and described the whole playlist as failed on the strength of
+            // one missing asset.
+            completedDownloads++;
+            _updateOverallProgress(completedDownloads);
           }
         }
+      }
+    }
+
+    if (failedDownloads > 0) {
+      _debugLog('playlist download finished with $failedDownloads of '
+          '$_downloadCount asset(s) unavailable -- playing the rest');
+      if (failedDownloads == _downloadCount) {
+        // Nothing arrived, so there is genuinely nothing to show.
+        _debugLog('playlist download: every asset failed -> failure state');
+        _state = MqttState.failure;
+        notifyListeners();
+        return;
       }
     }
 
@@ -1619,6 +1839,9 @@ EOF
       bool isSaved = await prefs.setString('apiResponse', jsonResponse);
       print("check status ::::$isSaved");
 
+      if (response is Map<String, dynamic>) {
+        _captureRestrictionContext(response);
+      }
       _topic = response["player_code"] ?? "";
 
       if (_topic.isEmpty) {
@@ -1641,7 +1864,35 @@ EOF
       // Reset retry counter on successful connection
       _pairingRetryCount = 0;
 
-      if (response["paired"] == false) {
+      // Process pairing status FIRST so state updates even if MQTT ops fail below
+      if (response["paired"] == false &&
+          response["action"] == "action_stop_player") {
+        // PLAYER_STOP_REASON_CONTRACT: this player IS paired -- the backend
+        // stopped it for a licence/subscription/account reason, which is
+        // completely different from never having been paired at all. Any
+        // paired:false response used to fall through to the branch below
+        // regardless of cause, showing the pairing/QR screen: actively
+        // misleading, since pairing is guaranteed to be refused while a
+        // stop reason holds, so the code invited an action that could not
+        // succeed and made it look as though the screen's data had been
+        // wiped when nothing had.
+        //
+        // Deliberately does NOT write storeState, and does NOT clear the
+        // cached campaign/playlist the branch below clears -- swapping the
+        // screen to PlayerStoppedView is what stops content showing;
+        // nothing underneath is torn down, so the resume is instant. An
+        // unrecognised reason value still lands here and is handled
+        // generically by PlayerStoppedView, never falling through to the
+        // pairing-code screen.
+        _stopReason = (response["reason"] ?? "").toString();
+        _debugLog('pairing check: backend stopped this player '
+            '(reason=$_stopReason)');
+        _state = MqttState.playerStopped;
+        // No extra timer is needed to notice the resume: this method is
+        // already called every 30s by _pairingRevalidationTimer for the
+        // life of the app, and per the contract that poll is the whole
+        // restore mechanism -- nothing is pushed.
+      } else if (response["paired"] == false) {
         print("this is state screeen ${response["paired"]}");
         await prefs.setBool('storeState', response["paired"]);
 
@@ -1659,16 +1910,29 @@ EOF
           await prefs.clear();
         }
       } else if (response["paired"] == true) {
-        // Start capturing screenshots every second
-        // Timer.periodic(Duration(seconds: 1), (timer) async {
-        //   await captureAndSendScreenshot(globleTopic);
-        // });
-
+        _stopReason = null;
         // Periodic re-validation (see _pairingRevalidationTimer) calls this
-        // same method every 30s — don't let it clobber active playback
+        // same method every 30s -- don't let it clobber active playback
         // state back to "no content" while a campaign/playlist is actually
         // showing or downloading.
-        if (_state != MqttState.downloading &&
+        if (_state == MqttState.playerStopped) {
+          // PLAYER_STOP_REASON_CONTRACT: "there is no separate resume
+          // message... the poll is the entire mechanism" -- nothing
+          // re-sends the campaign on restore, so falling through to the
+          // noContent branch below would leave the screen stuck there
+          // forever, with nothing left to move it back to campaignScreen.
+          // _campaignModel/_playListModel were never touched while stopped,
+          // so they are exactly what brings the screen back -- resume from
+          // them directly.
+          _debugLog('pairing check: player resumed -- restoring from cache');
+          if (_campaignModel != null) {
+            _state = MqttState.campaignScreen;
+          } else if (_playListModel != null) {
+            _state = MqttState.playlistScreen;
+          } else {
+            _state = MqttState.noContent;
+          }
+        } else if (_state != MqttState.downloading &&
             _state != MqttState.campaignScreen &&
             _state != MqttState.playlistScreen) {
           _state = MqttState.noContent;
@@ -1680,9 +1944,14 @@ EOF
     } catch (error) {
       debugPrint("Error during pairing check: $error");
 
-      // Don't restart or retry if already paired - just log the error
-      if (_state == MqttState.pairedScreen) {
-        debugPrint("Device is already paired. Skipping retry and restart.");
+      // Don't restart or retry if already showing the pairing screen or
+      // currently stopped: both are re-checked every 30s by
+      // _pairingRevalidationTimer anyway, so a transient network error
+      // here must not escalate into a disruptive full app restart.
+      if (_state == MqttState.pairedScreen ||
+          _state == MqttState.playerStopped) {
+        debugPrint(
+            "Device is already paired or stopped. Skipping retry and restart.");
         return;
       }
 
@@ -2246,7 +2515,11 @@ EOF
         campaignModelFromJson(jsonEncode(jsonObj)),
         jsonObj,
       );
-      // Keep campaign index in bounds when campaign list changes (e.g. single campaign)
+      // Device tags ride on the campaign payload, not the pairing
+      // response -- adopt them before any player_tag restriction is
+      // evaluated against them.
+      _adoptPlayerTagsFromCampaigns(
+          _campaignModel?.data?.playerCampaigns);
       final campaigns = _campaignModel?.data?.playerCampaigns;
       final count = campaigns?.length ?? 0;
       if (count > 0) {
@@ -2479,18 +2752,53 @@ EOF
 
   int get currentIndexOfCapmaign => _currentIndexOfCapmaign;
 
-  int get currentDurationOfCampaign {
-    final currentCampaign =
-        campaignModel?.data?.playerCampaigns?[_currentIndexOfCapmaign];
+  int get currentDurationOfCampaign =>
+      _durationForCampaignAt(_currentIndexOfCapmaign);
+
+  /// How long campaign [index] should play for, or 0 if it may not play now.
+  ///
+  /// Split out of the currentDurationOfCampaign getter so the bounded scan
+  /// in _updateIndexForCampain can score a CANDIDATE index without first
+  /// mutating _currentIndexOfCapmaign to point at it.
+  int _durationForCampaignAt(int index) {
+    final currentCampaign = campaignModel?.data?.playerCampaigns?[index];
     if (currentCampaign == null) return 0;
 
     final campaignSchedule = currentCampaign.campaignSchedule;
-    if (campaignSchedule == null) return 0;
+    if (campaignSchedule == null) {
+      print('Index: $index, Duration: 15 seconds, '
+          'Always Play: true (default, no schedule)');
+      return 15;
+    }
 
     int durationcampagin = 0;
 
+    // This rotation-side eligibility check and CampaignView's render-side
+    // check were two different systems answering the same question, and
+    // they disagreed for any restriction-scheduled campaign.
+    //
+    // The render side asks:
+    //     alwaysPlay ? yes : (restrictions.isNotEmpty ? checkRestrictions(...) : no)
+    // while this function only ever looked at alwaysPlay or the LEGACY
+    // `period` block (date/days/time), never at `restrictions` at all.
+    //
+    // So a campaign with alwaysPlay=false, no period and a passing
+    // restriction rendered correctly, and then CampaignView's own initState
+    // post-frame callback called startPlaylistTimerForCampaign(), landed
+    // here, scored the campaign 0 because `restrictions` was invisible to
+    // this code, and the rotation concluded there was nothing to play --
+    // tearing down the very screen the render path had just approved. That
+    // is the "published with a restriction, player says No Content" report.
+    //
+    // Restrictions are checked here in the same order the render side uses,
+    // and only when a non-empty restrictions list actually exists, so the
+    // legacy period path below is untouched for payloads that still use it.
+    final restrictions = campaignSchedule.restrictions;
+    final hasRestrictions = restrictions != null && restrictions.isNotEmpty;
+
     // Check if the item is in the schedule or should always play
     if ((campaignSchedule.alwaysPlay ?? false) ||
+        (hasRestrictions && checkRestrictions(restrictions)) ||
         (campaignSchedule.period != null &&
             campaignSchedule.period!.date != null &&
             campaignSchedule.period!.date!.start != null &&
@@ -2517,7 +2825,11 @@ EOF
 
     // Log the state
     print(
-        "Current Index: $_currentIndexOfCapmaign, Duration: $durationcampagin seconds, Always Play: ${campaignSchedule.alwaysPlay}");
+        "Index: $index, Duration: $durationcampagin seconds, Always Play: ${campaignSchedule.alwaysPlay}");
+    _debugLog('_durationForCampaignAt($index) -> $durationcampagin '
+        '(alwaysPlay=${campaignSchedule.alwaysPlay} '
+        'restrictions=${restrictions?.length ?? 0} '
+        'hasPeriod=${campaignSchedule.period != null})');
 
     return durationcampagin;
   }
@@ -2525,10 +2837,15 @@ EOF
   void startPlaylistTimerForCampaign() {
     _timerOfCampaign?.cancel();
 
-    // If the duration is 0, directly update the index and skip the timer setup
-    if (currentDurationOfCampaign == 0) {
+    final duration = currentDurationOfCampaign;
+    if (duration <= 0) {
+      // The current campaign is outside its window. _updateIndexForCampain
+      // scans for a replacement and is itself bounded, so this hands over
+      // once and does not come back -- unlike the old arrangement, where
+      // that function ended by calling this one again and the pair spun
+      // synchronously whenever nothing was eligible.
+      print("Campaign not in schedule, skipping timer setup.");
       _updateIndexForCampain();
-      print("Playlist item not in schedule, skipping timer setup.");
     } else {
       // Only start the timer if the duration is greater than 0
       _timerOfCampaign = Timer(
@@ -2557,6 +2874,14 @@ EOF
 
     // _mqttClientService.publish(topic, jsonEncode(sendLog));
   }
+
+  // A Paused campaign is published and downloaded like any other; the only
+  // difference is that it must not be SHOWN. That check belonged anywhere
+  // the player decides what to play, and the rotation had none -- a paused
+  // campaign rotated into view and played exactly like the rest.
+  // (Unpublish is handled separately, wherever this drops to zero
+  // campaigns.)
+  bool _campaignIsPlayable(Campaign c) => c.isPaused != true;
 
   void _updateIndexForCampain() {
     final campaigns = _campaignModel?.data?.playerCampaigns;
@@ -2589,9 +2914,75 @@ EOF
     //   "date_time": DateTime.now().toIso8601String(),
     // };
 
-    // _mqttClientService.publish(topic, jsonEncode(sendLog));
+    // Bounded scan (at most `count` candidates) for the next campaign
+    // that is BOTH unpaused AND currently schedule-eligible (a positive
+    // duration). This used to advance the index blindly and then rely on
+    // startPlaylistTimerForCampaign() calling straight back into this
+    // function whenever the campaign it landed on turned out to be
+    // schedule-ineligible (duration 0).
+    //
+    // That recursion had no bound. With every campaign outside its window
+    // -- or none ever eligible -- the two functions called each other
+    // synchronously round the whole rotation, forever: enough to starve
+    // the event loop or overflow the stack outright, with the screen
+    // frozen on whatever it last painted. Folding both checks into one
+    // bounded loop means this always returns after at most `count`
+    // iterations, never recurses into itself, and parks on a recheck
+    // timer when nothing qualifies instead of spinning.
+    int? eligibleIndex;
+    int eligibleDuration = 0;
+    for (var i = 1; i <= count; i++) {
+      final idx = (_currentIndexOfCapmaign + i) % count;
+      if (!_campaignIsPlayable(campaigns![idx])) continue;
+      final duration = _durationForCampaignAt(idx);
+      if (duration > 0) {
+        eligibleIndex = idx;
+        eligibleDuration = duration;
+        break;
+      }
+    }
+
+    if (eligibleIndex == null) {
+      // Nothing is both unpaused and inside its window right now. A
+      // restriction window can open on its own with no new content ever
+      // being published, so recheck later rather than leaving this
+      // permanently stuck -- but never by immediately recursing.
+      _debugLog(
+          '_updateIndexForCampain: no playable+eligible campaign among $count '
+          '(durations all 0) -> noContent, recheck in 30s');
+      _timerOfCampaign?.cancel();
+      _timerOfCampaign =
+          Timer(const Duration(seconds: 30), _updateIndexForCampain);
+      _state = MqttState.noContent;
+      notifyListeners();
+      return;
+    }
+    _currentIndexOfCapmaign = eligibleIndex;
+
+    // Puts the screen back. The ineligible branch above parks the player
+    // on MqttState.noContent when every campaign is outside its window,
+    // and nothing here ever undid it -- so once a restriction window
+    // closed the player stayed on "No Content Available for Playback"
+    // even after a later recheck found a campaign eligible again.
+    //
+    // Only noContent is overridden: downloading and the pairing states
+    // are set deliberately elsewhere and must not be clobbered by a
+    // rotation tick.
+    if (_state == MqttState.noContent) {
+      _debugLog('_updateIndexForCampain: campaign eligible again '
+          '-> leaving noContent for campaignScreen');
+      _state = MqttState.campaignScreen;
+    }
+
     notifyListeners();
-    startPlaylistTimerForCampaign();
+    // Armed directly from the duration the bounded scan above already
+    // confirmed is positive for this index, rather than calling
+    // startPlaylistTimerForCampaign() -- which would re-derive it and, if
+    // it came back <= 0, call straight back into this function. That is the
+    // recursion the scan exists to eliminate.
+    _timerOfCampaign?.cancel();
+    _timerOfCampaign =
+        Timer(Duration(seconds: eligibleDuration), _updateIndexForCampain);
   }
 
   void resetTimerForCapmpain() {
@@ -2728,6 +3119,7 @@ EOF
     _timer?.cancel();
     _pairingRevalidationTimer?.cancel();
     _remoteViewTimer?.cancel();
+    _networkRecoveryTimer?.cancel();
     super.dispose();
   }
 
@@ -2775,67 +3167,306 @@ EOF
   }
 
   /// Check if restrictions allow the campaign/media to play
+  /// Whether this campaign/media may play right now.
+  ///
+  /// The CMS can produce six restriction types, each with its own operator
+  /// set (see the backend's CampaignRestrictionTypeEnum):
+  ///
+  ///   date        is-between | is-before | is-after | on | not-on
+  ///   time        is-between | is-before | is-after | on | not-on
+  ///   location    is-inside | is-not-inside | is-inside-any | is-not-inside-any
+  ///   player_tag  is | contains | empty | not-empty
+  ///   player_name is | contains | empty | not-empty
+  ///   player_os   is | is-not | contains | not-contains | empty | not-empty
+  ///
+  /// Only date and time were implemented. Everything else fell through to a
+  /// branch that marked the restriction passed, so location, tag, name and
+  /// OS rules were not merely broken -- they were silently ignored, and
+  /// content played on every device regardless of what was configured.
+  ///
+  /// Restrictions also carry a logic_operator joining each to the previous
+  /// one, which was never read: every set was evaluated as a flat AND, so an
+  /// OR condition withheld content it should have played.
   bool checkRestrictions(List<Restriction>? restrictions) {
-    const String reset = '\x1B[0m';
-    const String red = '\x1B[31m';
-    const String green = '\x1B[32m';
-    const String yellow = '\x1B[33m';
-    const String blue = '\x1B[34m';
-
     if (restrictions == null || restrictions.isEmpty) {
-      print('$yellow⚠️  RESTRICTION: No restrictions provided → Allowed$reset');
-      return true; // No restrictions means allowed
+      _debugLog('checkRestrictions: none provided -> allowed');
+      return true;
     }
 
-    DateTime now = DateTime.now();
-    bool allRestrictionsPass = true;
+    final now = DateTime.now();
 
-    print(
-        '$blue🔍 RESTRICTION: Checking ${restrictions.length} restriction(s)...$reset');
-
-    for (var restriction in restrictions) {
-      if (restriction.type == null ||
-          restriction.operator == null ||
-          restriction.values == null) {
-        print(
-            '$yellow⚠️  RESTRICTION: Skipping invalid restriction (missing type/operator/values)$reset');
-        continue; // Skip invalid restrictions
+    // AND binds tighter than OR, the usual reading: A AND B OR C is
+    // (A AND B) OR C. Consecutive AND-joined restrictions form a group, each
+    // OR starts a new one, and playback is allowed if any group passes. The
+    // first restriction's operator is ignored -- nothing precedes it.
+    final groups = <List<Restriction>>[];
+    var current = <Restriction>[];
+    for (var i = 0; i < restrictions.length; i++) {
+      final joinsWithOr = i > 0 &&
+          (restrictions[i].logicOperator ?? 'AND').toUpperCase() == 'OR';
+      if (joinsWithOr) {
+        groups.add(current);
+        current = <Restriction>[];
       }
+      current.add(restrictions[i]);
+    }
+    groups.add(current);
 
-      bool restrictionPass = false;
-
-      // Only apply restrictions for "date" or "time" types
-      if (restriction.type == "date") {
-        restrictionPass = _checkDateRestriction(restriction, now);
-      } else if (restriction.type == "time") {
-        restrictionPass = _checkTimeRestriction(restriction, now);
-      } else {
-        // If type is not "date" or "time", treat as always play
-        restrictionPass = true;
-        print(
-            "$yellow⚠️  RESTRICTION: Type '${restriction.type}' is not date/time → Treating as always play$reset");
+    var allowed = false;
+    final trace = <String>[];
+    for (final group in groups) {
+      var groupPasses = true;
+      for (final restriction in group) {
+        final pass = _evaluateRestriction(restriction, now);
+        trace.add('${restriction.type}/${restriction.operator}/'
+            '${restriction.values} -> ${pass ? "PASS" : "FAIL"}');
+        if (!pass) {
+          groupPasses = false;
+          break;
+        }
       }
-
-      // All restrictions must pass (AND logic)
-      if (!restrictionPass) {
-        allRestrictionsPass = false;
-        print(
-            '$red❌ RESTRICTION: Failed - type: ${restriction.type}, operator: ${restriction.operator}, values: ${restriction.values}$reset');
+      if (groupPasses) {
+        allowed = true;
         break;
-      } else {
-        print(
-            '$green✅ RESTRICTION: Passed - type: ${restriction.type}, operator: ${restriction.operator}, values: ${restriction.values}$reset');
       }
     }
 
-    if (allRestrictionsPass) {
-      print('$green✅ RESTRICTION: All restrictions PASSED$reset');
-    } else {
-      print('$red❌ RESTRICTION: At least one restriction FAILED$reset');
+    _debugLog('checkRestrictions: ${trace.join(" | ")} '
+        '-> $allowed (groups=${groups.length})');
+    return allowed;
+  }
+
+  /// One restriction, independent of how it joins to its neighbours.
+  ///
+  /// Returns true for anything it cannot evaluate -- an unknown type, or a
+  /// device attribute the backend never sent. Failing OPEN is deliberate: a
+  /// rule the player does not understand must not be able to blank an entire
+  /// fleet at once, which is far worse on signage than showing content that
+  /// should have been withheld. Every such case is logged.
+  bool _evaluateRestriction(Restriction restriction, DateTime now) {
+    if (restriction.type == null || restriction.operator == null) {
+      _debugLog('checkRestrictions: malformed restriction '
+          '(type=${restriction.type} operator=${restriction.operator}) -> pass');
+      return true;
     }
 
-    return allRestrictionsPass;
+    switch (restriction.type) {
+      case "date":
+        return _checkDateRestriction(restriction, now);
+      case "time":
+        return _checkTimeRestriction(restriction, now);
+      case "location":
+        return _checkLocationRestriction(restriction);
+      case "player_tag":
+        return _checkTextRestriction(
+            restriction, _devicePlayerTags, 'player_tag');
+      case "player_name":
+        return _checkTextRestriction(
+            restriction, _devicePlayerName, 'player_name');
+      case "player_os":
+        // Platform.operatingSystem is "linux" here and "windows" on the
+        // Windows build, which is exactly what the CMS's player_os values
+        // are matched against -- no platform special-casing needed.
+        return _checkTextRestriction(
+            restriction, [Platform.operatingSystem], 'player_os');
+      default:
+        _debugLog("checkRestrictions: unknown type '${restriction.type}' "
+            "-> pass (not evaluated)");
+        return true;
+    }
   }
+
+  // -- Device attributes the non-date/time restrictions test against --
+  List<String> _devicePlayerTags = const [];
+  List<String> _devicePlayerName = const [];
+  String? _deviceLocationName;
+
+  /// Pulls the attributes restrictions are evaluated against out of the
+  /// stored pairing response.
+  void _captureRestrictionContext(Map<String, dynamic> response) {
+    try {
+      final data = response['data'];
+      if (data is Map) {
+        _devicePlayerTags = [
+          ..._asStringList(data['tags']),
+          ..._asStringList(data['playerGroups']),
+        ];
+        final name = data['name'];
+        _devicePlayerName =
+            (name is String && name.trim().isNotEmpty) ? [name] : const [];
+        final location = data['locationName'];
+        _deviceLocationName = (location is String && location.trim().isNotEmpty)
+            ? location
+            : null;
+      }
+      final settings = response['settings'];
+      if (settings is Map) {
+        final lat = settings['latitude'];
+        final lon = settings['longitude'];
+        if (lat is num && lon is num && !(lat == 0 && lon == 0)) {
+          devicesinfo['latitude'] = lat.toDouble();
+          devicesinfo['longitude'] = lon.toDouble();
+        }
+      }
+      _debugLog('restriction context: tags=$_devicePlayerTags '
+          'name=$_devicePlayerName location=$_deviceLocationName '
+          'os=${Platform.operatingSystem}');
+    } catch (error) {
+      _debugLog('restriction context capture failed: $error');
+    }
+  }
+
+  /// Adopts the device tags that arrive alongside a published campaign.
+  ///
+  /// The backend resolves this device's tags and attaches them to the
+  /// campaign as player_tags. That -- not the pairing response -- is where
+  /// they actually arrive.
+  void _adoptPlayerTagsFromCampaigns(List<Campaign>? campaigns) {
+    if (campaigns == null || campaigns.isEmpty) return;
+    final fromCampaigns = <String>{};
+    for (final campaign in campaigns) {
+      for (final tag in campaign.playerTags ?? const <String>[]) {
+        if (tag.trim().isNotEmpty) fromCampaigns.add(tag.trim());
+      }
+    }
+    if (fromCampaigns.isEmpty) return;
+    final merged = <String>{..._devicePlayerTags, ...fromCampaigns}.toList();
+    if (merged.length != _devicePlayerTags.length) {
+      _devicePlayerTags = merged;
+      _debugLog('player tags from campaign payload: $fromCampaigns '
+          '-> device tags now $_devicePlayerTags');
+    }
+  }
+
+  /// Tolerates a bare string as well as a list.
+  List<String> _asStringList(dynamic value) {
+    if (value == null) return const [];
+    if (value is List) {
+      return value
+          .map((e) => e is Map
+              ? (e['name'] ?? e['title'] ?? '').toString()
+              : e.toString())
+          .where((e) => e.trim().isNotEmpty)
+          .toList();
+    }
+    if (value is String) {
+      return value
+          .split(',')
+          .map((e) => e.trim())
+          .where((e) => e.isNotEmpty)
+          .toList();
+    }
+    return const [];
+  }
+
+  /// player_tag, player_name and player_os:
+  /// is | is-not | contains | not-contains | empty | not-empty.
+  ///
+  /// A positive operator passes when ANY of the device's values match, so
+  /// "tag is lobby" behaves as expected on a device tagged lobby AND retail.
+  bool _checkTextRestriction(
+      Restriction restriction, List<String> deviceValues, String label) {
+    final operator = _normalizeRestrictionOperator(restriction.operator);
+    final wanted = (restriction.values ?? const [])
+        .map((v) => v.trim().toLowerCase())
+        .where((v) => v.isNotEmpty)
+        .toList();
+    final have = deviceValues
+        .map((v) => v.trim().toLowerCase())
+        .where((v) => v.isNotEmpty)
+        .toList();
+
+    switch (operator) {
+      case 'empty':
+        return have.isEmpty;
+      case 'not-empty':
+        return have.isNotEmpty;
+      case 'is':
+        if (wanted.isEmpty) return true;
+        return have.any(wanted.contains);
+      case 'is-not':
+        if (wanted.isEmpty) return true;
+        return !have.any(wanted.contains);
+      case 'contains':
+        if (wanted.isEmpty) return true;
+        return have.any((h) => wanted.any((w) => h.contains(w)));
+      case 'not-contains':
+        if (wanted.isEmpty) return true;
+        return !have.any((h) => wanted.any((w) => h.contains(w)));
+      default:
+        _debugLog("checkRestrictions: $label has no handler for operator "
+            "'$operator' -> pass (not evaluated)");
+        return true;
+    }
+  }
+
+  /// location: is-inside | is-not-inside | is-inside-any | is-not-inside-any.
+  ///
+  /// Matches the location NAME assigned to the player, or coordinates with a
+  /// radius (third value, default 500 m) when the values parse as lat/long.
+  bool _checkLocationRestriction(Restriction restriction) {
+    final operator = _normalizeRestrictionOperator(restriction.operator);
+    final values = restriction.values ?? const <String>[];
+    final negated =
+        operator == 'is-not-inside' || operator == 'is-not-inside-any';
+
+    final coords = _tryParseCoordinates(values);
+    if (coords != null) {
+      final lat = devicesinfo['latitude'];
+      final lon = devicesinfo['longitude'];
+      if (lat is! num || lon is! num || (lat == 0 && lon == 0)) {
+        _debugLog('checkRestrictions: location rule needs coordinates this '
+            'device has not reported -> pass (not evaluated)');
+        return true;
+      }
+      final metres =
+          _metresBetween(lat.toDouble(), lon.toDouble(), coords[0], coords[1]);
+      final inside = metres <= coords[2];
+      _debugLog('checkRestrictions: location ${metres.round()}m from target, '
+          'radius ${coords[2].round()}m -> inside=$inside');
+      return negated ? !inside : inside;
+    }
+
+    if (_deviceLocationName == null) {
+      _debugLog('checkRestrictions: no location assigned to this player '
+          '-> pass (not evaluated)');
+      return true;
+    }
+    final have = _deviceLocationName!.trim().toLowerCase();
+    final wanted = values
+        .map((v) => v.trim().toLowerCase())
+        .where((v) => v.isNotEmpty)
+        .toList();
+    if (wanted.isEmpty) return true;
+    final inside = wanted.contains(have);
+    return negated ? !inside : inside;
+  }
+
+  /// [lat, lon, radiusMetres] when the values look like coordinates.
+  List<double>? _tryParseCoordinates(List<String> values) {
+    if (values.length < 2) return null;
+    final lat = double.tryParse(values[0].trim());
+    final lon = double.tryParse(values[1].trim());
+    if (lat == null || lon == null) return null;
+    if (lat.abs() > 90 || lon.abs() > 180) return null;
+    final radius =
+        values.length > 2 ? (double.tryParse(values[2].trim()) ?? 500.0) : 500.0;
+    return <double>[lat, lon, radius];
+  }
+
+  /// Great-circle distance in metres (haversine).
+  double _metresBetween(double lat1, double lon1, double lat2, double lon2) {
+    const earthRadius = 6371000.0;
+    final dLat = _toRadians(lat2 - lat1);
+    final dLon = _toRadians(lon2 - lon1);
+    final a = math.pow(math.sin(dLat / 2), 2) +
+        math.cos(_toRadians(lat1)) *
+            math.cos(_toRadians(lat2)) *
+            math.pow(math.sin(dLon / 2), 2);
+    return 2 * earthRadius * math.asin(math.min(1.0, math.sqrt(a)));
+  }
+
+  double _toRadians(double degrees) => degrees * math.pi / 180.0;
 
   /// Check date restriction based on operator
   bool _checkDateRestriction(Restriction restriction, DateTime now) {
@@ -3062,6 +3693,31 @@ EOF
         return 'is-after';
       case 'noton':
         return 'not-on';
+      // location
+      case 'isinside':
+        return 'is-inside';
+      case 'isnotinside':
+        return 'is-not-inside';
+      case 'isinsideany':
+        return 'is-inside-any';
+      case 'isnotinsideany':
+        return 'is-not-inside-any';
+      // player_tag / player_name / player_os
+      case 'is':
+        return 'is';
+      case 'isnot':
+        return 'is-not';
+      case 'contains':
+        return 'contains';
+      case 'notcontains':
+      case 'doesnotcontain':
+        return 'not-contains';
+      case 'empty':
+      case 'isempty':
+        return 'empty';
+      case 'notempty':
+      case 'isnotempty':
+        return 'not-empty';
       default:
         // Best-effort: normalize underscores to hyphens.
         return raw.replaceAll('_', '-');

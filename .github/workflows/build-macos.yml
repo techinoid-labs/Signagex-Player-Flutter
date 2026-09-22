@@ -1,0 +1,194 @@
+name: Build macOS
+
+# Every push to this branch builds both flavours and publishes the STAGING
+# one. Production is a separate, deliberate act -- see
+# promote-production-macos.yml.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [macos]
+
+env:
+  # Pinned so a build is reproducible rather than silently following whatever
+  # stable happens to be current. Matches the version the branch is developed
+  # against locally.
+  #
+  # This pin is the thing most likely to break this workflow over time, in one
+  # specific way: flutter_tools detects the installed Xcode, and a pin that
+  # falls far enough behind the runner image's Xcode stops recognising it.
+  # That is exactly how the Windows workflow broke ("Visual Studio 16 2019
+  # could not find any instance"). If this job starts failing in Xcode
+  # detection or CocoaPods, bump this first.
+  FLUTTER_VERSION: '3.24.5'
+
+jobs:
+  # Gates `publish-staging` below. Runs on Linux because none of it needs a
+  # Mac, and a Linux runner starts in seconds where a macOS one queues.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Check whether pubspec.lock is tracked
+        run: |
+          if [ ! -f pubspec.lock ]; then
+            echo "::warning::pubspec.lock is missing. Run 'flutter pub get' locally and commit the generated pubspec.lock so dependency resolution is reproducible."
+          fi
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
+
+      - name: Test
+        run: flutter test
+
+  # Always builds and uploads, regardless of `test` -- a failing commit's
+  # build output is still worth inspecting. What `test` gates is the publish
+  # job below, not this one.
+  package:
+    runs-on: macos-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Enable macOS desktop support
+        run: flutter config --enable-macos-desktop
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      # Recorded for the promotion step below, and cheap to have in the logs
+      # when a build behaves differently from the last one.
+      - name: Compute build id
+        id: build_id
+        run: echo "id=v${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build production
+        run: flutter build macos --release --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
+
+      # The runner is Apple Silicon and the fleet is not. A release build
+      # should come out universal (ARCHS_STANDARD covers both on macOS), but
+      # "should" is not good enough for a binary handed to a customer: an
+      # arm64-only build fails to launch on every Intel Mac with a message
+      # that says nothing useful. Fail here instead, where it is obvious.
+      - name: Verify the app is universal
+        run: |
+          set -euo pipefail
+          app="build/macos/Build/Products/Release/SignageX Player.app"
+          bin="$app/Contents/MacOS/SignageX Player"
+          archs="$(lipo -archs "$bin")"
+          echo "Architectures: $archs"
+          for want in x86_64 arm64; do
+            case " $archs " in
+              *" $want "*) ;;
+              *) echo "::error::Built app is missing the $want slice (got: $archs). It would not launch on that hardware."; exit 1 ;;
+            esac
+          done
+
+      - name: Package production disk image
+        run: ./macos/packaging/make_dmg.sh "SignageX Player" dist/SignageX-Player.dmg
+
+      - name: Build staging
+        run: flutter build macos --release --dart-define=APP_ENV=staging --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
+
+      - name: Package staging disk image
+        run: ./macos/packaging/make_dmg.sh "SignageX Player" dist/SignageX-Player-Staging.dmg "Staging"
+
+      - name: Upload production disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: SignageX-Player-dmg
+          path: dist/SignageX-Player.dmg
+
+      - name: Upload staging disk image
+        uses: actions/upload-artifact@v4
+        with:
+          name: SignageX-Player-Staging-dmg
+          path: dist/SignageX-Player-Staging.dmg
+
+      # Lets the promotion workflow prove the artifact it publishes came from
+      # the commit that was tested, rather than trusting a run id typed by
+      # hand.
+      - name: Record build identity
+        run: |
+          mkdir -p identity
+          echo "${{ github.sha }}" > identity/commit.txt
+          echo "${{ steps.build_id.outputs.id }}" > identity/build_id.txt
+
+      - name: Upload build identity
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-identity
+          path: identity/
+
+      - name: Summarise
+        run: |
+          {
+            echo "### macOS build ${{ steps.build_id.outputs.id }}"
+            echo ""
+            echo "Download **SignageX-Player-Staging-dmg** from this run's artifacts to test."
+            echo ""
+            echo "The app is not signed with a Developer ID, so the first launch on a"
+            echo "machine needs **right-click the app -> Open -> Open**, or:"
+            echo ""
+            echo '```'
+            echo 'xattr -dr com.apple.quarantine "/Applications/SignageX Player.app"'
+            echo '```'
+            echo ""
+            echo "Once this build is tested, release it with the **Promote macOS to production**"
+            echo "workflow, run id \`${{ github.run_id }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Publishes to the STAGING feed only, and only when the checks for this
+  # exact commit passed. Production never publishes from a push.
+  publish-staging:
+    needs: [test, package]
+    if: github.ref == 'refs/heads/macos'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build identity
+        uses: actions/download-artifact@v4
+        with:
+          name: build-identity
+          path: identity
+
+      - name: Verify artifact identity matches the tested commit
+        run: |
+          recorded_sha="$(cat identity/commit.txt)"
+          if [ "$recorded_sha" != "${{ github.sha }}" ]; then
+            echo "::error::Artifact identity mismatch: built from $recorded_sha, publishing for ${{ github.sha }}."
+            exit 1
+          fi
+          echo "build_id=$(cat identity/build_id.txt)" >> "$GITHUB_ENV"
+
+      - name: Download staging disk image
+        uses: actions/download-artifact@v4
+        with:
+          name: SignageX-Player-Staging-dmg
+          path: dist
+
+      - name: Publish staging disk image
+        env:
+          RELEASE_KEY: ${{ secrets.PLAYER_RELEASE_UPLOAD_KEY }}
+        run: |
+          if [ -z "$RELEASE_KEY" ]; then
+            echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping staging publish. This is a deliberate skip, not a failure."
+            exit 0
+          fi
+          curl -sf -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
+            -H "x-release-key: $RELEASE_KEY" \
+            -F "platform=macos" \
+            -F "version=$build_id" \
+            -F "file=@dist/SignageX-Player-Staging.dmg"
+          echo "Staging disk image published as $build_id."

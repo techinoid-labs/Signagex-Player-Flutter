@@ -18,6 +18,7 @@ import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/utils/log_format.dart';
 
 import '../view_models/mqtt_view_model.dart';
+import '../utils/transitions.dart';
 import '../views/no_content_view.dart';
 import '../widgets/center_image_widget.dart';
 import '../widgets/text_widget.dart';
@@ -1521,7 +1522,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           print(
               "this is transition${currentMedia.settings?.transition ?? 'none'}");
 
-          switch (currentMedia.settings?.transition ?? 'none') {
+            // Normalised first: the CMS emits no-transition / fade /
+            // slide (campaign) and fade-in / fade-out / slide / none
+            // (playlist), sometimes capitalised -- none of which match
+            // the case labels below, so every transition fell through to
+            // the default and nothing animated, whichever was selected.
+            switch (normalizeTransitionName(
+                currentMedia.settings?.transition ?? 'none')) {
             case "fadeIn":
               return FadeTransition(opacity: animation, child: child);
             case "slideOverLeftToRight":
@@ -2367,6 +2374,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   }
 }
 
+/// Campaign imagery, drawn to fill its zone exactly.
+///
+/// BoxFit.fill, not .cover. Cover keeps the image's proportions and crops
+/// whatever overflows, which cut the edges off nested-campaign content: a
+/// zone whose shape differed from the image silently lost the top and
+/// bottom, or the sides. Filling trades that for distortion when the shapes
+/// differ -- the deliberate choice, since losing part of a published design
+/// outright is worse than showing all of it stretched.
 class ImageWidget extends StatelessWidget {
   final String filePath;
   final VoidCallback onImageEnd;
@@ -2413,7 +2428,7 @@ class ImageWidget extends StatelessWidget {
     if (bytes != null) {
       imageChild = Image.memory(
         bytes,
-        fit: BoxFit.cover,
+        fit: BoxFit.fill,
         errorBuilder: (_, __, ___) => const Center(
           child: Icon(Icons.broken_image, size: 48, color: Colors.grey),
         ),
@@ -2421,7 +2436,7 @@ class ImageWidget extends StatelessWidget {
     } else if (_isNetworkUrl) {
       imageChild = Image.network(
         filePath,
-        fit: BoxFit.cover,
+        fit: BoxFit.fill,
         height: MediaQuery.sizeOf(context).height,
         width: MediaQuery.sizeOf(context).width,
         errorBuilder: (_, __, ___) => const Center(
@@ -2431,7 +2446,7 @@ class ImageWidget extends StatelessWidget {
     } else {
       imageChild = Image.file(
         File(filePath),
-        fit: BoxFit.cover,
+        fit: BoxFit.fill,
         height: MediaQuery.sizeOf(context).height,
         width: MediaQuery.sizeOf(context).width,
         errorBuilder: (_, __, ___) => const Center(

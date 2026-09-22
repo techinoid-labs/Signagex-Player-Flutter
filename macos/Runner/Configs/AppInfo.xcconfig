@@ -4,11 +4,23 @@
 // future. If not, the values below would default to using the project name when this becomes a
 // 'flutter create' template.
 
-// The application's name. By default this is also the title of the Flutter window.
-PRODUCT_NAME = digital_signage
+// The application's name. This is also the title of the Flutter window and
+// the name Finder, the Dock and the Force Quit dialog show. Matches the
+// Windows player's ProductName so a fleet reads consistently.
+PRODUCT_NAME = SignageX Player
 
-// The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.example.digitalSignage
+// The application's bundle identifier.
+//
+// Was com.example.digitalSignage -- the `flutter create` placeholder.
+// It is the app's identity to macOS: it names the sandbox container
+// (so it decides where application-support data, including
+// signagex_debug.log, actually lives), and notarisation and any future
+// Developer ID signing are issued against it. Shipping under
+// com.example.* is not viable for either.
+//
+// Changing it moves the container, so a machine that already ran the
+// old build starts with empty preferences and has to be paired again.
+PRODUCT_BUNDLE_IDENTIFIER = ai.signagex.player
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2024 com.example. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 SignageX. All rights reserved.

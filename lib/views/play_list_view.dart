@@ -6,6 +6,8 @@ import 'package:flutter/material.dart';
 
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
+
+import 'package:digital_signage/utils/transitions.dart';
 import 'package:video_player/video_player.dart';
 
 import 'package:digital_signage/models/play_list_model.dart';
@@ -420,7 +422,11 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           transitionBuilder: (child, animation) {
             print("this is transition${currentMedia.settings.transition}");
 
-            switch (currentMedia.settings.transition) {
+            // Same normalisation as campaign_view: the CMS sends fade-in /
+            // fade-out / slide / none, none of which match the case labels
+            // below, so every transition fell through to the default and
+            // nothing animated whichever was selected.
+            switch (normalizeTransitionName(currentMedia.settings.transition)) {
               case "fadeIn":
                 return FadeTransition(opacity: animation, child: child);
               case "slideOverLeftToRight":

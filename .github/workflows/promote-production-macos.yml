@@ -1,0 +1,102 @@
+name: Promote macOS to production
+
+# Releasing to customers is a deliberate act, not a side effect of pushing.
+#
+# Every push publishes to the STAGING feed (build-macos.yml). Production is
+# promoted from here, by hand, once that build has actually been tested -- so
+# an untested commit cannot reach a customer's screen minutes after it is
+# written, and a disk image already handed to a client is only superseded
+# when somebody decides it should be.
+#
+# This promotes an EXISTING build rather than rebuilding. Rebuilding from the
+# same commit would produce a different binary from the one that was tested,
+# which defeats the point of having tested it. The disk image uploaded here
+# is the exact artifact that run produced.
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: "Run id of the Build macOS run to promote (from its URL). Its staging build should already have been tested."
+        required: true
+        type: string
+      confirm:
+        description: 'Type "release" to confirm this goes to customers'
+        required: true
+        type: string
+
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require explicit confirmation
+        run: |
+          if [ "${{ inputs.confirm }}" != "release" ]; then
+            echo "::error::Confirmation not given. Type 'release' to promote this build to customers."
+            exit 1
+          fi
+
+      - name: Download build identity from the chosen run
+        uses: actions/download-artifact@v4
+        with:
+          name: build-identity
+          path: identity
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Download the production disk image from the chosen run
+        uses: actions/download-artifact@v4
+        with:
+          name: SignageX-Player-dmg
+          path: dist
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Record what is being promoted
+        run: |
+          build_id="$(cat identity/build_id.txt)"
+          commit="$(cat identity/commit.txt)"
+          echo "build_id=$build_id" >> "$GITHUB_ENV"
+          echo "Promoting $build_id (commit $commit) from run ${{ inputs.run_id }}."
+          # Written to the run summary so the release history is readable
+          # without digging through logs -- which build, from which commit,
+          # promoted by whom.
+          {
+            echo "### Promoted macOS to production"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Build | \`$build_id\` |"
+            echo "| Commit | \`$commit\` |"
+            echo "| Source run | [${{ inputs.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }}) |"
+            echo "| Promoted by | @${{ github.actor }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Publish production disk image
+        env:
+          RELEASE_KEY: ${{ secrets.PLAYER_RELEASE_UPLOAD_KEY }}
+        run: |
+          if [ -z "$RELEASE_KEY" ]; then
+            echo "::error::PLAYER_RELEASE_UPLOAD_KEY is not set, so nothing can be published."
+            exit 1
+          fi
+          # Strict, unlike the staging publish: if this fails, nothing reached
+          # the fleet and the run must say so.
+          curl -sf -X POST "https://signagexai.com/v1/player-releases/upload" \
+            -H "x-release-key: $RELEASE_KEY" \
+            -F "platform=macos" \
+            -F "version=$build_id" \
+            -F "file=@dist/SignageX-Player.dmg"
+          echo "Production disk image published as $build_id."
+
+      - name: Confirm the feed serves it
+        run: |
+          # An upload that returns success but leaves the feed unchanged is
+          # the failure worth catching here -- devices read the feed, not the
+          # upload response.
+          served="$(curl -sf "https://signagexai.com/v1/player-releases/latest?platform=macos" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)"
+          if [ "$served" = "$build_id" ]; then
+            echo "Production feed now serves $served."
+          else
+            echo "::warning::Production feed reports '$served' but '$build_id' was just published. Check the release feed before telling anyone the update is live."
+          fi
