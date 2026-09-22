@@ -53,10 +53,40 @@ jobs:
   # build output is still worth inspecting. What `test` gates is the publish
   # job below, not this one.
   package:
-    runs-on: macos-latest
+    # NOT macos-latest. That image now ships Xcode 26, whose SDK annotates
+    # ASWebAuthenticationPresentationContextProviding as @MainActor, and
+    # flutter_inappwebview_macos 1.1.2 does not match it:
+    #
+    #   error: protocol 'ASWebAuthenticationPresentationContextProviding'
+    #   requires 'presentationAnchor(for:)' to be available in macOS 10.14
+    #   and newer
+    #
+    # Despite the wording that is an actor-isolation mismatch, not an
+    # availability one, so raising deployment targets does not fix it. The
+    # plugin has to be compiled by a toolchain it was written against.
+    # macos-14 is the newest image that still carries an Xcode 15.
+    runs-on: macos-14
 
     steps:
       - uses: actions/checkout@v4
+
+      # Runner images carry several Xcodes and default to the newest. Pick
+      # the newest 15.x rather than naming one exactly, so this keeps working
+      # as the image's patch versions move, and fail loudly if the image ever
+      # drops the 15 series -- silently building with 26 again would just
+      # reproduce the error above a long way from its cause.
+      - name: Select Xcode 15
+        run: |
+          set -euo pipefail
+          xcode="$(ls -d /Applications/Xcode_15*.app 2>/dev/null | sort -V | tail -1 || true)"
+          if [ -z "$xcode" ]; then
+            echo "::error::No Xcode 15 on this runner image. flutter_inappwebview_macos 1.1.2 does not compile under Xcode 16+; either upgrade that plugin or pin this job to an image that still has Xcode 15."
+            ls -d /Applications/Xcode*.app || true
+            exit 1
+          fi
+          echo "Using $xcode"
+          sudo xcode-select -s "$xcode"
+          xcodebuild -version
 
       - uses: subosito/flutter-action@v2
         with:
