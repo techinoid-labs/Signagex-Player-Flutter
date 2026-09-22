@@ -126,32 +126,35 @@ jobs:
             libgtk-3-dev liblzma-dev libstdc++-12-dev \
             desktop-file-utils file
 
-      # This image's default clang is 14, and CEF 149's headers are C++20.
-      # clang 14 has only partial C++20, so pick the newest clang the image
-      # has rather than whatever `clang` happens to point at.
+      # CEF 149's public headers are C++20, and webview_cef already asks for
+      # C++20 itself -- the standard was never the missing piece. What is
+      # missing is a front end that implements enough of it. ubuntu-22.04
+      # ships clang 13/14/15, and none of them get through
+      # cef_bind_internal.h; the failure looks like a parse error
+      # ("expected a type", "no variable template matches specialization")
+      # precisely because the compiler does not recognise the constructs.
       #
-      # Deliberately NOT solved by moving to a newer runner image: the
-      # glibc a binary links against comes from the build machine, so
-      # ubuntu-24.04 would produce a package that cannot start on a 22.04
-      # screen. The compiler and the libc can be chosen independently, and
-      # here they have to be -- newest usable compiler, oldest supported
-      # libc.
-      - name: Select the newest available clang
+      # apt.llvm.org is LLVM's own archive and is the normal way to get a
+      # current clang onto an older Ubuntu.
+      #
+      # Deliberately NOT solved by moving to ubuntu-24.04, which would bring
+      # clang 18 for free: the glibc a binary links against comes from the
+      # build machine, so that would produce a package unable to start on a
+      # 22.04 screen. Compiler and libc are independent choices and here
+      # they have to be -- newest usable compiler, oldest supported libc.
+      - name: Install a clang new enough for CEF
         run: |
           set -euo pipefail
-          newest=""
-          for v in 20 19 18 17 16 15 14; do
-            if command -v "clang-$v" >/dev/null 2>&1; then newest="$v"; break; fi
-          done
-          if [ -z "$newest" ]; then
-            echo "Installing clang-15; no versioned clang found on the image."
-            sudo apt-get install -y clang-15
-            newest=15
+          want=18
+          if ! command -v "clang-$want" >/dev/null 2>&1; then
+            echo "clang-$want not on the image; installing from apt.llvm.org"
+            wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+            chmod +x llvm.sh
+            sudo ./llvm.sh "$want"
           fi
-          echo "Using clang-$newest"
-          "clang-$newest" --version
-          echo "CC=clang-$newest" >> "$GITHUB_ENV"
-          echo "CXX=clang++-$newest" >> "$GITHUB_ENV"
+          "clang-$want" --version
+          echo "CC=clang-$want" >> "$GITHUB_ENV"
+          echo "CXX=clang++-$want" >> "$GITHUB_ENV"
 
       - name: Enable Linux desktop support
         run: flutter config --enable-linux-desktop
@@ -191,6 +194,23 @@ jobs:
 
       - name: Build production
         run: flutter build linux --release --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
+
+      # Flutter drives CMake itself, so whether CC/CXX above actually
+      # reached it is not otherwise visible anywhere. Runs even on failure,
+      # because that is exactly when the answer is needed: a CEF parse
+      # error with clang 18 in the cache means something other than the
+      # compiler, while the same error with clang 14 means CC/CXX never
+      # took.
+      - name: Report the compiler CMake actually used
+        if: always()
+        run: |
+          cache=build/linux/x64/release/CMakeCache.txt
+          if [ -f "$cache" ]; then
+            grep -E '^CMAKE_(C|CXX)_COMPILER:|^CMAKE_CXX_STANDARD' "$cache" || true
+            "$(grep -m1 '^CMAKE_CXX_COMPILER:' "$cache" | cut -d= -f2)" --version || true
+          else
+            echo "No CMakeCache.txt -- the build did not get as far as configuring."
+          fi
 
       # The .desktop entry is what gives the app its name and icon in the
       # launcher. A malformed one is not a build error -- it installs
