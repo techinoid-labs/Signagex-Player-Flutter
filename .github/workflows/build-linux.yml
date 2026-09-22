@@ -115,9 +115,23 @@ jobs:
         with:
           flutter-version: ${{ env.FLUTTER_VERSION }}
 
-      # The Flutter Linux toolchain needs these to build at all; the CEF-based
-      # webview needs the rest at runtime and they come in via the .deb's
-      # Depends, not from here.
+      # Two groups, for two different reasons.
+      #
+      # The first is what the Flutter Linux toolchain needs to build at all.
+      #
+      # The second is every library the embedded browser links against.
+      # Those are not needed to compile -- the .deb lists them under Depends
+      # and apt pulls them in on the target -- but the AppImage has to
+      # CARRY them, and linuxdeploy can only copy a library that exists on
+      # the machine doing the copying. A runner missing one fails the whole
+      # packaging step:
+      #
+      #   ERROR: Could not find dependency: libpulse.so.0
+      #
+      # Installing the full set is deliberate rather than adding them one
+      # failure at a time: they are all Chromium's, they are all needed by
+      # the same binary, and discovering them individually costs a CI run
+      # each.
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -125,6 +139,13 @@ jobs:
             clang cmake ninja-build pkg-config \
             libgtk-3-dev liblzma-dev libstdc++-12-dev \
             desktop-file-utils file
+          sudo apt-get install -y \
+            libpulse0 libasound2 \
+            libnss3 libnspr4 \
+            libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libdrm2 libgbm1 libxkbcommon0 \
+            libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 \
+            libpango-1.0-0 libcairo2 libxss1
 
       # CEF 149's public headers are C++20, and webview_cef already asks for
       # C++20 itself -- the standard was never the missing piece. What is
