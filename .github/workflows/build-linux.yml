@@ -379,10 +379,46 @@ jobs:
             echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping staging publish. This is a deliberate skip, not a failure."
             exit 0
           fi
-          deb="$(ls dist/signagex-player-staging_*_amd64.deb | head -n 1)"
-          curl -sf -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
+          file="$(ls dist/signagex-player-staging_*_amd64.deb | head -n 1)"
+          size_mb=$(( $(stat -c%s "$file") / 1024 / 1024 ))
+          echo "Uploading $file (${size_mb} MB) as $build_id"
+
+          # -sf hides the response body and collapses every HTTP error into
+          # "exit 22", which says nothing about why the server refused. The
+          # status and the body are the whole diagnosis here: a 413 is a
+          # size limit on the receiving end, a 400 usually means the
+          # platform value is not one the backend accepts, and a 401/403 is
+          # the key.
+          status=$(curl -sS -o response.txt -w '%{http_code}' \
+            -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
             -H "x-release-key: $RELEASE_KEY" \
             -F "platform=linux" \
             -F "version=$build_id" \
-            -F "file=@$deb"
-          echo "Staging package published as $build_id."
+            -F "file=@$file") || true
+
+          echo "HTTP $status"
+          echo "--- response ---"
+          head -c 2000 response.txt || true
+          echo ""
+
+          case "$status" in
+            2*)
+              echo "Staging package published as $build_id."
+              ;;
+            413)
+              echo "::error::The release endpoint refused the upload as too large (${size_mb} MB). The package contains a full Chromium, so this is expected size -- the receiving end needs its body limit raised (nginx client_max_body_size, or the equivalent)."
+              exit 1
+              ;;
+            400)
+              echo "::error::The release endpoint rejected the request (400). Most likely it does not accept platform=linux yet -- check the platform enum on the player-releases upload endpoint."
+              exit 1
+              ;;
+            401|403)
+              echo "::error::The release endpoint rejected the key (HTTP $status). Check the PLAYER_RELEASE_UPLOAD_KEY secret."
+              exit 1
+              ;;
+            *)
+              echo "::error::Upload failed with HTTP $status. The build itself is fine -- the packages are on this run as artifacts."
+              exit 1
+              ;;
+          esac
