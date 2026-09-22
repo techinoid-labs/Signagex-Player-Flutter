@@ -136,12 +136,31 @@ jobs:
         id: build_id
         run: echo "id=v${{ github.run_number }}" >> "$GITHUB_OUTPUT"
 
-      - name: Fetch appimagetool
+      # linuxdeploy, not appimagetool alone. appimagetool only packs an
+      # AppDir that is already complete; linuxdeploy is what walks the
+      # binary's and the plugins' shared-library dependencies and copies
+      # them in, which is what makes the result runnable on a machine with
+      # nothing installed on it. The gtk plugin adds the parts that are
+      # loaded at runtime rather than linked -- theme engines, gdk-pixbuf
+      # loaders, GIO modules -- without which the app starts and then
+      # renders nothing at all.
+      - name: Fetch linuxdeploy
         run: |
-          curl -sSfL -o appimagetool \
-            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
-          chmod +x appimagetool
-          echo "APPIMAGETOOL=$PWD/appimagetool" >> "$GITHUB_ENV"
+          set -euo pipefail
+          sudo apt-get install -y patchelf librsvg2-dev
+          base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
+          curl -sSfL -o linuxdeploy "$base/linuxdeploy-x86_64.AppImage"
+          curl -sSfL -o linuxdeploy-plugin-gtk.sh \
+            https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
+          chmod +x linuxdeploy linuxdeploy-plugin-gtk.sh
+          # The runners have no FUSE, so an AppImage cannot mount itself.
+          # Extracting once and calling the extracted AppRun is the
+          # supported way round that.
+          ./linuxdeploy --appimage-extract >/dev/null
+          echo "LINUXDEPLOY=$PWD/squashfs-root/AppRun" >> "$GITHUB_ENV"
+          echo "LINUXDEPLOY_PLUGINS=gtk" >> "$GITHUB_ENV"
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+          echo "$PWD" >> "$GITHUB_PATH"
 
       - name: Build production
         run: flutter build linux --release --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
@@ -229,13 +248,14 @@ jobs:
             echo ""
             echo "| | Use it when |"
             echo "|---|---|"
-            echo "| \`signagex-player-staging-deb\` | Ubuntu/Debian screens. Installs properly, gets an icon and a launcher entry. |"
-            echo "| \`signagex-player-staging-appimage\` | Anything else, or no root. One file, \`chmod +x\`, run. |"
+            echo "| \`signagex-player-staging-appimage\` | **Default.** Nothing to install: copy it to the screen, \`chmod +x\`, run. Carries its own libraries. |"
+            echo "| \`signagex-player-staging-deb\` | When you want system integration: launcher entry, apt-managed upgrades. |"
             echo ""
-            echo "Install the .deb with:"
+            echo "The AppImage needs no install and no root:"
             echo ""
             echo '```'
-            echo 'sudo apt install ./signagex-player-staging_*_amd64.deb'
+            echo 'chmod +x SignageX-Player-Staging-*.AppImage'
+            echo './SignageX-Player-Staging-*.AppImage'
             echo '```'
             echo ""
             echo "Diagnostics land in \`~/.local/share/signagex-player/signagex_debug.log\`."
