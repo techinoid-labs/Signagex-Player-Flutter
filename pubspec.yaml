@@ -108,7 +108,24 @@ dependencies:
   #
   # The code is written against the 0.6 API, so say so here rather than
   # leaving it to whichever SDK happens to be installed.
-  webview_cef: ^0.6.2
+  # Pinned exactly, and pinned BELOW 0.5.0 on purpose.
+  #
+  # Every 0.5.x and 0.6.x release bundles CEF 149, whose headers are C++20
+  # and need a compiler newer than the build image ships. That is a
+  # toolchain problem to solve deliberately, not something to leave
+  # blocking every Linux release in the meantime -- so this holds at the
+  # last version that predates CEF 149 and builds with any clang.
+  #
+  # The Dart API is unchanged between the two: WebviewManager().initialize(),
+  # createWebView(loading:, injectUserScripts:) and the controller's
+  # initialize/webviewWidget/loadingWidget all exist here. The only
+  # difference that touched this project is that InjectUserScripts is not
+  # exported from the main library, and that argument was optional and
+  # empty anyway -- see the call site in campaign_view.dart.
+  #
+  # The cost is an older embedded Chromium for web-app content. Everything
+  # else is unaffected.
+  webview_cef: 0.2.2
 
 dev_dependencies:
   flutter_test:
