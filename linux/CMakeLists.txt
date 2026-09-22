@@ -2,6 +2,28 @@
 cmake_minimum_required(VERSION 3.13)
 project(runner LANGUAGES CXX)
 
+# C++20, set globally rather than per-target, because the target that needs
+# it is not one of ours.
+#
+# webview_cef 0.6.2 downloads CEF 149, whose public headers require C++20 --
+# webview_cef's own source says so in as many words. The released 0.6.2 does
+# not set CMAKE_CXX_STANDARD itself, so its plugin target inherits whatever
+# the parent project has, and the compiler default (gnu++14 on this
+# toolchain) cannot parse them:
+#
+#   error: use of undeclared identifier 'UnwrappedParam'
+#   error: no variable template matches specialization
+#   error: too few template arguments for class template
+#          'MoveOnlyTypeMustUseBasePassed'
+#
+# Raising it with target_compile_features on the runner does nothing for
+# this: plugins are added as subdirectories and build with their own
+# CMakeLists, so only a directory-scoped variable set before they are added
+# reaches them. CMAKE_CXX_STANDARD is inherited by every subdirectory,
+# which is exactly what is needed here.
+set(CMAKE_CXX_STANDARD 20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
 # The executable name, which is also what the .deb symlinks into
@@ -55,20 +77,9 @@ endif()
 # default. In most cases, you should add new options to specific targets instead
 # of modifying this function.
 function(APPLY_STANDARD_SETTINGS TARGET)
-  # C++17, not the Flutter template's 14.
-  #
-  # webview_cef bundles CEF, and modern CEF headers are C++17. Building
-  # them as C++14 fails inside cef_bind_internal.h with a wall of
-  # diagnostics that name nothing recognisable:
-  #
-  #   error: use of undeclared identifier 'UnwrappedParam'
-  #   error: no variable template matches specialization
-  #   error: too few template arguments for class template
-  #          'MoveOnlyTypeMustUseBasePassed'
-  #
-  # Those are C++17 constructs the C++14 front end cannot parse, not
-  # anything wrong with CEF. Nothing in this project needs to stay on 14.
-  target_compile_features(${TARGET} PUBLIC cxx_std_17)
+  # Matches the project-wide CMAKE_CXX_STANDARD set at the top of this
+  # file; the Flutter template's default here was 14.
+  target_compile_features(${TARGET} PUBLIC cxx_std_20)
   target_compile_options(${TARGET} PRIVATE -Wall -Werror)
   target_compile_options(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
   target_compile_definitions(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")
