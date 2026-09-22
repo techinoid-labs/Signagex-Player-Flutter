@@ -55,7 +55,20 @@ endif()
 # default. In most cases, you should add new options to specific targets instead
 # of modifying this function.
 function(APPLY_STANDARD_SETTINGS TARGET)
-  target_compile_features(${TARGET} PUBLIC cxx_std_14)
+  # C++17, not the Flutter template's 14.
+  #
+  # webview_cef bundles CEF, and modern CEF headers are C++17. Building
+  # them as C++14 fails inside cef_bind_internal.h with a wall of
+  # diagnostics that name nothing recognisable:
+  #
+  #   error: use of undeclared identifier 'UnwrappedParam'
+  #   error: no variable template matches specialization
+  #   error: too few template arguments for class template
+  #          'MoveOnlyTypeMustUseBasePassed'
+  #
+  # Those are C++17 constructs the C++14 front end cannot parse, not
+  # anything wrong with CEF. Nothing in this project needs to stay on 14.
+  target_compile_features(${TARGET} PUBLIC cxx_std_17)
   target_compile_options(${TARGET} PRIVATE -Wall -Werror)
   target_compile_options(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:-O3>")
   target_compile_definitions(${TARGET} PRIVATE "$<$<NOT:$<CONFIG:Debug>>:NDEBUG>")

@@ -65,6 +65,19 @@ dependencies:
   flutter_inappwebview: ^6.1.5
   # webview_flutter_wkwebview: ^3.17.0
   flutter_html: ^3.0.0-beta.2
+  # Pinned because flutter_html 3.0.0 does not survive a newer one.
+  #
+  # It calls qs.matches(...) from package:html's query_selector, which
+  # exists in 0.15.5 -- the version it was published against -- and not in
+  # later releases. Its own constraint is the permissive ^0.15.5, so pub
+  # takes the newest 0.15.x and the build then fails inside a dependency:
+  #
+  #   flutter_html-3.0.0/lib/src/tree/styled_element.dart:31
+  #   Error: Method not found: 'matches'.
+  #
+  # Declared directly here only to hold it still; nothing in this project
+  # imports html itself.
+  html: 0.15.5
   flutter_phoenix: ^1.1.1
   restartfromos: ^0.0.3
   # device_info_plus: ^10.0.0
