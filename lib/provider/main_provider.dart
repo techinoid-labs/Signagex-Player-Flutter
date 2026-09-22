@@ -4,6 +4,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../services/mqtt_client_service.dart';
+import '../utils/debug_log.dart' as debug;
 import '../view_models/mqtt_view_model.dart';
 import '../view_models/system_apply_settings_vm.dart';
 import '../views/campaign_view.dart';
@@ -13,6 +14,7 @@ import '../views/downloading_screen.dart';
 import '../views/no_content_view.dart';
 import '../views/no_internet_view.dart';
 import '../views/play_list_view.dart';
+import '../views/player_stopped_view.dart';
 
 class MqttProvider extends StatefulWidget {
   final Widget child;
@@ -78,8 +80,17 @@ class _MqttProviderState extends State<MqttProvider> {
     }
   }
 
+  // Which screen is showing is the single most useful thing to know when a
+  // player is reported stuck, and print() reaches nobody in a release
+  // build. Logged on change only, not on every call -- this runs on every
+  // notifyListeners(), and logging each one would bury the log in
+  // duplicates for a screen that never changed.
+  MqttState? _lastLoggedState;
   Widget _getScreenForState(MqttState state) {
-    print("State: $state");
+    if (state != _lastLoggedState) {
+      debug.debugLog('MqttProvider', 'state -> $state (was $_lastLoggedState)');
+      _lastLoggedState = state;
+    }
     switch (state) {
       case MqttState.initial:
         return const ConnectingView();
@@ -95,6 +106,8 @@ class _MqttProviderState extends State<MqttProvider> {
         return const CampaignView();
       case MqttState.pairedScreen:
         return const DigivisionView();
+      case MqttState.playerStopped:
+        return const PlayerStoppedView();
       case MqttState.playlistScreen:
         return const PlaylistScreen();
       case MqttState.failure:

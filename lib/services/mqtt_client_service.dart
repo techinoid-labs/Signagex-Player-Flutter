@@ -114,11 +114,29 @@ class MqttClientService {
     }
     final future = _connectInternal(playerCode);
     _connectFuture = future;
-    future.whenComplete(() {
+    // whenComplete() returns a NEW future that completes with the SAME error
+    // as the one it wraps. That derived future was discarded, so every
+    // failed connect produced an unhandled async error nobody was listening
+    // to -- even though the caller dutifully catches the original future
+    // returned below.
+    //
+    // An unhandled async error reaches PlatformDispatcher.onError, and on
+    // the Windows build (where onError returned "not handled") the engine
+    // tore the process down over it with STATUS_FAIL_FAST_EXCEPTION every
+    // time a connect timed out -- the watchdog then restarted it, which is
+    // what the "app keeps reopening" loop actually was. main.dart now
+    // reports these as handled, but the orphan should not exist either way:
+    // it turns every failed connect into engine-level error traffic for no
+    // reason, and any zone that treats an uncaught error as fatal would do
+    // the same thing here.
+    //
+    // catchError only silences the ORPHAN. The real error still propagates
+    // to whoever awaits the future returned below.
+    unawaited(future.whenComplete(() {
       if (identical(_connectFuture, future)) {
         _connectFuture = null;
       }
-    });
+    }).catchError((Object _) {}));
     return future;
   }
 
@@ -160,11 +178,24 @@ class MqttClientService {
       print('MQTT_LOGS:: WebSocket enabled: ${_client.useWebSocket}');
       print('MQTT_LOGS:: Secure: ${_client.secure}');
 
-      // Connect with timeout
+      // Was 60 seconds, which is what made the "stuck on no internet"
+      // report so much worse than it needed to be: the first attempt sat
+      // for a full minute before reporting
+      //   TimeoutException: Connection timeout - broker did not respond
+      // while a plain HTTPS request to the same host from the same machine
+      // at the same moment returned HTTP 200. So the network was fine and
+      // the player still showed a no-internet screen for 60 seconds before
+      // it could even begin to recover, and each retry cost another full
+      // minute.
+      //
+      // 20s is well beyond a healthy WSS handshake -- a successful
+      // connection completes in under a second -- while letting a failed
+      // attempt be retried three times in the span the old value allowed
+      // one.
       await _client.connect().timeout(
-        const Duration(seconds: 60),
+        const Duration(seconds: 20),
         onTimeout: () {
-          print('MQTT_LOGS:: Connection timeout after 60 seconds');
+          print('MQTT_LOGS:: Connection timeout after 20 seconds');
           _client.disconnect();
           throw TimeoutException('Connection timeout - broker did not respond');
         },
@@ -233,6 +264,38 @@ class MqttClientService {
     } catch (e) {
       print('MQTT_LOGS:: Failed to publish online status: $e');
     }
+  }
+
+  /// Throws the current client away and builds a brand-new one, so the next
+  /// connect() starts from the same state a freshly-launched process would.
+  ///
+  /// Directly motivated by a captured failure: after the first connect timed
+  /// out, retrying against this same _client made no progress, yet killing
+  /// the process and relaunching it connected in UNDER A SECOND -- same
+  /// machine, same network, seconds apart. The difference between those two
+  /// paths is precisely this object: connect() reuses one _client for the
+  /// life of the service (_initializeClient runs only in the constructor),
+  /// so whatever state a timed-out attempt leaves behind -- a half-open
+  /// WebSocket, mqtt5_client's own autoReconnect machinery spinning, a
+  /// broker-side session still holding our client id -- is carried into
+  /// every subsequent retry forever.
+  ///
+  /// Retrying the operation was never going to fix a poisoned object. This
+  /// makes the retry path reproduce what actually worked.
+  Future<void> resetClient() async {
+    print('MQTT_LOGS:: resetClient(): discarding MQTT client and rebuilding');
+    try {
+      await _updatesSubscription?.cancel();
+    } catch (_) {}
+    _updatesSubscription = null;
+    try {
+      // Stop it resurrecting the dead socket while we are replacing it.
+      _client.autoReconnect = false;
+      _client.disconnect();
+    } catch (_) {}
+    // Drop any in-flight connect bookkeeping; it refers to the old client.
+    _connectFuture = null;
+    _initializeClient();
   }
 
   void disconnect() {

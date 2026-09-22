@@ -131,7 +131,17 @@ class Campaign {
   List<CampaignZone>? zones;
   bool? isPaused;
 
+  /// The tags this DEVICE carries, resolved by the backend and sent with the
+  /// campaign.
+  ///
+  /// This is where a player's tags actually arrive -- not in the pairing
+  /// response, which is where the player looked for them. A player_tag
+  /// restriction therefore always evaluated against an empty list and could
+  /// never match, however the tag was configured in the CMS.
+  List<String>? playerTags;
+
   Campaign({
+    this.playerTags,
     this.playbackType,
     this.campaignId,
     this.campaignName,
@@ -151,6 +161,10 @@ class Campaign {
   }
 
   factory Campaign.fromJson(Map<String, dynamic> json) => Campaign(
+        playerTags: json["player_tags"] == null
+            ? null
+            : List<String>.from(
+                json["player_tags"].map((x) => x.toString())),
         playbackType: json["playback_type"],
         campaignId: json["campaign_id"],
         campaignName: json["campaign_name"],
@@ -2467,17 +2481,35 @@ class Date {
 // ============================================
 
 class Restriction {
-  String? type; // "date" or "time"
-  String? operator; // "is-between", "on", "is-before", "is-after", "not-on"
-  List<String>? values; // Array of values (1 or 2 depending on operator)
+  /// date | time | location | player_tag | player_name | player_os
+  /// (CampaignRestrictionTypeEnum in the backend).
+  String? type;
+
+  /// Depends on the type -- see checkRestrictions in MqttViewModel.
+  String? operator;
+
+  /// 1 or 2 entries depending on the operator; absent for the
+  /// empty / not-empty operators, which test the device value itself.
+  List<String>? values;
+
+  /// How this restriction joins to the PREVIOUS one: "AND" or "OR".
+  ///
+  /// Persisted per-restriction by the backend (LogicOperatorEnum) and was
+  /// simply not read, so every set evaluated as a flat AND -- an OR
+  /// condition silently behaved as AND and withheld content it should have
+  /// played.
+  String? logicOperator;
 
   Restriction({
     this.type,
     this.operator,
     this.values,
+    this.logicOperator,
   });
 
   factory Restriction.fromJson(Map<String, dynamic> json) => Restriction(
+        logicOperator: json["logic_operator"]?.toString() ??
+            json["logicOperator"]?.toString(),
         type: json["type"],
         operator: json["operator"],
         values: json["values"] == null

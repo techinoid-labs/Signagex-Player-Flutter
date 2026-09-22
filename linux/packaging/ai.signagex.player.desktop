@@ -1,0 +1,16 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=SignageX Player
+GenericName=Digital Signage Player
+Comment=Plays the campaigns and playlists scheduled for this screen
+# Must match APPLICATION_ID in linux/CMakeLists.txt, and this file must be
+# named after it too. That is how the shell matches a running window to its
+# launcher entry and icon -- a mismatch shows a generic placeholder in the
+# dock however correctly the icon itself is installed.
+StartupWMClass=ai.signagex.player
+Icon=signagex-player
+Exec=signagex-player
+Terminal=false
+Categories=AudioVideo;Video;Player;
+Keywords=signage;display;kiosk;campaign;

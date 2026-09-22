@@ -4,10 +4,25 @@ project(runner LANGUAGES CXX)
 
 # The name of the executable created for the application. Change this to change
 # the on-disk name of your application.
-set(BINARY_NAME "digital_signage")
+# The executable name, which is also what the .deb symlinks into
+# /usr/bin and what the .desktop entry execs. Kept lowercase and
+# hyphenated because it is a command name, unlike the display name
+# in the .desktop file.
+#
+# path_provider derives the application-support directory from the
+# running executable's name, so this also decides where
+# signagex_debug.log lands:
+#   ~/.local/share/signagex-player/signagex_debug.log
+set(BINARY_NAME "signagex-player")
 # The unique GTK application identifier for this application. See:
 # https://wiki.gnome.org/HowDoI/ChooseApplicationID
-set(APPLICATION_ID "com.example.digital_signage")
+# Was the `flutter create` placeholder. This is the app's identity to
+# the desktop: it is the GApplication id, it is what the .desktop
+# file is named after, and it is how the shell matches a running
+# window to its icon and launcher entry. A window whose id does not
+# match any installed .desktop file shows a generic placeholder icon
+# in the dock however well the icon itself is installed.
+set(APPLICATION_ID "ai.signagex.player")
 
 # Explicitly opt in to modern CMake behaviors to avoid warnings with recent
 # versions of CMake.
