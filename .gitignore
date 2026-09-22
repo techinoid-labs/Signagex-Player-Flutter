@@ -34,7 +34,14 @@ android/app/release
 **/ios/Flutter/.last_build_id
 **/generated_plugin_registrant.dart
 build/
-pubspec.lock
+# pubspec.lock is deliberately NOT ignored.
+#
+# Ignoring it is right for a published library, where consumers resolve
+# their own versions. This is an application, and ignoring it meant every
+# machine resolved its own dependency set: a developer on a current Flutter
+# got webview_cef 0.6.x, CI on an older pin got 0.2.2, and the build failed
+# on an API that existed in one and not the other. Commit the lock so CI
+# builds what was tested.
 .dart_tool/
 .packages
 .packages.generated

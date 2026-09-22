@@ -14,7 +14,16 @@ env:
   # stable happens to be current. If this job starts failing in CMake or
   # plugin configuration, this pin falling behind the runner image is the
   # first thing to check -- that is how the Windows workflow broke.
-  FLUTTER_VERSION: '3.24.5'
+  #
+  # Was 3.24.5, which ships Dart 3.5.4. webview_cef 0.5.0 and later require
+  # Dart 3.6, so pub could not reach them and silently resolved 0.2.2 from
+  # 22 months ago -- a version predating the InjectUserScripts API this code
+  # uses. The build then failed with an undefined_function that nobody could
+  # reproduce locally, because a developer machine on a current Flutter
+  # resolves 0.6.x and compiles fine. 3.27.4 is the earliest stable carrying
+  # Dart 3.6, so this is the smallest bump that makes CI and a developer
+  # machine agree.
+  FLUTTER_VERSION: '3.27.4'
 
 jobs:
   test:
