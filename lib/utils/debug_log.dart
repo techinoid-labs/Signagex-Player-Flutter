@@ -10,6 +10,11 @@ import 'package:path_provider/path_provider.dart';
 // Either way, a file next to the app's own data is the only place a
 // diagnostic reliably lands where someone can be told to go and find it.
 //
+// On Linux that resolves to
+//   ~/.local/share/signagex-player/signagex_debug.log
+// -- path_provider derives the directory from the running executable's name,
+// which linux/CMakeLists.txt sets as BINARY_NAME.
+//
 // This used to be four separate copies of the same function (one each in
 // MqttViewModel, MqttClientService, DeviceSettingsViewModel, CampaignView),
 // each independently opening/appending/closing the file with no shared

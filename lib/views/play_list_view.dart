@@ -7,8 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 
-import 'package:digital_signage/views/campaign_view.dart'
-    show normalizeTransitionName;
+import 'package:digital_signage/utils/transitions.dart';
 import 'package:video_player/video_player.dart';
 
 import 'package:digital_signage/models/play_list_model.dart';

@@ -1,0 +1,231 @@
+name: Build Linux
+
+# Every push to this branch builds both flavours and publishes the STAGING
+# one. Production is a separate, deliberate act -- see
+# promote-production-linux.yml.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [linux]
+
+env:
+  # Pinned so a build is reproducible rather than silently following whatever
+  # stable happens to be current. If this job starts failing in CMake or
+  # plugin configuration, this pin falling behind the runner image is the
+  # first thing to check -- that is how the Windows workflow broke.
+  FLUTTER_VERSION: '3.24.5'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      - name: Check whether pubspec.lock is tracked
+        run: |
+          if [ ! -f pubspec.lock ]; then
+            echo "::warning::pubspec.lock is missing. Run 'flutter pub get' locally and commit the generated pubspec.lock so dependency resolution is reproducible."
+          fi
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Analyze
+        run: flutter analyze --no-fatal-warnings --no-fatal-infos
+
+      - name: Test
+        run: flutter test
+
+  # Always builds and uploads, regardless of `test` -- a failing commit's
+  # build output is still worth inspecting. What `test` gates is the publish
+  # job below.
+  package:
+    # Pinned to 22.04 rather than ubuntu-latest on purpose. A binary links
+    # against the glibc of the machine that built it and runs on anything
+    # NEWER, never anything older, so building on the newest runner would
+    # quietly make the package refuse to start on every 22.04 screen in the
+    # field with a "GLIBC_2.39 not found" error. Building on the oldest
+    # release we still support is what makes one package work everywhere.
+    runs-on: ubuntu-22.04
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+
+      # The Flutter Linux toolchain needs these to build at all; the CEF-based
+      # webview needs the rest at runtime and they come in via the .deb's
+      # Depends, not from here.
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            desktop-file-utils file
+
+      - name: Enable Linux desktop support
+        run: flutter config --enable-linux-desktop
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Compute build id
+        id: build_id
+        run: echo "id=v${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch appimagetool
+        run: |
+          curl -sSfL -o appimagetool \
+            https://github.com/AppImage/AppImageKit/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x appimagetool
+          echo "APPIMAGETOOL=$PWD/appimagetool" >> "$GITHUB_ENV"
+
+      - name: Build production
+        run: flutter build linux --release --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
+
+      # The .desktop entry is what gives the app its name and icon in the
+      # launcher. A malformed one is not a build error -- it installs
+      # happily and then the app has no icon and cannot be found in the
+      # activities search, which is exactly the kind of fault nobody
+      # attributes to packaging.
+      - name: Validate the desktop entry
+        run: desktop-file-validate linux/packaging/ai.signagex.player.desktop
+
+      - name: Package production
+        run: |
+          ./linux/packaging/make_deb.sh "${{ steps.build_id.outputs.id }}" \
+            "dist/signagex-player_${{ steps.build_id.outputs.id }}_amd64.deb"
+          ./linux/packaging/make_appimage.sh "${{ steps.build_id.outputs.id }}" \
+            "dist/SignageX-Player-${{ steps.build_id.outputs.id }}-x86_64.AppImage"
+
+      # A .deb that installs but leaves a broken package state is worse than
+      # one that fails to build, because it is discovered on a customer's
+      # screen. Installing it here proves the dependency list resolves and
+      # the files land where the control file says.
+      - name: Install the package to prove it is well formed
+        run: |
+          sudo apt-get install -y "./dist/signagex-player_${{ steps.build_id.outputs.id }}_amd64.deb"
+          test -x /usr/bin/signagex-player
+          test -f /usr/share/applications/ai.signagex.player.desktop
+          test -f /usr/share/icons/hicolor/256x256/apps/signagex-player.png
+          dpkg -s signagex-player | head -n 5
+          sudo apt-get remove -y signagex-player
+
+      - name: Build staging
+        run: flutter build linux --release --dart-define=APP_ENV=staging --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
+
+      - name: Package staging
+        run: |
+          ./linux/packaging/make_deb.sh "${{ steps.build_id.outputs.id }}" \
+            "dist/signagex-player-staging_${{ steps.build_id.outputs.id }}_amd64.deb" staging
+          ./linux/packaging/make_appimage.sh "${{ steps.build_id.outputs.id }}" \
+            "dist/SignageX-Player-Staging-${{ steps.build_id.outputs.id }}-x86_64.AppImage" Staging
+
+      - name: Upload production package
+        uses: actions/upload-artifact@v4
+        with:
+          name: signagex-player-deb
+          path: dist/signagex-player_*_amd64.deb
+
+      - name: Upload production AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: signagex-player-appimage
+          path: dist/SignageX-Player-*-x86_64.AppImage
+
+      - name: Upload staging package
+        uses: actions/upload-artifact@v4
+        with:
+          name: signagex-player-staging-deb
+          path: dist/signagex-player-staging_*_amd64.deb
+
+      - name: Upload staging AppImage
+        uses: actions/upload-artifact@v4
+        with:
+          name: signagex-player-staging-appimage
+          path: dist/SignageX-Player-Staging-*-x86_64.AppImage
+
+      - name: Record build identity
+        run: |
+          mkdir -p identity
+          echo "${{ github.sha }}" > identity/commit.txt
+          echo "${{ steps.build_id.outputs.id }}" > identity/build_id.txt
+
+      - name: Upload build identity
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-identity
+          path: identity/
+
+      - name: Summarise
+        run: |
+          {
+            echo "### Linux build ${{ steps.build_id.outputs.id }}"
+            echo ""
+            echo "Two formats, from this run's artifacts:"
+            echo ""
+            echo "| | Use it when |"
+            echo "|---|---|"
+            echo "| \`signagex-player-staging-deb\` | Ubuntu/Debian screens. Installs properly, gets an icon and a launcher entry. |"
+            echo "| \`signagex-player-staging-appimage\` | Anything else, or no root. One file, \`chmod +x\`, run. |"
+            echo ""
+            echo "Install the .deb with:"
+            echo ""
+            echo '```'
+            echo 'sudo apt install ./signagex-player-staging_*_amd64.deb'
+            echo '```'
+            echo ""
+            echo "Diagnostics land in \`~/.local/share/signagex-player/signagex_debug.log\`."
+            echo ""
+            echo "Once tested, release with the **Promote Linux to production** workflow, run id \`${{ github.run_id }}\`."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  publish-staging:
+    needs: [test, package]
+    if: github.ref == 'refs/heads/linux'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download build identity
+        uses: actions/download-artifact@v4
+        with:
+          name: build-identity
+          path: identity
+
+      - name: Verify artifact identity matches the tested commit
+        run: |
+          recorded_sha="$(cat identity/commit.txt)"
+          if [ "$recorded_sha" != "${{ github.sha }}" ]; then
+            echo "::error::Artifact identity mismatch: built from $recorded_sha, publishing for ${{ github.sha }}."
+            exit 1
+          fi
+          echo "build_id=$(cat identity/build_id.txt)" >> "$GITHUB_ENV"
+
+      - name: Download staging package
+        uses: actions/download-artifact@v4
+        with:
+          name: signagex-player-staging-deb
+          path: dist
+
+      - name: Publish staging package
+        env:
+          RELEASE_KEY: ${{ secrets.PLAYER_RELEASE_UPLOAD_KEY }}
+        run: |
+          if [ -z "$RELEASE_KEY" ]; then
+            echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping staging publish. This is a deliberate skip, not a failure."
+            exit 0
+          fi
+          deb="$(ls dist/signagex-player-staging_*_amd64.deb | head -n 1)"
+          curl -sf -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
+            -H "x-release-key: $RELEASE_KEY" \
+            -F "platform=linux" \
+            -F "version=$build_id" \
+            -F "file=@$deb"
+          echo "Staging package published as $build_id."
