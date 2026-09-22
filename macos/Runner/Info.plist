@@ -14,6 +14,8 @@
     <string>6.0</string>
     <key>CFBundleName</key>
     <string>$(PRODUCT_NAME)</string>
+    <key>CFBundleDisplayName</key>
+    <string>$(PRODUCT_NAME)</string>
     <key>CFBundlePackageType</key>
     <string>APPL</string>
     <key>CFBundleShortVersionString</key>
@@ -27,17 +29,17 @@
     
     <!-- Location Permission Description -->
     <key>NSLocationWhenInUseUsageDescription</key>
-    <string>Your message to users about why you need their location</string>
+    <string>SignageX Player uses this display's location to decide which campaigns are scheduled to play on it.</string>
     <key>NSLocationAlwaysUsageDescription</key>
-    <string>Your message to users about why you need their location</string>
+    <string>SignageX Player uses this display's location to decide which campaigns are scheduled to play on it.</string>
     <key>NSAppleEventsUsageDescription</key>
-    <string>We need access to control the system settings.</string>
+    <string>SignageX Player adjusts display settings, such as sleep and brightness, so a screen stays on while it is showing content.</string>
     <key>NSMicrophoneUsageDescription</key>
-    <string>This app needs access to your microphone.</string>
+    <string>SignageX Player needs the microphone only for campaigns that include interactive audio.</string>
     <key>NSCameraUsageDescription</key>
-    <string>This app needs access to your camera.</string>
+    <string>SignageX Player needs the camera only for campaigns that include interactive video.</string>
     <key>NSBrightnessControlUsageDescription</key>
-    <string>This app needs access to control your display brightness.</string>
+    <string>SignageX Player sets display brightness from the schedule configured for this screen in the CMS.</string>
 
     <!-- WebView Permissions and Settings -->
     <key>NSAppTransportSecurity</key>

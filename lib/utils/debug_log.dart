@@ -11,7 +11,7 @@ import 'package:path_provider/path_provider.dart';
 // place a diagnostic reliably lands where someone can be told to find it.
 //
 // Under the App Sandbox that is
-//   ~/Library/Containers/com.example.digitalSignage/Data/Library/
+//   ~/Library/Containers/ai.signagex.player/Data/Library/
 //       Application Support/signagex_debug.log
 // -- getApplicationSupportDirectory() resolves inside the container, so the
 // path is writable without any extra entitlement.

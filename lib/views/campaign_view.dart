@@ -18,6 +18,7 @@ import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/utils/log_format.dart';
 
 import '../view_models/mqtt_view_model.dart';
+import '../utils/transitions.dart';
 import '../views/no_content_view.dart';
 import '../widgets/center_image_widget.dart';
 import '../widgets/text_widget.dart';
@@ -194,67 +195,6 @@ String _stripUnsupportedSvgBlocks(String svg) {
   s = s.replaceAll(
       RegExp(r'<script[^>]*>[\s\S]*?<\/script>', caseSensitive: false), '');
   return s;
-}
-
-
-/// Maps a transition name from the CMS onto the animations implemented here.
-///
-/// The switch was written against names the CMS does not produce. It expects
-/// fadeIn / slideOverLeftToRight / slideInOutBottomToTop and the like, while
-/// the CMS emits:
-///
-///   campaign  : no-transition | fade | slide
-///   playlist  : fade-in | fade-out | slide | none
-///
-/// and payloads have been seen carrying "Fade" capitalised. Comparison
-/// ignores case, spaces, hyphens and underscores.
-///
-/// fade-out renders as a fade: this is an AnimatedSwitcher cross-fade, so the
-/// outgoing item already fades out as the incoming one fades in. A plain
-/// "slide" has no direction, so it gets the conventional one -- new content
-/// entering from the right.
-///
-/// An unrecognised name returns 'none' rather than something arbitrary: a
-/// transition nobody asked for is more jarring than none at all.
-String normalizeTransitionName(String? raw) {
-  final key = (raw ?? '')
-      .trim()
-      .toLowerCase()
-      .replaceAll('-', '')
-      .replaceAll('_', '')
-      .replaceAll(' ', '');
-
-  switch (key) {
-    case '':
-    case 'none':
-    case 'notransition':
-      return 'none';
-    case 'fade':
-    case 'fadein':
-    case 'fadeout':
-      return 'fadeIn';
-    case 'slide':
-    case 'slidein':
-      return 'slideOverRightToLeft';
-    case 'slideoverlefttoright':
-      return 'slideOverLeftToRight';
-    case 'slideoverrighttoleft':
-      return 'slideOverRightToLeft';
-    case 'slideovertoptobottom':
-      return 'slideOverTopToBottom';
-    case 'slideoverbottomtotop':
-      return 'slideOverBottomToTop';
-    case 'slideinoutlefttoright':
-      return 'slideInOutLeftToRight';
-    case 'slideinoutrighttoleft':
-      return 'slideInOutRightToLeft';
-    case 'slideinouttoptobottom':
-      return 'slideInOutTopToBottom';
-    case 'slideinoutbottomtotop':
-      return 'slideInOutBottomToTop';
-    default:
-      return 'none';
-  }
 }
 
 class CampaignView extends StatefulWidget {
