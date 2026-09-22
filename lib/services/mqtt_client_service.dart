@@ -35,6 +35,10 @@ class MqttClientService {
   StreamSubscription<List<MqttReceivedMessage<MqttMessage?>>?>?
       _updatesSubscription;
 
+  /// The player code of the most recent connect, kept so presence can be
+  /// republished after an automatic reconnect -- see _onAutoReconnected.
+  String? _playerCode;
+
   MqttClientService() {
     _initializeClient();
   }
@@ -92,6 +96,27 @@ class MqttClientService {
 
   void _onAutoReconnected() {
     print('MQTT_LOGS:: Auto-reconnected successfully');
+    // Republishing presence is the whole point of this callback, and it was
+    // missing.
+    //
+    // The connect message registers a Last Will of {"status":"offline"},
+    // RETAINED, on <playerCode>/player_status. When the connection dies --
+    // which is what a laptop going to sleep does to it -- the broker
+    // publishes that will, and because it is retained it becomes the
+    // standing value of the topic. The CMS reads it and shows the screen
+    // offline, correctly.
+    //
+    // Coming back is the part that never happened. resubscribeOnAutoReconnect
+    // restores the SUBSCRIPTIONS, but nothing republishes the online status,
+    // so the retained "offline" stayed the last word on that topic
+    // indefinitely. Only restarting the app fixed it, because a fresh
+    // connect runs _publishOnlineStatus -- which is exactly the reported
+    // behaviour: sleep the Mac, the CMS says offline, and it stays offline
+    // until the player is launched again.
+    final code = _playerCode;
+    if (code != null && code.isNotEmpty) {
+      _publishOnlineStatus(code);
+    }
   }
 
   // ────────────────────────────────
@@ -141,6 +166,9 @@ class MqttClientService {
   }
 
   Future<void> _connectInternal(String? playerCode) async {
+    if (playerCode != null && playerCode.isNotEmpty) {
+      _playerCode = playerCode;
+    }
     try {
       print(
           'MQTT_LOGS:: Connecting to wss://$mqttBroker:$mqttPort$mqttWebSocketPath');
