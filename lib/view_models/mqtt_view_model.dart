@@ -293,6 +293,8 @@ class MqttViewModel extends ChangeNotifier {
     await retrieveStoredResponse();
     await loadDeviceInfoFromSharedPreferences();
 
+    _startPresenceWatchdog();
+
     _pairingRevalidationTimer?.cancel();
     _pairingRevalidationTimer = Timer.periodic(const Duration(seconds: 30), (_) {
       if (_topic.isNotEmpty) {
@@ -1155,6 +1157,75 @@ EOF
         // would be a visible regression on a screen that is otherwise fine.
         await _reconnectSession();
       }
+    });
+  }
+
+  /// Notices that the connection has died and puts it back.
+  ///
+  /// The recovery retry added alongside this one only ever arms when a
+  /// connect ATTEMPT fails. After the machine suspends there is no failed
+  /// attempt to arm it: the socket is simply half-open, which throws
+  /// nothing and looks healthy to every code path that waits for an error.
+  /// Meanwhile the broker has timed out the keep-alive and published the
+  /// retained Last Will, so the CMS shows the screen offline while the
+  /// player believes it is connected. Reported as "if the Mac sleeps the
+  /// CMS says offline, and I have to start the application again".
+  ///
+  /// Two things are checked on each tick:
+  ///
+  ///   * A wall-clock gap much larger than the tick interval. Timers do not
+  ///     fire while a machine is suspended, so a jump is the most reliable
+  ///     signal available that it just woke -- and it needs no platform
+  ///     channel and no plugin. The connection is rebuilt immediately
+  ///     rather than waiting to discover the socket is dead, because
+  ///     discovering that takes a keep-alive period during which the screen
+  ///     is offline in the CMS for no reason.
+  ///
+  ///   * The client's own connection state, which covers every other way a
+  ///     connection can die quietly: the network changing underneath it, a
+  ///     broker restart, a router dropping an idle socket.
+  Timer? _presenceWatchdog;
+  DateTime _lastWatchdogTick = DateTime.now();
+
+  static const Duration _watchdogInterval = Duration(seconds: 30);
+
+  void _startPresenceWatchdog() {
+    _presenceWatchdog?.cancel();
+    _lastWatchdogTick = DateTime.now();
+    _presenceWatchdog = Timer.periodic(_watchdogInterval, (_) async {
+      final now = DateTime.now();
+      final gap = now.difference(_lastWatchdogTick);
+      _lastWatchdogTick = now;
+
+      // Nothing to restore before pairing, and the pairing flow is already
+      // retrying on its own.
+      if (_topic.isEmpty) return;
+
+      // Twice the interval is comfortably past normal timer jitter while
+      // still catching a suspend of only a minute.
+      final wokeFromSleep = gap > _watchdogInterval * 2;
+      final connected = _mqttClientService.isConnected;
+
+      if (!wokeFromSleep && connected) return;
+
+      // The recovery retry may already be mid-attempt. Rebuilding the
+      // client underneath it would abort a connection that was about to
+      // succeed, and both timers would then keep resetting each other.
+      if (_mqttConnecting) {
+        _debugLog('presence watchdog: SKIPPED, a connect is already in '
+            'flight');
+        return;
+      }
+
+      _debugLog('presence watchdog: '
+          '${wokeFromSleep ? "woke after ${gap.inSeconds}s gap" : "connection is down"} '
+          '(connected=$connected, state=$_state) -- restoring the session');
+
+      // A client whose socket died during a suspend does not recover by
+      // being asked again; it has to be rebuilt. Same reasoning as the
+      // recovery retry -- see resetClient().
+      await _mqttClientService.resetClient();
+      await _reconnectSession();
     });
   }
 
@@ -3120,6 +3191,7 @@ EOF
     _pairingRevalidationTimer?.cancel();
     _remoteViewTimer?.cancel();
     _networkRecoveryTimer?.cancel();
+    _presenceWatchdog?.cancel();
     super.dispose();
   }
 
