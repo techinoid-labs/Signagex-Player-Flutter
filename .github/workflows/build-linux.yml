@@ -35,8 +35,54 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      # With no pubspec.lock committed, and several dependencies declared
+      # with no version constraint at all, every run resolves the newest
+      # compatible version of everything. That means CI can be building
+      # against different package versions than any developer's machine, and
+      # a dependency's API change shows up here as an analyzer error nobody
+      # can reproduce locally. Recording what actually resolved is the
+      # difference between diagnosing that in one run and guessing at it.
+      - name: Record what the dependencies resolved to
+        run: |
+          {
+            echo "<details><summary>Resolved dependency versions</summary>"
+            echo ""
+            echo '```'
+            grep -A1 '^  [a-z_]*:' pubspec.lock | grep -E '^\s+(version|[a-z_]+:)' | paste - - 2>/dev/null \
+              || sed -n '/^packages:/,$p' pubspec.lock
+            echo '```'
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload the resolved lockfile
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pubspec-lock
+          path: pubspec.lock
+
+      # `flutter analyze` prints errors, warnings and infos interleaved, and
+      # this project carries ~570 infos. With --no-fatal-warnings and
+      # --no-fatal-infos only an ERROR can fail the step, but the error is
+      # then buried hundreds of lines up from the failure, which is exactly
+      # where it is least useful. Re-print just the errors at the end.
       - name: Analyze
-        run: flutter analyze --no-fatal-warnings --no-fatal-infos
+        run: |
+          set -o pipefail
+          if flutter analyze --no-fatal-warnings --no-fatal-infos 2>&1 | tee analyze.txt; then
+            exit 0
+          fi
+          echo ""
+          echo "================ ERRORS ONLY ================"
+          grep -E '^\s*error' analyze.txt || echo "(no lines matched 'error' -- the failure is not an analyzer error; read the output above)"
+          {
+            echo "### Analyzer errors"
+            echo ""
+            echo '```'
+            grep -E '^\s*error' analyze.txt || echo "(none matched)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
 
       - name: Test
         run: flutter test
