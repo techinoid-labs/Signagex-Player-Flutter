@@ -97,7 +97,7 @@ class AppDelegate: FlutterAppDelegate {
     remoteViewChannel.setMethodCallHandler { (call: FlutterMethodCall, result: @escaping FlutterResult) in
         switch call.method {
         case "captureScreenshot":
-            if let data = self.captureOwnWindowJPEG(quality: 0.6) {
+            if let data = self.captureScreenshotJPEG(quality: 0.6) {
                 result(FlutterStandardTypedData(bytes: data))
             } else {
                 result(FlutterError(code: "CAPTURE_FAILED", message: "Screenshot capture returned nil", details: nil))
@@ -131,6 +131,11 @@ class AppDelegate: FlutterAppDelegate {
             result("OK")
         case "openTerminal":
             self.openTerminal()
+            result("OK")
+        case "isScreenRecordingTrusted":
+            result(self.isScreenRecordingTrusted())
+        case "requestScreenRecordingPermission":
+            self.requestScreenRecordingPermission()
             result("OK")
         case "isAccessibilityTrusted":
             result(self.isAccessibilityTrusted())
@@ -256,6 +261,58 @@ func reloadApp() {
     // apps' windows) via CGWindowListCreateImage. In-process, no
     // subprocess — historically this doesn't require Screen Recording TCC
     // permission the way capturing other processes' windows does.
+    /// Captures the whole display, the way the Windows player does.
+    ///
+    /// This used to capture only our own window, via CGWindowListCreateImage
+    /// with .optionIncludingWindow. That is not the same picture. A window
+    /// capture asks the window server for the app's own backing store, and
+    /// content that is composited by a separate process -- a WKWebView's
+    /// web content, which runs out-of-process -- is simply not in it. The
+    /// region comes back empty, which is what "the web app area is blank in
+    /// remote view" was. Linux had the identical fault and was fixed the
+    /// same way, by capturing at OS level instead of asking the app what it
+    /// thinks it drew.
+    ///
+    /// Capturing the display also makes the click mapping correct rather
+    /// than approximately correct. moveCursorAndClick posts CGEvents in
+    /// global display coordinates, and the Dart side maps a received point
+    /// by multiplying by the frame's scale factor. That arithmetic is only
+    /// right if the captured image IS the display -- it happened to work
+    /// before because a signage player runs full screen at the origin, and
+    /// would have been wrong the moment it did not.
+    ///
+    /// Captures the display the player's window is actually on, not
+    /// blindly the main one, so a screen driven from a second output is
+    /// captured rather than whatever happens to be on the built-in panel.
+    ///
+    /// Requires Screen Recording permission (macOS 10.15+). Without it this
+    /// returns nil rather than failing loudly, hence the fallback in
+    /// captureScreenshotJPEG below.
+    func captureDisplayJPEG(quality: CGFloat) -> Data? {
+        let displayID: CGDirectDisplayID
+        if let screen = self.mainFlutterWindow?.screen,
+           let number = screen.deviceDescription[
+               NSDeviceDescriptionKey("NSScreenNumber")] as? NSNumber {
+            displayID = CGDirectDisplayID(number.uint32Value)
+        } else {
+            displayID = CGMainDisplayID()
+        }
+
+        // Deprecated in macOS 14 in favour of ScreenCaptureKit, which is
+        // async and needs a good deal more machinery. This still works, and
+        // the deployment target here is macOS 12. Worth revisiting if a
+        // future macOS actually removes it.
+        guard let cgImage = CGDisplayCreateImage(displayID) else { return nil }
+        let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
+        return bitmapRep.representation(
+            using: .jpeg, properties: [.compressionFactor: quality])
+    }
+
+    /// Window-only capture, kept solely as a fallback.
+    ///
+    /// Produces a frame with web content missing, but a degraded remote
+    /// view is more useful than none while somebody grants the Screen
+    /// Recording permission.
     func captureOwnWindowJPEG(quality: CGFloat) -> Data? {
         guard let window = self.mainFlutterWindow else { return nil }
         let windowID = CGWindowID(window.windowNumber)
@@ -267,6 +324,44 @@ func reloadApp() {
         ) else { return nil }
         let bitmapRep = NSBitmapImageRep(cgImage: cgImage)
         return bitmapRep.representation(using: .jpeg, properties: [.compressionFactor: quality])
+    }
+
+    /// Display capture, falling back to the window if it is unavailable.
+    func captureScreenshotJPEG(quality: CGFloat) -> Data? {
+        if let data = captureDisplayJPEG(quality: quality) {
+            return data
+        }
+        NSLog("SignageX: display capture unavailable (Screen Recording permission?); falling back to window capture, web content will be missing")
+        return captureOwnWindowJPEG(quality: quality)
+    }
+
+    /// Whether Screen Recording has been granted.
+    ///
+    /// Checked rather than assumed because the failure is silent: without
+    /// it the capture APIs do not error, they hand back a picture of the
+    /// desktop wallpaper with every window missing. A remote view that
+    /// looks broken and a permission that was never granted are
+    /// indistinguishable from the CMS end, so the player reports which it
+    /// is into its own log.
+    func isScreenRecordingTrusted() -> Bool {
+        if #available(macOS 10.15, *) {
+            return CGPreflightScreenCaptureAccess()
+        }
+        return true
+    }
+
+    /// Triggers the system prompt, once per install.
+    ///
+    /// macOS only shows it the first time; afterwards the user has to go to
+    /// System Settings themselves, which is why the log message spells out
+    /// where.
+    func requestScreenRecordingPermission() {
+        if #available(macOS 10.15, *) {
+            if !CGPreflightScreenCaptureAccess() {
+                let granted = CGRequestScreenCaptureAccess()
+                NSLog("SignageX: Screen Recording permission request returned \(granted). If it stays denied, grant it in System Settings > Privacy & Security > Screen Recording and relaunch.")
+            }
+        }
     }
 
     // Moves the real OS cursor and clicks, mirroring xdotool's

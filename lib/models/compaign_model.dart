@@ -1910,10 +1910,23 @@ List<Campaign> _dedupeCampaignsById(List<Campaign> campaigns) {
   return byId.values.toList();
 }
 
+/// How deep a composition may nest before the player stops following the
+/// links.
+///
+/// A composition can reference another composition, which is the whole
+/// point, but nothing stops the CMS producing a cycle -- A containing B
+/// containing A -- and nothing here would notice. Resolution happens while
+/// parsing the payload, so a cycle is not a rendering glitch, it is a hang
+/// before anything reaches the screen. Six is far past any real layout and
+/// cheap insurance against one that is not real.
+const int _kMaxCompositionDepth = 6;
+
 MediaItem _mergeCompositionInMediaItem(
   MediaItem media,
-  List<Campaign> compositions,
-) {
+  List<Campaign> compositions, {
+  int depth = 0,
+}) {
+  if (depth >= _kMaxCompositionDepth) return media;
   var result = media;
   final type = (media.mediaType ?? '').toLowerCase();
 
@@ -1933,7 +1946,25 @@ MediaItem _mergeCompositionInMediaItem(
         zones: chosen,
       );
     }
-  } else if (type == 'content') {
+  } else {
+    // Was `else if (type == 'content')`, and that is what made a
+    // composition inside a composition render as a still image.
+    //
+    // The CMS does not always serialise an inner composition as a
+    // composition. One nesting level down it can arrive as an ordinary
+    // media item -- an image, whose mediaUrl is the composition's PREVIEW
+    // render -- carrying compositionCampaignId as the link to the real
+    // thing. With the branch restricted to type 'content', that link was
+    // never followed for any other type, so the player did exactly what
+    // the payload literally said: it drew the preview PNG. Static, no
+    // playback, no inner zones. Reported as "composition inside another
+    // composition shows as png and only preview".
+    //
+    // Following the link for any type is safe because it is gated on three
+    // things that a plain image never satisfies together: the hint has to
+    // be present, it has to resolve to a real campaign, and that campaign
+    // has to have zones. An item that is genuinely just an image is left
+    // exactly as it was.
     final hasLinkHint =
         (result.settings?.compositionCampaignId ?? '').trim().isNotEmpty;
     if (hasLinkHint) {
@@ -1963,7 +1994,8 @@ MediaItem _mergeCompositionInMediaItem(
 
   final nested = result.zones;
   if (nested != null && nested.isNotEmpty) {
-    final mergedNested = _mergeCompositionInZoneList(nested, compositions);
+    final mergedNested =
+        _mergeCompositionInZoneList(nested, compositions, depth: depth + 1);
     if (mergedNested != nested) {
       result = MediaItem(
         id: result.id,
@@ -1980,15 +2012,17 @@ MediaItem _mergeCompositionInMediaItem(
 
 List<CampaignZone> _mergeCompositionInZoneList(
   List<CampaignZone> zones,
-  List<Campaign> compositions,
-) {
+  List<Campaign> compositions, {
+  int depth = 0,
+}) {
   var changed = false;
   final updated = zones.map((zone) {
     final items = zone.mediaItems;
     if (items == null) return zone;
 
     final mergedItems = items
-        .map((m) => _mergeCompositionInMediaItem(m, compositions))
+        .map((m) =>
+            _mergeCompositionInMediaItem(m, compositions, depth: depth))
         .toList();
 
     var zoneChanged = false;
