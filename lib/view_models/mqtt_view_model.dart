@@ -2090,11 +2090,46 @@ EOF
     _remoteViewScaleX = 1.0;
     _remoteViewScaleY = 1.0;
     debugPrint('MQTT_LOGS:: Remote view started');
+    // Checked on every start, because the failure it catches is silent.
+    // Without Screen Recording the capture APIs do not error -- they
+    // return a picture of the desktop with every window missing. From the
+    // CMS that is indistinguishable from a broken player, so the answer
+    // goes in the player's own log where someone can find it.
+    unawaited(_reportScreenRecordingPermission());
     _remoteViewTimer?.cancel();
     _captureAndPublishRemoteViewFrame();
     _remoteViewTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       _captureAndPublishRemoteViewFrame();
     });
+  }
+
+  /// Logs whether the OS will actually let the player see the screen, and
+  /// triggers the system prompt the first time it will not.
+  ///
+  /// macOS shows that prompt once per install. After that the user has to
+  /// go to System Settings themselves, so the log says where.
+  Future<void> _reportScreenRecordingPermission() async {
+    if (!Platform.isMacOS) return;
+    try {
+      final trusted =
+          await _remoteViewChannel.invokeMethod<bool>('isScreenRecordingTrusted');
+      if (trusted == true) {
+        _debugLog('remote view: Screen Recording granted -- capturing the '
+            'display');
+        return;
+      }
+      _debugLog('remote view: Screen Recording NOT granted. Frames will show '
+          'the desktop with the player missing, and web content will be '
+          'absent. Grant it in System Settings > Privacy & Security > '
+          'Screen Recording, then relaunch the player.');
+      await _remoteViewChannel.invokeMethod('requestScreenRecordingPermission');
+    } catch (error) {
+      // An older build of the native side will not have these methods.
+      // Not being able to ASK about the permission must not stop remote
+      // view from running.
+      _debugLog('remote view: could not check Screen Recording permission: '
+          '$error');
+    }
   }
 
   void _stopRemoteView() {
@@ -2122,13 +2157,15 @@ EOF
       }
       if (imageBytes == null) return;
 
-      // Self-window captures on Retina displays come back at
-      // backingScaleFactor-multiplied pixel dimensions, so this needs the
-      // same shrink-to-budget treatment as Linux (for a different reason —
-      // DPI multiplier instead of raw screen resolution). Routing through
-      // _compressImage/FlutterImageCompress instead would hardcode
+      // Display captures come back at the panel's native pixel
+      // dimensions, which on a Retina screen is twice the logical size, so
+      // they need the same shrink-to-budget treatment as Linux. Routing
+      // through _compressImage/FlutterImageCompress instead would hardcode
       // scale=1.0 even while resizing, silently breaking click coordinate
-      // mapping the moment the image actually shrinks.
+      // mapping the moment the image actually shrinks -- and that mapping
+      // now matters more, not less: the frame is the whole display, so the
+      // scale factor is exactly what turns a point the CMS clicked into a
+      // point on the screen.
       final Uint8List compressedBytes;
       final resized = _resizeAndCompressForRemoteView(imageBytes);
       if (resized != null) {
@@ -2167,6 +2204,12 @@ EOF
     }
   }
 
+  /// Asks the native side for a frame.
+  ///
+  /// This captures the DISPLAY, not the player's own window. A window
+  /// capture returns the app's backing store, and a WKWebView's content is
+  /// rendered by a separate process, so web-app regions came back blank --
+  /// see captureDisplayJPEG in AppDelegate.swift.
   Future<Uint8List?> _captureScreenshotForMac() async {
     try {
       final result = await _remoteViewChannel.invokeMethod('captureScreenshot');
