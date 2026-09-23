@@ -95,19 +95,6 @@ dependencies:
   qr_flutter: ^4.1.0
   flutter_svg: ^2.0.10+1
   fvp: ^0.37.2
-  # Pinned, and pinned to a version that needs Dart 3.6.
-  #
-  # This was declared bare -- `webview_cef:` with no constraint at all --
-  # which means "any version", so every machine resolved whatever its own
-  # Dart SDK allowed. On a developer machine with a current Flutter that is
-  # 0.6.x; CI, pinned to Flutter 3.24.5 (Dart 3.5.4), could only reach 0.2.2
-  # from 22 months ago, which predates InjectUserScripts entirely:
-  #
-  #   error - The function 'InjectUserScripts' isn't defined
-  #           lib/views/campaign_view.dart:3002 - undefined_function
-  #
-  # The code is written against the 0.6 API, so say so here rather than
-  # leaving it to whichever SDK happens to be installed.
   # Pinned exactly, and pinned BELOW 0.5.0 on purpose.
   #
   # Every 0.5.x and 0.6.x release bundles CEF 149, whose headers are C++20
