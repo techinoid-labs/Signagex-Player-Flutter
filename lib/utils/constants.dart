@@ -1,8 +1,34 @@
 import 'dart:io';
 
+// NOTE: these two are dead. The MQTT client declares its own
+// mqttBroker/mqttPort at the top of lib/services/mqtt_client_service.dart
+// (signagexai.com:443) and never reads these. Left alone rather than
+// deleted in this change, but nothing should start using them.
 const String mqttBroker = 'broker';
 const int mqttPort = 1883;
-const String baseurl = "https://stage.signagexai.com/v1/";
+
+/// Which backend this build talks to.
+///
+/// Set by the build: `--dart-define=APP_ENV=staging` produces a staging
+/// player, and anything else (including no define at all) produces a
+/// production one.
+const String appEnv =
+    String.fromEnvironment('APP_ENV', defaultValue: 'production');
+
+const bool isStagingBuild = appEnv == 'staging';
+
+/// Was hardcoded to the staging host, unconditionally.
+///
+/// That made every Linux build a staging build, including the artifact the
+/// pipeline labels "production" -- the CI already passes
+/// --dart-define=APP_ENV=staging to one of the two builds, and nothing read
+/// it. A player built as production still registered itself against
+/// stage.signagexai.com, so its pairing code existed only on the staging
+/// CMS and the production CMS answered, correctly, that the code was not
+/// found.
+const String baseurl = isStagingBuild
+    ? "https://stage.signagexai.com/v1/"
+    : "https://signagexai.com/v1/";
 const String adCampaignProofOfPlayPath = "player/ad-campaign-proof-of-play";
 const String port = "3002/";
 
