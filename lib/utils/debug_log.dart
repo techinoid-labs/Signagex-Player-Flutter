@@ -12,8 +12,15 @@ import 'package:path_provider/path_provider.dart';
 //
 // Under the App Sandbox that is
 //   ~/Library/Containers/ai.signagex.player/Data/Library/
-//       Application Support/signagex_debug.log
-// -- getApplicationSupportDirectory() resolves inside the container, so the
+//       Application Support/ai.signagex.player/signagex_debug.log
+//
+// The bundle identifier appears TWICE, which is not a typo: the sandbox
+// container is named after it, and path_provider then appends it again
+// inside Application Support. Verified on a real machine rather than
+// inferred -- an earlier version of this comment had it once and sent
+// people looking in the wrong folder.
+//
+// getApplicationSupportDirectory() resolves inside the container, so the
 // path is writable without any extra entitlement.
 //
 // This used to be four separate copies of the same function (one each in
