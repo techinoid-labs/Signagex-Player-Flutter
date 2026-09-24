@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/utils/constants.dart';
+import 'package:digital_signage/utils/debug_log.dart' as debug;
 
 int? _asInt(dynamic value) {
   if (value == null) return null;
@@ -1942,8 +1943,29 @@ MediaItem _mergeCompositionInMediaItem(
         settings: result.settings,
         schedule: result.schedule ?? Schedule(alwaysPlay: true),
         mediaType: result.mediaType,
-        mediaUrl: result.mediaUrl,
+        // The thumbnail is dropped once the real layers are in hand.
+        // Keeping it meant a resolved composition still carried a preview
+        // PNG, and any render path that checks mediaUrl before zones drew
+        // the preview instead of the composition.
+        mediaUrl: null,
         zones: chosen,
+      );
+    } else {
+      // The one case that cannot be diagnosed from the screen: the player
+      // shows the preview PNG and there is no way to tell whether the link
+      // was missing, pointed at something absent, or resolved to an empty
+      // composition. Each needs a different fix and they look identical.
+      final wanted = (result.settings?.compositionCampaignId ?? '').trim();
+      debug.debugLog(
+        'Composition',
+        'nested composition NOT resolved -> will fall back to its preview '
+        'image. id="${result.id}" '
+        'compositionCampaignId="${wanted.isEmpty ? "(none extracted)" : wanted}" '
+        'linked=${linked?.campaignId ?? "(no match)"} '
+        'linkedZones=${linked?.zones?.length ?? 0} '
+        'ownZones=${result.zones?.length ?? 0} '
+        'candidates=${compositions.length} '
+        '[${compositions.map((c) => c.campaignId).join(", ")}]',
       );
     }
   } else {

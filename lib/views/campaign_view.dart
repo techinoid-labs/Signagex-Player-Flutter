@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -444,6 +445,9 @@ class _CampaignViewState extends State<CampaignView> {
                 campaignCanPlay: campaignCanPlay,
                 campaignSchedule: campaign.campaignSchedule,
                 isAdCampaignUpdate: isAdCampaignUpdate,
+                // Text is scaled by the smaller of the two axes so it
+                // stays proportional rather than stretching with the zone.
+                contentScale: math.min(scaleX, scaleY),
                 coordinateBaseWidth: campaignWidth,
                 coordinateBaseHeight: campaignHeight,
               ),
@@ -464,6 +468,20 @@ class VideoPlaylistWidget extends StatefulWidget {
   final CampaignSchedule? campaignSchedule;
   final bool isAdCampaignUpdate;
 
+  /// How much the zone this widget fills has been shrunk from the
+  /// coordinate space its contents were designed in.
+  ///
+  /// Geometry was already scaled -- zone x/y/width/height are multiplied by
+  /// the ratio between the screen and the design canvas -- but font sizes
+  /// were not. A text object designed at 72px stayed 72px inside a box that
+  /// had been scaled to a fraction of its design size, so it overflowed and
+  /// was clipped. Visible as "the text in a nested composition gets cut",
+  /// and worst there because nesting compounds the shrink.
+  ///
+  /// Cumulative: a composition inside a composition multiplies its parent's
+  /// scale by its own.
+  final double contentScale;
+
   final double coordinateBaseWidth;
   final double coordinateBaseHeight;
 
@@ -476,6 +494,7 @@ class VideoPlaylistWidget extends StatefulWidget {
     required this.campaignCanPlay,
     required this.campaignSchedule,
     this.isAdCampaignUpdate = false,
+    this.contentScale = 1.0,
     required this.coordinateBaseWidth,
     required this.coordinateBaseHeight,
   });
@@ -813,6 +832,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   campaignCanPlay: widget.campaignCanPlay,
                   campaignSchedule: widget.campaignSchedule,
                   isAdCampaignUpdate: widget.isAdCampaignUpdate,
+                  contentScale:
+                      widget.contentScale * math.min(scaleX, scaleY),
                   coordinateBaseWidth: nestedCoordinateBaseWidth,
                   coordinateBaseHeight: nestedCoordinateBaseHeight,
                 ),
@@ -1941,6 +1962,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   fill: media.settings?.fill,
                   strokeWidth: media.settings?.strokeWidth,
                   shadowBlur: media.settings?.shadowBlur,
+                  scale: widget.contentScale,
                 ),
               ),
             );
@@ -2511,6 +2533,10 @@ class TextWidget extends StatefulWidget {
   final VoidCallback onTextEnd;
   final String transitionType;
   final int? fontSize;
+
+  /// Multiplier applied to every pixel measurement below. See
+  /// VideoPlaylistWidget.contentScale for why it exists.
+  final double scale;
   final String? fontFamily;
   final String? fill;
   final int? strokeWidth;
@@ -2523,6 +2549,7 @@ class TextWidget extends StatefulWidget {
     required this.onTextEnd,
     required this.transitionType,
     this.fontSize,
+    this.scale = 1.0,
     this.fontFamily,
     this.fill,
     this.strokeWidth,
@@ -2546,18 +2573,25 @@ class _TextWidgetState extends State<TextWidget> {
     if (widget.html.isNotEmpty) {
       return _normalizeHtmlCss(widget.html);
     }
-    final fontSize = widget.fontSize ?? 16;
+    // Every one of these is a pixel measurement taken from the design
+    // canvas, so all of them scale together -- scaling only the font would
+    // leave a hairline outline looking heavy on small text.
+    final scale = widget.scale <= 0 ? 1.0 : widget.scale;
+    final fontSize = ((widget.fontSize ?? 16) * scale).clamp(6.0, 400.0);
     final fontFamily = widget.fontFamily ?? 'Arial, sans-serif';
     final color = widget.fill ?? 'black';
-    final strokeWidth = widget.strokeWidth ?? 0;
-    final shadowBlur = widget.shadowBlur ?? 0;
+    final strokeWidth = (widget.strokeWidth ?? 0) * scale;
+    final shadowBlur = (widget.shadowBlur ?? 0) * scale;
     final styles = <String>[
-      'font-size: ${fontSize}px',
+      'font-size: ${fontSize.toStringAsFixed(1)}px',
       'font-family: $fontFamily',
       'color: $color',
-      if (strokeWidth > 0) '-webkit-text-stroke-width: ${strokeWidth}px',
-      if (strokeWidth > 0) 'text-stroke-width: ${strokeWidth}px',
-      if (shadowBlur > 0) 'text-shadow: 0 0 ${shadowBlur}px rgba(0,0,0,0.5)',
+      if (strokeWidth > 0)
+        '-webkit-text-stroke-width: ${strokeWidth.toStringAsFixed(2)}px',
+      if (strokeWidth > 0)
+        'text-stroke-width: ${strokeWidth.toStringAsFixed(2)}px',
+      if (shadowBlur > 0)
+        'text-shadow: 0 0 ${shadowBlur.toStringAsFixed(1)}px rgba(0,0,0,0.5)',
       'width: 100%',
       'height: 100%',
       'display: flex',
@@ -2910,10 +2944,42 @@ class WBViewWidget extends StatefulWidget {
 
 class _WBViewWidgetState extends State<WBViewWidget> {
   InAppWebViewController? _webViewController;
-  double progress = 0;
+
+  /// Whether the page has painted and may be shown.
+  ///
+  /// Until it has, a plain opaque layer covers the webview. Two separate
+  /// things produced the white flash this removes:
+  ///
+  ///   * A webview paints its own white background from the moment it is
+  ///     created, before the page has loaded anything. On a signage screen
+  ///     that is a full-zone white rectangle for as long as the page takes.
+  ///     transparentBackground stops it painting that at all.
+  ///
+  ///   * The progress bar sat ABOVE the webview in a Column, so the webview
+  ///     was shorter while loading and then jumped to full height when the
+  ///     bar disappeared. Content reflowed at the moment it became visible,
+  ///     which reads as a second flash. The cover is now a Stack layer over
+  ///     a webview that never changes size.
+  bool _ready = false;
+  Timer? _revealTimeout;
+
+  @override
+  void initState() {
+    super.initState();
+    // A page that never finishes loading must not leave the cover up
+    // forever -- after this, show whatever the webview has. Partial content
+    // beats a blank zone for the rest of the campaign's life.
+    _revealTimeout = Timer(const Duration(seconds: 12), _reveal);
+  }
+
+  void _reveal() {
+    if (!mounted || _ready) return;
+    setState(() => _ready = true);
+  }
 
   @override
   void dispose() {
+    _revealTimeout?.cancel();
     _webViewController?.dispose();
     super.dispose();
   }
@@ -2929,40 +2995,51 @@ class _WBViewWidgetState extends State<WBViewWidget> {
     }
 
     return SizedBox.expand(
-      child: Column(
-        key: ValueKey(widget.media),
+      key: ValueKey(widget.media),
+      child: Stack(
+        fit: StackFit.expand,
         children: [
-          if (progress < 1.0) LinearProgressIndicator(value: progress),
-          Expanded(
-            child: InAppWebView(
-              key: ValueKey('wbview_${widget.media}'),
-              initialUrlRequest:
-                  URLRequest(url: WebUri.uri(Uri.parse(targetUrl))),
-              initialSettings: InAppWebViewSettings(
-                javaScriptEnabled: true,
-              ),
-              onWebViewCreated: (InAppWebViewController controller) {
-                _webViewController = controller;
-              },
-              onProgressChanged: (controller, newProgress) {
-                if (!mounted) return;
-                setState(() {
-                  progress = newProgress / 100.0;
-                });
-              },
-              onLoadStop: (controller, url) {
-                if (!mounted) return;
-                setState(() {
-                  progress = 1.0;
-                });
-              },
-              onReceivedError: (controller, request, error) {
-                print("[LOG] WBViewWidget load error: ${error.description}");
-              },
-              onReceivedHttpError: (controller, request, errorResponse) {
-                print(
-                    "[LOG] WBViewWidget HTTP error: ${errorResponse.statusCode}");
-              },
+          InAppWebView(
+            key: ValueKey('wbview_${widget.media}'),
+            initialUrlRequest:
+                URLRequest(url: WebUri.uri(Uri.parse(targetUrl))),
+            initialSettings: InAppWebViewSettings(
+              javaScriptEnabled: true,
+              // Stops the webview painting its own white page before the
+              // content arrives. Without this the cover below would just be
+              // hiding a white rectangle rather than removing one.
+              transparentBackground: true,
+            ),
+            onWebViewCreated: (InAppWebViewController controller) {
+              _webViewController = controller;
+            },
+            onLoadStop: (controller, url) {
+              // onLoadStop fires when loading finishes, which is slightly
+              // before the first paint. Revealing on it directly shows one
+              // unpainted frame -- the flash this is meant to remove, just
+              // shorter. A short settle is the difference between "loaded"
+              // and "looks loaded".
+              Future.delayed(const Duration(milliseconds: 180), _reveal);
+            },
+            onReceivedError: (controller, request, error) {
+              print("[LOG] WBViewWidget load error: ${error.description}");
+              _reveal();
+            },
+            onReceivedHttpError: (controller, request, errorResponse) {
+              print(
+                  "[LOG] WBViewWidget HTTP error: ${errorResponse.statusCode}");
+              _reveal();
+            },
+          ),
+          // Black rather than white, and no spinner: this is a signage
+          // screen, and a brief black zone reads as "nothing yet" while a
+          // white one reads as "broken". IgnorePointer so it never eats a
+          // touch meant for the page underneath.
+          IgnorePointer(
+            child: AnimatedOpacity(
+              opacity: _ready ? 0.0 : 1.0,
+              duration: const Duration(milliseconds: 250),
+              child: const ColoredBox(color: Colors.black),
             ),
           ),
         ],
