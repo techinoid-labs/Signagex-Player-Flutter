@@ -19,6 +19,7 @@ import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/utils/log_format.dart';
 
 import '../view_models/mqtt_view_model.dart';
+import '../utils/debug_log.dart' as debug;
 import '../utils/globle_variable.dart';
 import '../utils/transitions.dart';
 import '../views/no_content_view.dart';
@@ -731,8 +732,32 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           if (zoneBottom > maxY) maxY = zoneBottom.toDouble();
         }
 
-        final resW = linked?.resolution?.width?.toDouble();
-        final resH = linked?.resolution?.height?.toDouble();
+        // The composition's OWN canvas first.
+        //
+        // The fallback below -- the bounding box of the objects -- is not a
+        // canvas, it is whatever happens to be on it. Using it redefines
+        // the layout: the right-most object lands on the right edge, the
+        // lowest on the bottom, and every bit of intended whitespace
+        // disappears. That is the squashed, misplaced rendering reported
+        // against the CMS preview, and it happened whenever the linked
+        // composition campaign could not be found, which is often.
+        //
+        // media.settings carries the size the CMS actually sent
+        // (composition.width / composition.height), so it no longer
+        // depends on resolving that link at all.
+        final ownW = media.settings?.compositionWidth?.toDouble();
+        final ownH = media.settings?.compositionHeight?.toDouble();
+        final resW = (ownW != null && ownW > 0)
+            ? ownW
+            : linked?.resolution?.width?.toDouble();
+        final resH = (ownH != null && ownH > 0)
+            ? ownH
+            : linked?.resolution?.height?.toDouble();
+        debug.debugLog('Composition',
+            'layout base=${resW ?? "(bounding box)"}'
+            'x${resH ?? "(bounding box)"} '
+            'from=${ownW != null ? "composition" : (linked != null ? "linked campaign" : "FALLBACK - positions will be wrong")} '
+            'objects=${zones.length}');
         final nestedCoordinateBaseWidth = (resW != null && resW > 0)
             ? resW
             : (maxX > 0 ? maxX : constraints.maxWidth);
@@ -2593,12 +2618,37 @@ class _TextWidgetState extends State<TextWidget> {
         'text-stroke-width: ${strokeWidth.toStringAsFixed(2)}px',
       if (shadowBlur > 0)
         'text-shadow: 0 0 ${shadowBlur.toStringAsFixed(1)}px rgba(0,0,0,0.5)',
+      // Matches what the CMS editor actually does, which is a Konva Text
+      // node with wrap="word", align="center", an explicit width and NO
+      // height:
+      //
+      //   <Text x y width={item.width} wrap="word" align="center" .../>
+      //
+      // Three consequences, all of which the old CSS got wrong:
+      //
+      //   * It wraps at the object's width. The old rule made the <p> a
+      //     flex container, and a flex container does not wrap its text
+      //     the way a block does -- so a line that did not fit was clipped
+      //     instead of flowing onto the next. "this is mac composition"
+      //     arrived on screen as "this is".
+      //
+      //   * It is centred HORIZONTALLY only. The old rule also centred it
+      //     vertically; Konva's verticalAlign defaults to top and is not
+      //     set, so text grows downward from y.
+      //
+      //   * It has no fixed height. Forcing height:100% on the paragraph
+      //     made the box the size of the zone rather than the size of the
+      //     text, which is what put the visible line at the wrong place
+      //     inside it.
+      'display: block',
       'width: 100%',
-      'height: 100%',
-      'display: flex',
-      'align-items: center',
-      'justify-content: center',
       'text-align: center',
+      'overflow-wrap: break-word',
+      'word-wrap: break-word',
+      // Newlines typed in the editor are content, not incidental
+      // whitespace, so they survive.
+      'white-space: pre-wrap',
+      'margin: 0',
     ];
     return '<p style="${styles.join('; ')}">${widget.text.isNotEmpty ? widget.text : ''}</p>';
   }
@@ -2617,8 +2667,9 @@ class _TextWidgetState extends State<TextWidget> {
             width: w,
             height: h,
             child: Html(
+              // Top-aligned, matching Konva's default verticalAlign.
               data:
-                  '<div style="width:100%;height:100%;display:flex;align-items:center;justify-content:center;text-align:center;">$data</div>',
+                  '<div style="width:100%;display:block;text-align:center;">$data</div>',
               style: {
                 'div': Style(
                   margin: Margins.zero,

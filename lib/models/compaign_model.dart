@@ -662,6 +662,15 @@ class MediaItem {
         settings = Settings(
           compositionCampaignId: compId,
           duration: _asInt(propMap['duration']),
+          // The canvas these objects were laid out on. Read from the
+          // embedded composition first, then the object's own props, which
+          // is where it appears in some payload shapes.
+          compositionWidth: _asInt(compMap?['width']) ??
+              _asInt(propMap['composition_width']) ??
+              _asInt(propMap['canvasWidth']),
+          compositionHeight: _asInt(compMap?['height']) ??
+              _asInt(propMap['composition_height']) ??
+              _asInt(propMap['canvasHeight']),
         );
         var thumbUrl = _cleanMediaUrl(
           propMap['mediaUrl'] ?? propMap['media_url'] ?? obj['mediaUrl'],
@@ -1125,6 +1134,22 @@ class Settings {
   // Web app iframe (content with kind web-app-iframe)
   String? iframeSrc;
 
+  /// The design canvas a nested composition's objects were laid out on.
+  ///
+  /// Everything inside a composition is positioned in this space -- an
+  /// object at x=960 on a 1920-wide canvas is halfway across. Without it
+  /// the renderer had to guess the canvas from the bounding box of the
+  /// objects themselves, which silently redefines the layout: the
+  /// right-most object is pushed to the right edge, the lowest to the
+  /// bottom, and all the intended whitespace disappears. That is the
+  /// squashed, misplaced layout reported against the CMS preview.
+  ///
+  /// The CMS does send it -- composition.width / composition.height -- it
+  /// was simply only read when building a composition CAMPAIGN, never when
+  /// building a nested composition item.
+  int? compositionWidth;
+  int? compositionHeight;
+
   /// Links a composition media slot to a full composition campaign.
   String? compositionCampaignId;
 
@@ -1164,6 +1189,8 @@ class Settings {
     this.rotation,
     this.remoteSrc,
     this.iframeSrc,
+    this.compositionWidth,
+    this.compositionHeight,
     this.compositionCampaignId,
     this.adCampaignId,
     this.adCampaignItemId,
