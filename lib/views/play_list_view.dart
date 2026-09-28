@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 
+import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/utils/transitions.dart';
 import 'package:video_player/video_player.dart';
 
@@ -848,8 +849,33 @@ class WBViewWidget extends StatefulWidget {
 class _WBViewWidgetState extends State<WBViewWidget> {
   InAppWebViewController? _webViewController;
   double progress = 0;
+
+  /// The value of webAppRefreshTick this webview last loaded at.
+  ///
+  /// Same reason as the campaign view's copy: editing a web app's
+  /// configuration changes what the URL serves without changing the URL,
+  /// so nothing here could tell it needed to fetch again and the playlist
+  /// went on showing the old configuration until the player was restarted.
+  int _loadedAtTick = webAppRefreshTick.value;
+
+  void _onRefreshRequested() {
+    if (!mounted) return;
+    if (webAppRefreshTick.value == _loadedAtTick) return;
+    _loadedAtTick = webAppRefreshTick.value;
+    // Reloaded in place rather than rebuilt, so the zone never goes blank.
+    print('[LOG] Playlist WBViewWidget - refreshing for a new publish');
+    _webViewController?.reload();
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    webAppRefreshTick.addListener(_onRefreshRequested);
+  }
+
   @override
   void dispose() {
+    webAppRefreshTick.removeListener(_onRefreshRequested);
     _webViewController?.dispose();
     super.dispose();
   }

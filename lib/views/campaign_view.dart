@@ -19,6 +19,7 @@ import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/utils/log_format.dart';
 
 import '../view_models/mqtt_view_model.dart';
+import '../utils/globle_variable.dart';
 import '../utils/transitions.dart';
 import '../views/no_content_view.dart';
 import '../widgets/center_image_widget.dart';
@@ -2963,9 +2964,25 @@ class _WBViewWidgetState extends State<WBViewWidget> {
   bool _ready = false;
   Timer? _revealTimeout;
 
+  /// The value of webAppRefreshTick this webview last loaded at.
+  int _loadedAtTick = webAppRefreshTick.value;
+
+  void _onRefreshRequested() {
+    if (!mounted) return;
+    if (webAppRefreshTick.value == _loadedAtTick) return;
+    _loadedAtTick = webAppRefreshTick.value;
+    // reload(), not a rebuild. The page is replaced underneath a webview
+    // that stays alive, so the zone never goes blank -- and reload sends a
+    // revalidating request for the document, which is what makes an edited
+    // configuration actually arrive.
+    print('[LOG] WBViewWidget - refreshing for a new publish');
+    _webViewController?.reload();
+  }
+
   @override
   void initState() {
     super.initState();
+    webAppRefreshTick.addListener(_onRefreshRequested);
     // A page that never finishes loading must not leave the cover up
     // forever -- after this, show whatever the webview has. Partial content
     // beats a blank zone for the rest of the campaign's life.
@@ -2979,6 +2996,7 @@ class _WBViewWidgetState extends State<WBViewWidget> {
 
   @override
   void dispose() {
+    webAppRefreshTick.removeListener(_onRefreshRequested);
     _revealTimeout?.cancel();
     _webViewController?.dispose();
     super.dispose();
