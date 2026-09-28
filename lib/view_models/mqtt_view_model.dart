@@ -347,6 +347,9 @@ class MqttViewModel extends ChangeNotifier {
           // response -- adopt them before any player_tag restriction is
           // evaluated against them.
           _adoptPlayerTagsFromCampaigns(_campaignModel?.data?.playerCampaigns);
+          // A publish may carry the same web app URL with different
+          // content behind it -- see webAppRefreshTick.
+          webAppRefreshTick.value++;
           _selectCompositionCampaignIndexIfPresent();
 
           print(_mediaList);
@@ -386,6 +389,9 @@ class MqttViewModel extends ChangeNotifier {
           // response -- adopt them before any player_tag restriction is
           // evaluated against them.
           _adoptPlayerTagsFromCampaigns(_campaignModel?.data?.playerCampaigns);
+          // A publish may carry the same web app URL with different
+          // content behind it -- see webAppRefreshTick.
+          webAppRefreshTick.value++;
           _selectCompositionCampaignIndexIfPresent();
 
           for (var campaign in _campaignModel?.data?.playerCampaigns ?? []) {
@@ -2634,6 +2640,9 @@ EOF
       // evaluated against them.
       _adoptPlayerTagsFromCampaigns(
           _campaignModel?.data?.playerCampaigns);
+      // A publish may carry the same web app URL with different content
+      // behind it -- see webAppRefreshTick.
+      webAppRefreshTick.value++;
       final campaigns = _campaignModel?.data?.playerCampaigns;
       final count = campaigns?.length ?? 0;
       if (count > 0) {
