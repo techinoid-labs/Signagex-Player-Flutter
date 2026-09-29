@@ -1578,6 +1578,10 @@ EOF
       try {
         final localPath = await _ensureLocalMediaUrl(
           originalUrl,
+          // The payload already says what this is (image/jpeg, video/mp4,
+          // ...). Guessing from the URL when the answer is right here was
+          // the whole problem.
+          mediaType: media.settings?.kind,
           onProgress: _updateCurrentFileProgress,
         );
         // Update the appropriate URL field
@@ -1681,7 +1685,8 @@ EOF
   }
 
   Future<String> _ensureLocalMediaUrl(String url,
-      {void Function(int received, int total)? onProgress}) async {
+      {String? mediaType,
+      void Function(int received, int total)? onProgress}) async {
     final trimmed = url.trim();
 
     if (trimmed.startsWith('<svg') ||
@@ -1707,7 +1712,7 @@ EOF
       return fullUrl;
     }
 
-    final filename = _extractFilename(fullUrl);
+    final filename = _extractFilename(fullUrl, mediaType: mediaType);
     final directory = await _getDirectory();
     if (directory == null) {
       throw Exception('Unable to determine directory');
@@ -1774,6 +1779,20 @@ EOF
     }
   }
 
+  /// Local filename for a downloaded asset.
+  ///
+  /// The extension matters more than it looks. Nothing downstream re-reads
+  /// the payload to decide how to play a file -- campaign_view calls
+  /// isVideoFile(path), which is a plain endsWith('.mp4'/'.mov'/...) on
+  /// this name. Get the extension wrong and a video is handed to the image
+  /// widget, which is exactly how a video inside a composition ended up on
+  /// screen as a still.
+  ///
+  /// Two faults were in here. It appended '.jpg' to any URL containing the
+  /// substring "images" -- which most media buckets have in their path --
+  /// even when the name already ended in '.mp4', producing "clip.mp4.jpg".
+  /// And with no mediaType passed, which is how the campaign download path
+  /// calls it, a URL with no extension stayed bare.
   String _extractFilename(String url, {String? mediaType}) {
     String decodedUrl;
     try {
@@ -1807,8 +1826,14 @@ EOF
         default:
           break;
       }
-    } else {
-      if (url.contains('images')) {
+    } else if (!filename.contains('.')) {
+      // A name with no extension at all. Guess from the URL rather than
+      // leaving it bare, because the extension is load-bearing: the render
+      // path decides video-or-image with isVideoFile(), which is a plain
+      // endsWith() on the local path.
+      if (url.contains('/video') || url.contains('videos')) {
+        filename += '.mp4';
+      } else if (url.contains('images')) {
         filename += '.jpg';
       }
     }

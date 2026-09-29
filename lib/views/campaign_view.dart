@@ -372,8 +372,35 @@ class _CampaignViewState extends State<CampaignView> {
     final campaignHeight =
         campaign.resolution?.height?.toDouble() ?? deviceHeight;
 
-    final scaleX = deviceWidth / campaignWidth;
-    final scaleY = deviceHeight / campaignHeight;
+    // ONE scale for both axes, and the result centred.
+    //
+    // This used to be two independent ratios, which silently stretches any
+    // composition whose canvas shape differs from the screen. Measured on a
+    // real device:
+    //
+    //   canvas=625x625  device=1680x1050  scale=2.688 x 1.680
+    //
+    // A square design drawn 1.6 times wider than tall. Every position was
+    // wrong and every image was visibly distorted -- a photo that is 4:3 in
+    // the CMS arrived on screen stretched to nearly 2:1, which is what
+    // "the composition does not match the preview" was.
+    //
+    // Fitting instead of filling keeps the design's proportions, which is
+    // what the CMS preview shows and what the designer laid out. The
+    // leftover space is letterboxed rather than being handed to the
+    // content. Where the canvas and the screen agree -- the normal case for
+    // a campaign authored at the screen's resolution -- min() equals both
+    // ratios and nothing changes at all.
+    final fitScale = math.min(
+      deviceWidth / campaignWidth,
+      deviceHeight / campaignHeight,
+    );
+    final scaleX = fitScale;
+    final scaleY = fitScale;
+
+    // Centres the letterboxed design rather than pinning it to the corner.
+    final offsetX = (deviceWidth - campaignWidth * fitScale) / 2;
+    final offsetY = (deviceHeight - campaignHeight * fitScale) / 2;
 
     print("Campaign resolution: ${campaignWidth}x${campaignHeight}");
     print("Device resolution: ${deviceWidth}x${deviceHeight}");
@@ -406,18 +433,32 @@ class _CampaignViewState extends State<CampaignView> {
       'Composition',
       'top-level layout: canvas=${campaignWidth}x$campaignHeight '
       'device=${deviceWidth.toStringAsFixed(0)}x${deviceHeight.toStringAsFixed(0)} '
-      'scale=${scaleX.toStringAsFixed(3)}x${scaleY.toStringAsFixed(3)} '
+      'scale=${fitScale.toStringAsFixed(3)} (fit) '
+      'letterbox=${offsetX.toStringAsFixed(0)},${offsetY.toStringAsFixed(0)} '
       'composition=${campaign.isCompositionLayout} '
       'zones=${campaign.zones?.length ?? 0}',
     );
     for (final z in campaign.zones ?? const <CampaignZone>[]) {
       final parts = <String>[];
       for (final m in z.mediaItems ?? const <MediaItem>[]) {
+        // kind and the tail of the URL, because between them they decide
+        // whether this plays as a video. campaign_view asks
+        // kind.contains('video') first and then isVideoFile(url), which is
+        // a plain endsWith on the LOCAL path -- so when a video renders as
+        // a still, one of these two is what lost the information.
+        final url = m.mediaUrl ?? '';
+        final tail =
+            url.length > 44 ? '...' + url.substring(url.length - 44) : url;
+        final buf = StringBuffer(m.mediaType ?? 'null');
         final size = m.settings?.fontSize;
-        parts.add('${m.mediaType}${size != null ? "@${size}px" : ""}');
+        if (size != null) buf.write('@' + size.toString() + 'px');
+        final kind = m.settings?.kind ?? '';
+        buf.write(' kind=' + (kind.isEmpty ? '(none)' : kind));
+        if (url.isNotEmpty) buf.write(' url=' + tail);
+        parts.add(buf.toString());
       }
-      final sx = ((z.x ?? 0) * scaleX).toStringAsFixed(0);
-      final sy = ((z.y ?? 0) * scaleY).toStringAsFixed(0);
+      final sx = ((z.x ?? 0) * scaleX + offsetX).toStringAsFixed(0);
+      final sy = ((z.y ?? 0) * scaleY + offsetY).toStringAsFixed(0);
       final sw = ((z.width ?? 0) * scaleX).toStringAsFixed(0);
       final sh = ((z.height ?? 0) * scaleY).toStringAsFixed(0);
       debug.debugLog(
@@ -440,8 +481,8 @@ class _CampaignViewState extends State<CampaignView> {
         },
         child: Stack(
           children: (campaign.zones ?? []).map((zone) {
-            final scaledX = (zone.x ?? 0) * scaleX;
-            final scaledY = (zone.y ?? 0) * scaleY;
+            final scaledX = (zone.x ?? 0) * scaleX + offsetX;
+            final scaledY = (zone.y ?? 0) * scaleY + offsetY;
             final scaledWidth = (zone.width ?? 0) * scaleX;
             final scaledHeight = (zone.height ?? 0) * scaleY;
 
@@ -799,8 +840,20 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
             ? resH
             : (maxY > 0 ? maxY : constraints.maxHeight);
 
-        final scaleX = constraints.maxWidth / nestedCoordinateBaseWidth;
-        final scaleY = constraints.maxHeight / nestedCoordinateBaseHeight;
+        // Same reasoning as the top level: one scale, centred. A nested
+        // composition is even more likely to be a different shape from the
+        // zone it lands in, since the zone is whatever the parent layout
+        // happened to leave for it.
+        final fitScale = math.min(
+          constraints.maxWidth / nestedCoordinateBaseWidth,
+          constraints.maxHeight / nestedCoordinateBaseHeight,
+        );
+        final scaleX = fitScale;
+        final scaleY = fitScale;
+        final offsetX =
+            (constraints.maxWidth - nestedCoordinateBaseWidth * fitScale) / 2;
+        final offsetY =
+            (constraints.maxHeight - nestedCoordinateBaseHeight * fitScale) / 2;
 
         print("═══════════════════════════════════════════════════════════");
         print("Nested zones in zone ${widget.zoneId}:");
@@ -835,8 +888,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           child: Stack(
             fit: StackFit.expand,
             children: zones.map((z) {
-              final left = (z.x ?? 0) * scaleX;
-              final top = (z.y ?? 0) * scaleY;
+              final left = (z.x ?? 0) * scaleX + offsetX;
+              final top = (z.y ?? 0) * scaleY + offsetY;
               final width = (z.width ?? 0) * scaleX;
               final height = (z.height ?? 0) * scaleY;
               final zoneMedia = (z.mediaItems ?? const <MediaItem>[])
@@ -2010,7 +2063,23 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
-              child: SizedBox.expand(
+              // Text is allowed to exceed the height of its box.
+              //
+              // The editor's Konva Text node is given a width and NO
+              // height, so it wraps at the width and grows downward as far
+              // as it needs -- which is why the CMS preview shows four
+              // lines from a box whose stored height fits one. Constraining
+              // it to that stored height here is what cut "this is mac
+              // composition" down to "this is".
+              //
+              // Measured: font 114px in a box 114 design units tall. One
+              // line fits, and the CMS draws four.
+              //
+              // topCenter because that is Konva's default origin -- the
+              // text grows down from y, it does not centre on the box.
+              child: OverflowBox(
+                alignment: Alignment.topCenter,
+                maxHeight: double.infinity,
                 child: TextWidget(
                   key: ValueKey(cacheKey),
                   html: media.settings?.html ?? '',
@@ -2690,14 +2759,20 @@ class _TextWidgetState extends State<TextWidget> {
   @override
   Widget build(BuildContext context) {
     final data = _getBodyInner();
-    return SizedBox.expand(
-      child: LayoutBuilder(
-        builder: (context, constraints) {
-          final w =
-              constraints.maxWidth.isFinite ? constraints.maxWidth : 400.0;
-          final h =
-              constraints.maxHeight.isFinite ? constraints.maxHeight : 100.0;
-          return SizedBox(
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final w =
+            constraints.maxWidth.isFinite ? constraints.maxWidth : 400.0;
+        // No height when the parent does not impose one.
+        //
+        // The caller now wraps this in an OverflowBox so the text can grow
+        // past its box the way the editor's Konva node does, which means
+        // maxHeight arrives as infinity. Falling back to a fixed 100px
+        // there would simply reintroduce the clipping from a different
+        // direction -- so when the height is unbounded the box takes the
+        // height of its text instead.
+        final h = constraints.maxHeight.isFinite ? constraints.maxHeight : null;
+        return SizedBox(
             width: w,
             height: h,
             child: Html(
@@ -2715,9 +2790,8 @@ class _TextWidgetState extends State<TextWidget> {
                 ),
               },
             ),
-          );
-        },
-      ),
+        );
+      },
     );
   }
 }
