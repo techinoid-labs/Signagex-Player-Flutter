@@ -393,6 +393,40 @@ class _CampaignViewState extends State<CampaignView> {
     );
     // #endregion
 
+    // The equivalent of the nested path's layout line, for the top level.
+    //
+    // A composition published directly to a player renders HERE, not in
+    // _buildNestedZones, so the diagnostic added for nesting never fired
+    // for it and its absence looked like a stale build. Both paths now
+    // report the same things: the canvas the objects were designed on, the
+    // surface they are drawn onto, and every object's rectangle in both
+    // spaces. That is enough to tell a layout problem from a content
+    // problem without needing a screenshot.
+    debug.debugLog(
+      'Composition',
+      'top-level layout: canvas=${campaignWidth}x$campaignHeight '
+      'device=${deviceWidth.toStringAsFixed(0)}x${deviceHeight.toStringAsFixed(0)} '
+      'scale=${scaleX.toStringAsFixed(3)}x${scaleY.toStringAsFixed(3)} '
+      'composition=${campaign.isCompositionLayout} '
+      'zones=${campaign.zones?.length ?? 0}',
+    );
+    for (final z in campaign.zones ?? const <CampaignZone>[]) {
+      final parts = <String>[];
+      for (final m in z.mediaItems ?? const <MediaItem>[]) {
+        final size = m.settings?.fontSize;
+        parts.add('${m.mediaType}${size != null ? "@${size}px" : ""}');
+      }
+      final sx = ((z.x ?? 0) * scaleX).toStringAsFixed(0);
+      final sy = ((z.y ?? 0) * scaleY).toStringAsFixed(0);
+      final sw = ((z.width ?? 0) * scaleX).toStringAsFixed(0);
+      final sh = ((z.height ?? 0) * scaleY).toStringAsFixed(0);
+      debug.debugLog(
+        'Composition',
+        '  zone ${z.id}: design=(${z.x},${z.y} ${z.width}x${z.height}) '
+        'screen=($sx,$sy ${sw}x$sh) [${parts.join(", ")}]',
+      );
+    }
+
     return Scaffold(
       backgroundColor: Colors.white,
       body: GestureDetector(
