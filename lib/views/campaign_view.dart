@@ -2770,10 +2770,31 @@ class _TextWidgetState extends State<TextWidget> {
   /// cut ("hi this is mac" -> "hi this is"). settings.text holds the same
   /// words; drawn at the scaled font size and only ever scaled down, it
   /// keeps its design size when it fits and never leaves its box.
+  /// The CMS sends a CSS font list -- "'Open Sans', sans-serif". Flutter
+  /// wants bare family names: quotes stripped, and CSS generic families
+  /// dropped since they name no real font.
+  static const _genericFamilies = {
+    'serif',
+    'sans-serif',
+    'monospace',
+    'cursive',
+    'fantasy',
+    'system-ui',
+  };
+
+  List<String> _fontFamilies() {
+    return (widget.fontFamily ?? '')
+        .split(',')
+        .map((f) => f.trim().replaceAll(RegExp(r'''^["']|["']$'''), '').trim())
+        .where((f) => f.isNotEmpty && !_genericFamilies.contains(f.toLowerCase()))
+        .toList();
+  }
+
   Widget _buildFittedText() {
     final scale = widget.scale <= 0 ? 1.0 : widget.scale;
     final fontSize = ((widget.fontSize ?? 24) * scale).clamp(6.0, 400.0);
     final shadowBlur = (widget.shadowBlur ?? 0) * scale;
+    final families = _fontFamilies();
     return SizedBox.expand(
       child: Center(
         child: FittedBox(
@@ -2784,7 +2805,9 @@ class _TextWidgetState extends State<TextWidget> {
             style: TextStyle(
               color: _parseFill(widget.fill),
               fontSize: fontSize.toDouble(),
-              fontFamily: widget.fontFamily?.split(',').first.trim(),
+              fontFamily: families.isEmpty ? null : families.first,
+              fontFamilyFallback:
+                  families.length > 1 ? families.sublist(1) : null,
               shadows: shadowBlur > 0
                   ? [Shadow(color: Colors.black54, blurRadius: shadowBlur)]
                   : null,
