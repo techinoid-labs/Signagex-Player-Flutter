@@ -25,6 +25,7 @@ import '../utils/transitions.dart';
 import '../views/no_content_view.dart';
 import '../widgets/center_image_widget.dart';
 import '../widgets/text_widget.dart';
+import '../widgets/composition_animation.dart';
 
 String? _normalizeLocalMediaPath(String raw) {
   var s = raw.trim();
@@ -514,7 +515,9 @@ class _CampaignViewState extends State<CampaignView> {
               top: scaledY,
               width: scaledWidth,
               height: scaledHeight,
-              child: VideoPlaylistWidget(
+              child: CompositionAnimation(
+                spec: _zoneAnimation(zone),
+                child: VideoPlaylistWidget(
                 zoneId: (zone.id ?? 0).toString(),
                 mediaItems: zone.mediaItems ?? [],
                 campaignId: campaign.campaignId,
@@ -528,12 +531,21 @@ class _CampaignViewState extends State<CampaignView> {
                 coordinateBaseWidth: campaignWidth,
                 coordinateBaseHeight: campaignHeight,
               ),
+              ),
             );
           }).toList(),
         ),
       ),
     );
   }
+}
+
+/// The CMS animation on a composition object. Each object is one zone with
+/// one media item, so the zone's first item carries it.
+Map<String, dynamic>? _zoneAnimation(CampaignZone zone) {
+  final items = zone.mediaItems;
+  if (items == null || items.isEmpty) return null;
+  return items.first.settings?.animation;
 }
 
 class VideoPlaylistWidget extends StatefulWidget {
@@ -937,7 +949,9 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                 top: top,
                 width: width,
                 height: height,
-                child: VideoPlaylistWidget(
+                child: CompositionAnimation(
+                  spec: _zoneAnimation(z),
+                  child: VideoPlaylistWidget(
                   zoneId: '${widget.zoneId}.${z.id ?? 0}',
                   mediaItems: zoneMedia,
                   campaignId: widget.campaignId,
@@ -949,6 +963,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                       widget.contentScale * math.min(scaleX, scaleY),
                   coordinateBaseWidth: nestedCoordinateBaseWidth,
                   coordinateBaseHeight: nestedCoordinateBaseHeight,
+                ),
                 ),
               );
             }).toList(),
@@ -2738,17 +2753,19 @@ class _TextWidgetState extends State<TextWidget> {
     return '<p style="${styles.join('; ')}">${widget.text.isNotEmpty ? widget.text : ''}</p>';
   }
 
+  // CSS colour keywords -- what the editor's canvas means by them, not
+  // Material's palette (Colors.red is #F44336, CSS red is #FF0000).
   static const _namedColors = <String, Color>{
-    'black': Colors.black,
-    'white': Colors.white,
-    'red': Colors.red,
-    'green': Colors.green,
-    'blue': Colors.blue,
-    'yellow': Colors.yellow,
-    'orange': Colors.orange,
-    'purple': Colors.purple,
-    'grey': Colors.grey,
-    'gray': Colors.grey,
+    'black': Color(0xFF000000),
+    'white': Color(0xFFFFFFFF),
+    'red': Color(0xFFFF0000),
+    'green': Color(0xFF008000),
+    'blue': Color(0xFF0000FF),
+    'yellow': Color(0xFFFFFF00),
+    'orange': Color(0xFFFFA500),
+    'purple': Color(0xFF800080),
+    'grey': Color(0xFF808080),
+    'gray': Color(0xFF808080),
   };
 
   Color _parseFill(String? value) {
@@ -2762,14 +2779,6 @@ class _TextWidgetState extends State<TextWidget> {
     return Colors.black;
   }
 
-  /// Plain text, shrunk to fit its zone -- what the Windows player does.
-  ///
-  /// settings.html carries the editor's sizes in design pixels
-  /// (font-size:249px; width:1162px) and was rendered unscaled, so on a
-  /// screen smaller than the canvas the text overflowed its zone and was
-  /// cut ("hi this is mac" -> "hi this is"). settings.text holds the same
-  /// words; drawn at the scaled font size and only ever scaled down, it
-  /// keeps its design size when it fits and never leaves its box.
   /// The CMS sends a CSS font list -- "'Open Sans', sans-serif". Flutter
   /// wants bare family names: quotes stripped, and CSS generic families
   /// dropped since they name no real font.
@@ -2790,37 +2799,74 @@ class _TextWidgetState extends State<TextWidget> {
         .toList();
   }
 
-  Widget _buildFittedText() {
+  /// The text exactly as the CMS editor draws it.
+  ///
+  /// The editor is a Konva Text node (Canvas/DraggableText.tsx):
+  ///
+  ///   <Text x y width={item.width} fontSize={item.fontSize} wrap="word"
+  ///         align="center" stroke strokeWidth shadowBlur .../>
+  ///
+  /// so: the stored font size (scaled only by the same factor as the
+  /// canvas), wrapped at the object's width, centred horizontally, growing
+  /// down from the top, Konva's line height of 1, no height of its own --
+  /// a line that does not fit flows onto the next one below the box rather
+  /// than being shrunk or cut.
+  ///
+  /// settings.html is not used: it carries the editor's sizes in design
+  /// pixels (font-size:249px; width:1162px) and was drawn unscaled.
+  Widget _buildCmsText() {
     final scale = widget.scale <= 0 ? 1.0 : widget.scale;
-    final fontSize = ((widget.fontSize ?? 24) * scale).clamp(6.0, 400.0);
+    final fontSize = math.max(1.0, (widget.fontSize ?? 16) * scale);
+    final strokeWidth = (widget.strokeWidth ?? 0) * scale;
     final shadowBlur = (widget.shadowBlur ?? 0) * scale;
     final families = _fontFamilies();
-    return SizedBox.expand(
-      child: Center(
-        child: FittedBox(
-          fit: BoxFit.scaleDown,
-          child: Text(
-            widget.text.trimRight(),
-            textAlign: TextAlign.center,
-            style: TextStyle(
-              color: _parseFill(widget.fill),
-              fontSize: fontSize.toDouble(),
-              fontFamily: families.isEmpty ? null : families.first,
-              fontFamilyFallback:
-                  families.length > 1 ? families.sublist(1) : null,
-              shadows: shadowBlur > 0
-                  ? [Shadow(color: Colors.black54, blurRadius: shadowBlur)]
-                  : null,
-            ),
-          ),
-        ),
-      ),
+    TextStyle style({Paint? foreground, Color? color, List<Shadow>? shadows}) =>
+        TextStyle(
+          color: color,
+          foreground: foreground,
+          fontSize: fontSize,
+          height: 1.0,
+          fontFamily: families.isEmpty ? null : families.first,
+          fontFamilyFallback:
+              families.length > 1 ? families.sublist(1) : null,
+          shadows: shadows,
+        );
+    Widget text(TextStyle s) => Text(
+          widget.text,
+          textAlign: TextAlign.center,
+          softWrap: true,
+          style: s,
+        );
+    final fill = text(style(
+      color: _parseFill(widget.fill),
+      // Konva: shadowColor black, opacity 1, offset 0.
+      shadows: shadowBlur > 0
+          ? [Shadow(color: Colors.black, blurRadius: shadowBlur)]
+          : null,
+    ));
+    return OverflowBox(
+      alignment: Alignment.topCenter,
+      minHeight: 0,
+      maxHeight: double.infinity,
+      child: strokeWidth > 0
+          // Konva draws the fill, then the stroke over it (stroke defaults
+          // to black in the editor).
+          ? Stack(children: [
+              fill,
+              text(style(
+                foreground: Paint()
+                  ..style = PaintingStyle.stroke
+                  ..strokeWidth = strokeWidth
+                  ..color = Colors.black,
+              )),
+            ])
+          : fill,
     );
   }
 
   @override
   Widget build(BuildContext context) {
-    if (widget.text.trim().isNotEmpty) return _buildFittedText();
+    if (widget.text.trim().isNotEmpty) return _buildCmsText();
     final data = _getBodyInner();
     return LayoutBuilder(
       builder: (context, constraints) {
