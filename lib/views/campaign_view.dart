@@ -2063,36 +2063,18 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
-              // Text is allowed to exceed the height of its box.
-              //
-              // The editor's Konva Text node is given a width and NO
-              // height, so it wraps at the width and grows downward as far
-              // as it needs -- which is why the CMS preview shows four
-              // lines from a box whose stored height fits one. Constraining
-              // it to that stored height here is what cut "this is mac
-              // composition" down to "this is".
-              //
-              // Measured: font 114px in a box 114 design units tall. One
-              // line fits, and the CMS draws four.
-              //
-              // topCenter because that is Konva's default origin -- the
-              // text grows down from y, it does not centre on the box.
-              child: OverflowBox(
-                alignment: Alignment.topCenter,
-                maxHeight: double.infinity,
-                child: TextWidget(
-                  key: ValueKey(cacheKey),
-                  html: media.settings?.html ?? '',
-                  text: media.settings?.text ?? '',
-                  onTextEnd: _onMediaEnd,
-                  transitionType: media.settings?.transition ?? 'none',
-                  fontSize: media.settings?.fontSize,
-                  fontFamily: media.settings?.fontFamily,
-                  fill: media.settings?.fill,
-                  strokeWidth: media.settings?.strokeWidth,
-                  shadowBlur: media.settings?.shadowBlur,
-                  scale: widget.contentScale,
-                ),
+              child: TextWidget(
+                key: ValueKey(cacheKey),
+                html: media.settings?.html ?? '',
+                text: media.settings?.text ?? '',
+                onTextEnd: _onMediaEnd,
+                transitionType: media.settings?.transition ?? 'none',
+                fontSize: media.settings?.fontSize,
+                fontFamily: media.settings?.fontFamily,
+                fill: media.settings?.fill,
+                strokeWidth: media.settings?.strokeWidth,
+                shadowBlur: media.settings?.shadowBlur,
+                scale: widget.contentScale,
               ),
             );
       }
@@ -2756,8 +2738,66 @@ class _TextWidgetState extends State<TextWidget> {
     return '<p style="${styles.join('; ')}">${widget.text.isNotEmpty ? widget.text : ''}</p>';
   }
 
+  static const _namedColors = <String, Color>{
+    'black': Colors.black,
+    'white': Colors.white,
+    'red': Colors.red,
+    'green': Colors.green,
+    'blue': Colors.blue,
+    'yellow': Colors.yellow,
+    'orange': Colors.orange,
+    'purple': Colors.purple,
+    'grey': Colors.grey,
+    'gray': Colors.grey,
+  };
+
+  Color _parseFill(String? value) {
+    final v = value?.trim().toLowerCase() ?? '';
+    final named = _namedColors[v];
+    if (named != null) return named;
+    final hex = v.replaceFirst('#', '');
+    if (RegExp(r'^[0-9a-f]{6}$').hasMatch(hex)) {
+      return Color(int.parse('FF$hex', radix: 16));
+    }
+    return Colors.black;
+  }
+
+  /// Plain text, shrunk to fit its zone -- what the Windows player does.
+  ///
+  /// settings.html carries the editor's sizes in design pixels
+  /// (font-size:249px; width:1162px) and was rendered unscaled, so on a
+  /// screen smaller than the canvas the text overflowed its zone and was
+  /// cut ("hi this is mac" -> "hi this is"). settings.text holds the same
+  /// words; drawn at the scaled font size and only ever scaled down, it
+  /// keeps its design size when it fits and never leaves its box.
+  Widget _buildFittedText() {
+    final scale = widget.scale <= 0 ? 1.0 : widget.scale;
+    final fontSize = ((widget.fontSize ?? 24) * scale).clamp(6.0, 400.0);
+    final shadowBlur = (widget.shadowBlur ?? 0) * scale;
+    return SizedBox.expand(
+      child: Center(
+        child: FittedBox(
+          fit: BoxFit.scaleDown,
+          child: Text(
+            widget.text.trimRight(),
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: _parseFill(widget.fill),
+              fontSize: fontSize.toDouble(),
+              fontFamily: widget.fontFamily?.split(',').first.trim(),
+              shadows: shadowBlur > 0
+                  ? [Shadow(color: Colors.black54, blurRadius: shadowBlur)]
+                  : null,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
+    if (widget.text.trim().isNotEmpty) return _buildFittedText();
     final data = _getBodyInner();
     return LayoutBuilder(
       builder: (context, constraints) {
