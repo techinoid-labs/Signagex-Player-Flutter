@@ -32,6 +32,7 @@ import '../views/downloading_screen.dart';
 import '../views/no_content_view.dart';
 import '../widgets/center_image_widget.dart';
 import '../widgets/text_widget.dart';
+import '../widgets/composition_animation.dart';
 
 bool _isNetworkMediaUrl(String url) =>
     url.startsWith('http://') || url.startsWith('https://');
@@ -858,19 +859,30 @@ class _CampaignViewState extends State<CampaignView> {
               top: scaledY,
               width: scaledWidth,
               height: scaledHeight,
-              child: (zone.rotation == null || zone.rotation == 0)
-                  ? zoneWidget
-                  : Transform.rotate(
-                      angle: zone.rotation! * pi / 180,
-                      alignment: Alignment.topLeft,
-                      child: zoneWidget,
-                    ),
+              child: CompositionAnimation(
+                spec: _zoneAnimation(zone),
+                child: (zone.rotation == null || zone.rotation == 0)
+                    ? zoneWidget
+                    : Transform.rotate(
+                        angle: zone.rotation! * pi / 180,
+                        alignment: Alignment.topLeft,
+                        child: zoneWidget,
+                      ),
+              ),
             );
           }).toList(),
         ),
       ),
     );
   }
+}
+
+/// The CMS animation on a composition object. Each object is one zone with
+/// one media item, so the zone's first item carries it.
+Map<String, dynamic>? _zoneAnimation(CampaignZone zone) {
+  final items = zone.mediaItems;
+  if (items == null || items.isEmpty) return null;
+  return items.first.settings?.animation;
 }
 
 class VideoPlaylistWidget extends StatefulWidget {
@@ -1202,13 +1214,16 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                 // every rotated composition element (shape, text, image,
                 // anything) rendered completely unrotated on the player
                 // regardless of what the CMS editor showed.
-                child: (z.rotation == null || z.rotation == 0)
-                    ? zoneWidget
-                    : Transform.rotate(
-                        angle: z.rotation! * pi / 180,
-                        alignment: Alignment.topLeft,
-                        child: zoneWidget,
-                      ),
+                child: CompositionAnimation(
+                  spec: _zoneAnimation(z),
+                  child: (z.rotation == null || z.rotation == 0)
+                      ? zoneWidget
+                      : Transform.rotate(
+                          angle: z.rotation! * pi / 180,
+                          alignment: Alignment.topLeft,
+                          child: zoneWidget,
+                        ),
+                ),
               );
             }).toList(),
           ),
@@ -2383,13 +2398,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         // scale them with the zone box or they overflow/clip on any device
         // resolution that differs from the composition's design canvas.
         final scaledFontSize = media.settings?.fontSize != null
-            ? (media.settings!.fontSize! * widget.fontScale).round()
+            ? media.settings!.fontSize! * widget.fontScale
             : null;
         final scaledStrokeWidth = media.settings?.strokeWidth != null
-            ? (media.settings!.strokeWidth! * widget.fontScale).round()
+            ? media.settings!.strokeWidth! * widget.fontScale
             : null;
         final scaledShadowBlur = media.settings?.shadowBlur != null
-            ? (media.settings!.shadowBlur! * widget.fontScale).round()
+            ? media.settings!.shadowBlur! * widget.fontScale
             : null;
         _debugLog(
             'zone=${widget.zoneId} text id=${media.id ?? ""} '

@@ -1,3 +1,5 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_widget_from_html_core/flutter_widget_from_html_core.dart';
 
@@ -6,11 +8,14 @@ class TextWidget extends StatelessWidget {
   final String text;
   final VoidCallback onTextEnd;
   final String transitionType;
-  final int? fontSize;
+
+  /// Screen pixels: the CMS value already scaled with the canvas. Not
+  /// rounded -- the editor's size is the size.
+  final double? fontSize;
   final String? fontFamily;
   final String? fill;
-  final int? strokeWidth;
-  final int? shadowBlur;
+  final double? strokeWidth;
+  final double? shadowBlur;
 
   const TextWidget({
     super.key,
@@ -46,48 +51,115 @@ class TextWidget extends StatelessWidget {
         .toList();
   }
 
+  // CSS colour keywords -- what the editor's canvas means by them. The
+  // editor's default fill is "black", which a hex-only parser turned into
+  // the white fallback.
+  static const _namedColors = <String, Color>{
+    'black': Color(0xFF000000),
+    'white': Color(0xFFFFFFFF),
+    'red': Color(0xFFFF0000),
+    'green': Color(0xFF008000),
+    'blue': Color(0xFF0000FF),
+    'yellow': Color(0xFFFFFF00),
+    'orange': Color(0xFFFFA500),
+    'purple': Color(0xFF800080),
+    'grey': Color(0xFF808080),
+    'gray': Color(0xFF808080),
+  };
+
+  Color _parseColor(String? value) {
+    final v = value?.trim().toLowerCase() ?? '';
+    final named = _namedColors[v];
+    if (named != null) return named;
+    final hex = v.replaceFirst('#', '');
+    if (RegExp(r'^[0-9a-f]{6}$').hasMatch(hex)) {
+      return Color(int.parse('FF$hex', radix: 16));
+    }
+    return const Color(0xFF000000);
+  }
+
   @override
   Widget build(BuildContext context) {
-    final color = _parseColor(fill) ?? Colors.white;
-    final families = _fontFamilies();
-    final style = TextStyle(
-      color: color,
-      fontSize: (fontSize ?? 24).toDouble(),
-      fontFamily: families.isEmpty ? null : families.first,
-      fontFamilyFallback: families.length > 1 ? families.sublist(1) : null,
-      shadows: shadowBlur != null && shadowBlur! > 0
-          ? [Shadow(color: Colors.black54, blurRadius: shadowBlur!.toDouble())]
-          : null,
-    );
-    final content = html.trim().isNotEmpty ? html : text;
+    if (text.trim().isNotEmpty) return _buildCmsText();
 
+    // No plain text to draw -- fall back to the editor's HTML.
+    final families = _fontFamilies();
     return SizedBox.expand(
       child: Center(
         child: FittedBox(
-          // Never let a computed fontSize (however it was scaled upstream)
-          // overflow/clip its zone box -- shrink to fit, never enlarge.
           fit: BoxFit.scaleDown,
-          child: html.trim().isNotEmpty
-              ? HtmlWidget(
-                  content,
-                  textStyle: style,
-                )
-              : Text(
-                  content,
-                  textAlign: TextAlign.center,
-                  style: style,
-                ),
+          child: HtmlWidget(
+            html,
+            textStyle: TextStyle(
+              color: _parseColor(fill),
+              fontSize: fontSize ?? 16,
+              fontFamily: families.isEmpty ? null : families.first,
+              fontFamilyFallback:
+                  families.length > 1 ? families.sublist(1) : null,
+            ),
+          ),
         ),
       ),
     );
   }
 
-  Color? _parseColor(String? value) {
-    final hex = value?.trim().replaceFirst('#', '');
-    if (hex == null || !RegExp(r'^[0-9a-fA-F]{6}$').hasMatch(hex)) {
-      return null;
-    }
-    return Color(int.parse('FF$hex', radix: 16));
+  /// The text exactly as the CMS editor draws it.
+  ///
+  /// The editor is a Konva Text node (Canvas/DraggableText.tsx):
+  ///
+  ///   <Text x y width={item.width} fontSize={item.fontSize} wrap="word"
+  ///         align="center" stroke strokeWidth shadowBlur .../>
+  ///
+  /// so: the stored font size (scaled only with the canvas), wrapped at the
+  /// object's width, centred horizontally, growing down from the top,
+  /// Konva's line height of 1, no height of its own -- a line that does not
+  /// fit flows onto the next one below the box. The old FittedBox shrank
+  /// it instead, so text came out smaller than designed.
+  Widget _buildCmsText() {
+    final size = math.max(1.0, fontSize ?? 16);
+    final stroke = strokeWidth ?? 0;
+    final blur = shadowBlur ?? 0;
+    final families = _fontFamilies();
+    TextStyle style({Paint? foreground, Color? color, List<Shadow>? shadows}) =>
+        TextStyle(
+          color: color,
+          foreground: foreground,
+          fontSize: size,
+          height: 1.0,
+          fontFamily: families.isEmpty ? null : families.first,
+          fontFamilyFallback:
+              families.length > 1 ? families.sublist(1) : null,
+          shadows: shadows,
+        );
+    Widget line(TextStyle s) => Text(
+          text,
+          textAlign: TextAlign.center,
+          softWrap: true,
+          style: s,
+        );
+    final filled = line(style(
+      color: _parseColor(fill),
+      // Konva: shadowColor black, opacity 1, offset 0.
+      shadows: blur > 0 ? [Shadow(color: Colors.black, blurRadius: blur)] : null,
+    ));
+    return OverflowBox(
+      alignment: Alignment.topCenter,
+      minHeight: 0,
+      maxHeight: double.infinity,
+      child: stroke > 0
+          // Konva draws the fill, then the stroke over it (stroke defaults
+          // to black in the editor).
+          ? Stack(children: [
+              filled,
+              line(style(
+                foreground: Paint()
+                  ..style = PaintingStyle.stroke
+                  ..strokeWidth = stroke
+                  ..color = Colors.black,
+              )),
+            ])
+          : filled,
+    );
   }
 }
 
