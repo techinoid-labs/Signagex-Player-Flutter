@@ -25,13 +25,36 @@ class TextWidget extends StatelessWidget {
     this.shadowBlur,
   });
 
+  /// The CMS sends a CSS font list -- "'Open Sans', sans-serif". Flutter
+  /// wants bare family names: quotes stripped, and CSS generic families
+  /// dropped since they name no real font. Passed through whole, the list
+  /// matched no font at all and the text fell back to the system font.
+  static const _genericFamilies = {
+    'serif',
+    'sans-serif',
+    'monospace',
+    'cursive',
+    'fantasy',
+    'system-ui',
+  };
+
+  List<String> _fontFamilies() {
+    return (fontFamily ?? '')
+        .split(',')
+        .map((f) => f.trim().replaceAll(RegExp(r'''^["']|["']$'''), '').trim())
+        .where((f) => f.isNotEmpty && !_genericFamilies.contains(f.toLowerCase()))
+        .toList();
+  }
+
   @override
   Widget build(BuildContext context) {
     final color = _parseColor(fill) ?? Colors.white;
+    final families = _fontFamilies();
     final style = TextStyle(
       color: color,
       fontSize: (fontSize ?? 24).toDouble(),
-      fontFamily: fontFamily,
+      fontFamily: families.isEmpty ? null : families.first,
+      fontFamilyFallback: families.length > 1 ? families.sublist(1) : null,
       shadows: shadowBlur != null && shadowBlur! > 0
           ? [Shadow(color: Colors.black54, blurRadius: shadowBlur!.toDouble())]
           : null,
