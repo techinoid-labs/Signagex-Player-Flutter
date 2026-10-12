@@ -55,10 +55,18 @@ class _MqttProviderState extends State<MqttProvider> {
   // MqttViewModel). This is the listener actually active during normal
   // playback (CampaignView/PlaylistScreen), so this is the reachability fix
   // that matters.
-  void _onTap(TapUpDetails details, MqttViewModel viewModel) {
-    final position = details.localPosition;
+  //
+  // A Listener, not a GestureDetector: a GestureDetector here lost the tap
+  // arena to every screen's own tap handler underneath, so whether a tap
+  // reached interactivity depended on which screen was showing. A
+  // translucent Listener sees every pointer-down regardless, once.
+  void _onTap(PointerDownEvent event, MqttViewModel viewModel,
+      double screenWidth, double screenHeight) {
+    final position = event.localPosition;
     print("Touched at position: $position");
     viewModel.setTapPosition(position.dx, position.dy);
+    viewModel.interactivity
+        .onTap(position.dx, position.dy, screenWidth, screenHeight);
   }
 
   @override
@@ -74,12 +82,31 @@ class _MqttProviderState extends State<MqttProvider> {
       ],
       child: Consumer<MqttViewModel>(
         builder: (context, viewModel, child) {
+          final screen = MediaQuery.of(context).size;
+          final interactive = viewModel.interactivity.activeCampaign;
           return RawKeyboardListener(
             focusNode: _focusNode,
             onKey: (event) => _onKey(event, viewModel),
-            child: GestureDetector(
-              onTapUp: (details) => _onTap(details, viewModel),
-              child: _getScreenForState(viewModel.state),
+            child: Listener(
+              behavior: HitTestBehavior.translucent,
+              onPointerDown: (event) =>
+                  _onTap(event, viewModel, screen.width, screen.height),
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _getScreenForState(viewModel.state),
+                  // Trigger content, over whichever screen is showing.
+                  if (interactive != null)
+                    Positioned.fill(
+                      child: InteractivityContentView(
+                        key: ValueKey(
+                            'interactivity_${viewModel.interactivity.activeSerial}'),
+                        campaign: interactive,
+                        serial: viewModel.interactivity.activeSerial,
+                      ),
+                    ),
+                ],
+              ),
             ),
           );
         },
@@ -100,6 +127,13 @@ class _MqttProviderState extends State<MqttProvider> {
       if (event.logicalKey.debugName != null) {
         viewModel.getKey(event.logicalKey.debugName!);
       }
+      // The CMS stores what was typed ("a", "s"), so match on the
+      // character and the key label as well as the debug name ("Key A").
+      viewModel.interactivity.onKey([
+        event.character ?? '',
+        event.logicalKey.keyLabel,
+        event.logicalKey.debugName ?? '',
+      ]);
     }
   }
 

@@ -17,12 +17,6 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
-// W22: only need Content (for the interactivity overlay below) -- this file
-// only imports Content specifically because intractivity_model.dart also
-// declares its own MediaItem/Settings/Period/Data/Trigger/Zone/Interactivity,
-// several of which collide with same-named classes already imported
-// unprefixed from compaign_model.dart and play_list_model.dart.
-import 'package:digital_signage/models/intractivity_model.dart' show Content;
 import 'package:digital_signage/utils/constants.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/log_format.dart';
@@ -430,44 +424,11 @@ class _CampaignViewState extends State<CampaignView> {
     super.dispose();
   }
 
-  // W22: interactivity triggers (a matched hotspot tap or key press) need to
-  // show something on top of whatever the campaign is currently doing,
-  // regardless of which of this method's several early-return branches is
-  // active, without touching any of that branch's own logic. Wrapping the
-  // existing build() (renamed, otherwise untouched) is the lowest-risk way
-  // to add that: every existing return path keeps working exactly as
-  // before, and the overlay is purely additive on top.
+  // Interactivity content is drawn by InteractivityContentView, stacked over
+  // every screen state by MqttProvider -- not here, so a trigger also shows
+  // when the player is on its no-content screen.
   @override
-  Widget build(BuildContext context) {
-    final content = _buildScreen(context);
-    final overlay = _buildInteractivityOverlay(context);
-    return overlay == null ? content : Stack(children: [content, overlay]);
-  }
-
-  // W22: renders a matched hotspot/key trigger's content full-screen, on top
-  // of whatever the campaign is currently showing, for the duration the
-  // MqttViewModel's timer holds it. See activeInteractivityContent's own doc
-  // comment (mqtt_view_model.dart) for what's deliberately NOT supported
-  // (per-zone targeting via namedRegion, video content, nested compositions)
-  // and why.
-  Widget? _buildInteractivityOverlay(BuildContext context) {
-    final mqttViewModel = Provider.of<MqttViewModel>(context);
-    final content = mqttViewModel.activeInteractivityContent;
-    if (content == null) return null;
-    final mediaUrl = content.mediaUrl ?? '';
-    if (mediaUrl.isEmpty) return null;
-    return Positioned.fill(
-      child: Container(
-        color: Colors.black87,
-        child: ImageWidget(
-          key: ValueKey('interactivity_overlay_${content.id}'),
-          filePath: mediaUrl,
-          onImageEnd: () {},
-          transitionType: 'none',
-        ),
-      ),
-    );
-  }
+  Widget build(BuildContext context) => _buildScreen(context);
 
   Widget _buildScreen(BuildContext context) {
     final mqttViewModel = Provider.of<MqttViewModel>(context);
@@ -883,6 +844,78 @@ Map<String, dynamic>? _zoneAnimation(CampaignZone zone) {
   final items = zone.mediaItems;
   if (items == null || items.isEmpty) return null;
   return items.first.settings?.animation;
+}
+
+/// Interactivity content (a trigger's playlist, composition, campaign or web
+/// app, already converted to a [Campaign] by InteractivityController),
+/// full-screen on top of normal playback.
+///
+/// Lays the zones out exactly as CampaignView._buildZones does -- one
+/// uniform fit scale, centred -- and hands each to the same
+/// VideoPlaylistWidget, so everything a published campaign can show works
+/// here too. [serial] is in the keys so a re-fire restarts the content.
+class InteractivityContentView extends StatelessWidget {
+  final Campaign campaign;
+  final int serial;
+
+  const InteractivityContentView({
+    super.key,
+    required this.campaign,
+    required this.serial,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final mqttViewModel = Provider.of<MqttViewModel>(context, listen: false);
+    final screenSize = MediaQuery.of(context).size;
+    final campaignWidth =
+        campaign.resolution?.width?.toDouble() ?? screenSize.width;
+    final campaignHeight =
+        campaign.resolution?.height?.toDouble() ?? screenSize.height;
+    final scale = min(
+      screenSize.width / campaignWidth,
+      screenSize.height / campaignHeight,
+    );
+    final offsetX = (screenSize.width - campaignWidth * scale) / 2;
+    final offsetY = (screenSize.height - campaignHeight * scale) / 2;
+    final playerCampaigns = <Campaign>[
+      ...?mqttViewModel.campaignModel?.data?.playerCampaigns,
+      campaign,
+    ];
+
+    return ColoredBox(
+      color: Colors.black,
+      child: Stack(
+        children: (campaign.zones ?? const <CampaignZone>[]).map((zone) {
+          final zoneWidget = VideoPlaylistWidget(
+            key: ValueKey('${campaign.campaignId}_${serial}_${zone.id ?? 0}'),
+            zoneId: 'interactivity_${zone.id ?? 0}',
+            mediaItems: zone.mediaItems ?? [],
+            campaignId: campaign.campaignId,
+            playerCampaigns: playerCampaigns,
+            campaignCanPlay: true,
+            campaignSchedule: campaign.campaignSchedule,
+            coordinateBaseWidth: campaignWidth,
+            coordinateBaseHeight: campaignHeight,
+            fontScale: scale,
+          );
+          return Positioned(
+            left: (zone.x ?? 0) * scale + offsetX,
+            top: (zone.y ?? 0) * scale + offsetY,
+            width: (zone.width ?? 0) * scale,
+            height: (zone.height ?? 0) * scale,
+            child: (zone.rotation == null || zone.rotation == 0)
+                ? zoneWidget
+                : Transform.rotate(
+                    angle: zone.rotation! * pi / 180,
+                    alignment: Alignment.topLeft,
+                    child: zoneWidget,
+                  ),
+          );
+        }).toList(),
+      ),
+    );
+  }
 }
 
 class VideoPlaylistWidget extends StatefulWidget {
