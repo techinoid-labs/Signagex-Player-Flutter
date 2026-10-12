@@ -6,6 +6,7 @@ import 'dart:ui';
 
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
@@ -26,11 +27,10 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
-import 'package:digital_signage/models/intractivity_model.dart'
-    hide MediaItem, Settings;
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/utils/agent_debug_log.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
+import 'package:digital_signage/view_models/interactivity_engine.dart';
 import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 
 import '../data/api_repository/api_repository.dart';
@@ -133,9 +133,16 @@ class MqttViewModel extends ChangeNotifier {
     return false;
   }
 
-  InteractivityModel? _interactivityModel;
-
-  InteractivityModel? get interactivityModel => _interactivityModel;
+  /// Triggers from the CMS -- see interactivity_engine.dart. Created in the
+  /// constructor so its timers and local API server start with the app.
+  late final InteractivityEngine interactivity = InteractivityEngine(
+    evaluateRestriction: evaluateInteractivityRestriction,
+    prepareMedia: _prepareInteractivityMedia,
+    log: (message) {
+      debug.debugLog('Interactivity', message);
+    },
+  );
+  static const _interactivityPrefsKey = 'interactivityList';
 
   Map<String, String?> macAddresses = {
     'wlan0': null,
@@ -225,6 +232,7 @@ class MqttViewModel extends ChangeNotifier {
 
     fetchAllInfo();
     _initializeBasedOnPlatform();
+    _installInteractivityInput();
     _monitorConnectivity();
   }
 
@@ -289,6 +297,7 @@ class MqttViewModel extends ChangeNotifier {
   // Monitor connectivity changes and reinitialize MQTT on connection recovery
   Future<void> _monitorConnectivity() async {
     await _loadStoredJsonObj();
+    await _restoreInteractivity();
     await getStoredState();
     await retrieveStoredResponse();
     await loadDeviceInfoFromSharedPreferences();
@@ -2007,7 +2016,7 @@ EOF
               'MQTT_LOGS:: Player no longer paired — clearing cached content');
           _campaignModel = null;
           _playListModel = null;
-          _interactivityModel = null;
+          interactivity.clear();
           storedJsonObj = {};
           await prefs.clear();
         }
@@ -2339,16 +2348,96 @@ EOF
   void getKey(String keydata) {
     _key = keydata;
     notifyListeners();
-    // Check if any key in the interactivity list matches _key (case-insensitive)
-    bool keyFound = _interactivityModel?.data.interactivity.any(
-            (interactivity) => interactivity.keyPress
-                .any((key) => key.toUpperCase() == _key!.toUpperCase())) ??
-        false;
-    print("this is key data $keydata");
-    if (keyFound) {
-      print("I am in interactivity by key");
-    } else {
-      print("Key not found in interactivity");
+    // Key triggers are matched by the global keyboard handler installed in
+    // _installInteractivityInput, which sees every key whichever screen
+    // has focus.
+  }
+
+  // -- Interactivity input ------------------------------------------------
+  //
+  // Registered globally rather than on one screen's focus node: a trigger
+  // has to answer a key or a tap whichever screen is showing (campaign, no
+  // content, playlist) and whether or not that screen holds focus.
+
+  void _installInteractivityInput() {
+    HardwareKeyboard.instance.addHandler(_onInteractivityKey);
+    GestureBinding.instance.pointerRouter
+        .addGlobalRoute(_onInteractivityPointer);
+    // Touch the engine so its timers and local API server start now.
+    interactivity.items;
+  }
+
+  bool _onInteractivityKey(KeyEvent event) {
+    if (event is KeyDownEvent) {
+      interactivity.onKey([
+        if (event.character != null) event.character!,
+        event.logicalKey.keyLabel,
+        if (event.logicalKey.debugName != null) event.logicalKey.debugName!,
+      ]);
+    }
+    return false; // never swallow the key
+  }
+
+  void _onInteractivityPointer(PointerEvent event) {
+    if (event is! PointerDownEvent) return;
+    final views = PlatformDispatcher.instance.views;
+    if (views.isEmpty) return;
+    final view = views.first;
+    final size = view.physicalSize / view.devicePixelRatio;
+    interactivity.onTap(
+        event.position.dx, event.position.dy, size.width, size.height);
+  }
+
+  Future<void> _restoreInteractivity() async {
+    final prefs = await SharedPreferences.getInstance();
+    final raw = prefs.getString(_interactivityPrefsKey);
+    if (raw == null) return;
+    try {
+      interactivity.setList(jsonDecode(raw), source: 'storage');
+    } catch (e) {
+      _debugLog('stored interactivity list unreadable: $e');
+    }
+  }
+
+  /// The campaign restriction evaluator, plus `time / every-hour`, which
+  /// only trigger restrictions use: true during the first minute of every
+  /// hour.
+  bool evaluateInteractivityRestriction(Restriction restriction) {
+    final op = (restriction.operator ?? '')
+        .toLowerCase()
+        .replaceAll(RegExp(r'[^a-z]'), '');
+    if (restriction.type == 'time' && op == 'everyhour') {
+      final pass = DateTime.now().minute == 0;
+      _debugLog('interactivity restriction time/every-hour -> '
+          '${pass ? "PASS" : "FAIL"}');
+      return pass;
+    }
+    return _evaluateRestriction(restriction, DateTime.now());
+  }
+
+  /// Downloads trigger content the way campaign media is, as soon as the
+  /// list arrives, so a tap shows it at once and offline. Rewrites each
+  /// item's URL to the local file in place, exactly as the campaign
+  /// download does.
+  Future<void> _prepareInteractivityMedia(List<Campaign> campaigns) async {
+    for (final media in _collectCampaignMediaItemsForDownload(campaigns)) {
+      final isSticker = media.mediaType?.toLowerCase() == 'sticker';
+      final originalUrl =
+          isSticker ? (media.settings?.remoteSrc ?? media.mediaUrl) : media.mediaUrl;
+      if (originalUrl == null || originalUrl.isEmpty) continue;
+      try {
+        final localPath = await _ensureLocalMediaUrl(
+          originalUrl,
+          mediaType: media.settings?.kind ?? media.mediaType,
+        );
+        if (isSticker) {
+          media.settings ??= Settings();
+          media.settings!.remoteSrc = localPath;
+        }
+        media.mediaUrl = localPath;
+      } catch (e) {
+        _debugLog('interactivity media download failed ($originalUrl): $e');
+      }
     }
   }
 
@@ -2830,9 +2919,19 @@ EOF
           }
         }
       }
-    } else if (jsonObj["action"] == "publish_interactivity") {
-      _interactivityModel = interactivityModelFromJson(jsonEncode(jsonObj));
-      print("i am in intractvity");
+    } else if (jsonObj["action"] == "create_interactivity" ||
+        jsonObj["action"] == "publish_interactivity") {
+      // The backend sends the player's FULL list on every create, update and
+      // delete (publish_interactivity is an older name it no longer uses).
+      final data = jsonObj["data"];
+      final list = data is Map ? data["interactivity"] : null;
+      interactivity.setList(list);
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_interactivityPrefsKey, jsonEncode(list ?? []));
+    } else if (jsonObj["action"] == "run_interactivity") {
+      final data = jsonObj["data"];
+      final id = data is Map ? data["interactivity_id"]?.toString() : null;
+      if (id != null && id.isNotEmpty) interactivity.runById(id);
     } else if (jsonObj["action"] == "remove_playlist") {
       debugPrint("remove playlist and update screen");
       // Map<String, dynamic> sendLog = {
@@ -3106,6 +3205,7 @@ EOF
       return;
     }
     _currentIndexOfCapmaign = eligibleIndex;
+    interactivity.onCampaignAdvanced();
 
     // Puts the screen back. The ineligible branch above parks the player
     // on MqttState.noContent when every campaign is outside its window,
@@ -3263,6 +3363,10 @@ EOF
 // Clean up timer
   @override
   void dispose() {
+    HardwareKeyboard.instance.removeHandler(_onInteractivityKey);
+    GestureBinding.instance.pointerRouter
+        .removeGlobalRoute(_onInteractivityPointer);
+    interactivity.dispose();
     _timerOfCampaign?.cancel();
     _timer?.cancel();
     _pairingRevalidationTimer?.cancel();
