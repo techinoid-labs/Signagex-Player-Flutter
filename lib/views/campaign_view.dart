@@ -540,6 +540,73 @@ class _CampaignViewState extends State<CampaignView> {
   }
 }
 
+/// Trigger content (InteractivityEngine.activeCampaign) drawn full-screen on
+/// top of whatever the player is showing, by the same zone renderer a
+/// campaign uses -- so videos, compositions, web apps and playlists behave
+/// exactly as they do in the loop. Laid out with the campaign stage's
+/// fit-and-letterbox. Nothing is drawn, and taps pass through, when no
+/// trigger content is active.
+class InteractivityOverlay extends StatelessWidget {
+  const InteractivityOverlay({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final engine =
+        Provider.of<MqttViewModel>(context, listen: false).interactivity;
+    return ListenableBuilder(
+      listenable: engine,
+      builder: (context, _) {
+        final campaign = engine.activeCampaign;
+        if (campaign == null) {
+          return const IgnorePointer(child: SizedBox.shrink());
+        }
+        return LayoutBuilder(builder: (context, constraints) {
+          final deviceWidth = constraints.maxWidth;
+          final deviceHeight = constraints.maxHeight;
+          final campaignWidth =
+              campaign.resolution?.width?.toDouble() ?? deviceWidth;
+          final campaignHeight =
+              campaign.resolution?.height?.toDouble() ?? deviceHeight;
+          final fitScale = math.min(
+            deviceWidth / campaignWidth,
+            deviceHeight / campaignHeight,
+          );
+          final offsetX = (deviceWidth - campaignWidth * fitScale) / 2;
+          final offsetY = (deviceHeight - campaignHeight * fitScale) / 2;
+          return ColoredBox(
+            color: Colors.black,
+            child: Stack(
+              key: ValueKey('interactivity_${engine.showToken}'),
+              children: (campaign.zones ?? const <CampaignZone>[]).map((zone) {
+                return Positioned(
+                  left: (zone.x ?? 0) * fitScale + offsetX,
+                  top: (zone.y ?? 0) * fitScale + offsetY,
+                  width: (zone.width ?? 0) * fitScale,
+                  height: (zone.height ?? 0) * fitScale,
+                  child: CompositionAnimation(
+                    spec: _zoneAnimation(zone),
+                    child: VideoPlaylistWidget(
+                      zoneId: 'interactivity_${engine.showToken}_${zone.id ?? 0}',
+                      mediaItems: zone.mediaItems ?? const <MediaItem>[],
+                      campaignId: campaign.campaignId,
+                      playerCampaigns: [campaign],
+                      campaignCanPlay: true,
+                      campaignSchedule: campaign.campaignSchedule,
+                      contentScale: fitScale,
+                      coordinateBaseWidth: campaignWidth,
+                      coordinateBaseHeight: campaignHeight,
+                    ),
+                  ),
+                );
+              }).toList(),
+            ),
+          );
+        });
+      },
+    );
+  }
+}
+
 /// The CMS animation on a composition object. Each object is one zone with
 /// one media item, so the zone's first item carries it.
 Map<String, dynamic>? _zoneAnimation(CampaignZone zone) {

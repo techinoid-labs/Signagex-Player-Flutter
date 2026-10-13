@@ -66,7 +66,16 @@ class _MqttProviderState extends State<MqttProvider> {
             onKey: _onKey,
             child: GestureDetector(
               onTapUp: _onTap,
-              child: _getScreenForState(viewModel.state),
+              // Trigger content goes over every screen, not only the
+              // campaign one -- a key or tap can fire it from "no content"
+              // too.
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _getScreenForState(viewModel.state),
+                  const InteractivityOverlay(),
+                ],
+              ),
             ),
           );
         },
