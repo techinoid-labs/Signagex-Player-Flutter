@@ -4,7 +4,7 @@ import 'dart:io';
 import 'dart:math' as math;
 
 import 'package:digital_signage/models/compaign_model.dart'
-    show Campaign, Period, Restriction;
+    show Campaign, CampaignZone, MediaItem, Period, Restriction;
 import 'package:digital_signage/models/intractivity_model.dart';
 import 'package:digital_signage/utils/interactivity_hit_test.dart';
 import 'package:digital_signage/utils/time_range_utils.dart';
@@ -525,10 +525,10 @@ class InteractivityController {
   /// The longest zone's run through its items, at the items' own durations.
   static int _naturalSeconds(Campaign campaign) {
     var longest = 0;
-    for (final zone in campaign.zones ?? const []) {
+    for (final zone in campaign.zones ?? const <CampaignZone>[]) {
       var total = 0;
-      for (final item in zone.mediaItems ?? const []) {
-        final seconds = item.settings?.duration ?? 0;
+      for (final item in zone.mediaItems ?? const <MediaItem>[]) {
+        final int seconds = item.settings?.duration ?? 0;
         total += seconds > 0 ? seconds : 10;
       }
       longest = math.max(longest, total);
