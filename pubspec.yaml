@@ -164,3 +164,45 @@ flutter:
   #
   # For details regarding fonts from package dependencies,
   # see https://flutter.dev/to/font-from-package
+
+  # The web fonts the CMS text editor offers (signageX-frontend
+  # src/data/font.ts). None ship with Windows, so without these a text object
+  # set to e.g. Montserrat fell back to the system font. Family names match
+  # the first name in the CMS fontFamily value. The CMS's other fonts
+  # (Arial, Georgia, Impact, ...) are system fonts on Windows. SIL OFL 1.1,
+  # see assets/fonts/OFL.txt.
+  fonts:
+    - family: Poppins
+      fonts:
+        - asset: assets/fonts/Poppins-Regular.ttf
+        - asset: assets/fonts/Poppins-Bold.ttf
+          weight: 700
+    - family: Roboto
+      fonts:
+        - asset: assets/fonts/Roboto-Variable.ttf
+    - family: Inter
+      fonts:
+        - asset: assets/fonts/Inter-Variable.ttf
+    - family: Open Sans
+      fonts:
+        - asset: assets/fonts/OpenSans-Variable.ttf
+    - family: Lato
+      fonts:
+        - asset: assets/fonts/Lato-Regular.ttf
+        - asset: assets/fonts/Lato-Bold.ttf
+          weight: 700
+    - family: Montserrat
+      fonts:
+        - asset: assets/fonts/Montserrat-Variable.ttf
+    - family: Nunito
+      fonts:
+        - asset: assets/fonts/Nunito-Variable.ttf
+    - family: Playfair Display
+      fonts:
+        - asset: assets/fonts/PlayfairDisplay-Variable.ttf
+    - family: Merriweather
+      fonts:
+        - asset: assets/fonts/Merriweather-Variable.ttf
+    - family: Oswald
+      fonts:
+        - asset: assets/fonts/Oswald-Variable.ttf

@@ -1054,6 +1054,8 @@ class MediaItem {
         break;
     }
 
+    settings.animation ??= animationFromJson(propMap['animation']);
+
     return MediaItem(
       id: obj['id']?.toString() ?? 'composition_obj_$index',
       mediaType: mediaType,
@@ -1503,7 +1505,11 @@ class Settings {
   String? adFlightStartTime;
   String? adFlightEndTime;
 
+  /// The editor's per-object animation: {type, showAfter, showFor}.
+  Map<String, dynamic>? animation;
+
   Settings({
+    this.animation,
     this.duration,
     this.transition,
     this.ratio,
@@ -1692,6 +1698,7 @@ class Settings {
             json["start_time"]?.toString() ?? json["startTime"]?.toString(),
         adFlightEndTime:
             json["end_time"]?.toString() ?? json["endTime"]?.toString(),
+        animation: animationFromJson(json["animation"]),
       );
 
   Map<String, dynamic> toJson() => {
@@ -1727,7 +1734,16 @@ class Settings {
         "end_date": adFlightEndDate,
         "start_time": adFlightStartTime,
         "end_time": adFlightEndTime,
+        "animation": animation,
       };
+}
+
+/// The editor's per-object animation, or null when it has none.
+Map<String, dynamic>? animationFromJson(dynamic value) {
+  if (value is! Map) return null;
+  final type = value['type']?.toString() ?? '';
+  if (type.isEmpty || type == 'none') return null;
+  return Map<String, dynamic>.from(value);
 }
 
 bool isAdPlaybackCreativeId(String? id) {

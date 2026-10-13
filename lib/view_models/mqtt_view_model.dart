@@ -24,13 +24,12 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
-import 'package:digital_signage/models/intractivity_model.dart'
-    hide MediaItem, Settings;
+import 'package:digital_signage/models/intractivity_model.dart';
 import 'package:digital_signage/models/play_list_model.dart';
 import 'package:digital_signage/utils/cache_path_utils.dart';
 import 'package:digital_signage/utils/connectivity_utils.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
-import 'package:digital_signage/utils/interactivity_hit_test.dart';
+import 'package:digital_signage/view_models/interactivity_controller.dart';
 import 'package:digital_signage/services/diagnostic_upload_service.dart';
 import 'package:digital_signage/services/update_check_service.dart'
     show appBuildId, takePendingUpdateOutcome;
@@ -124,9 +123,14 @@ class MqttViewModel extends ChangeNotifier {
 
   CampaignModel? get campaignModel => _campaignModel;
 
-  InteractivityModel? _interactivityModel;
-
-  InteractivityModel? get interactivityModel => _interactivityModel;
+  /// Interactivity (CMS "Triggers"): conditions, gate and the content to
+  /// show. See InteractivityController.
+  late final InteractivityController interactivity = InteractivityController(
+    checkRestrictions: checkRestrictions,
+    localizeMedia: _localizeInteractivityMedia,
+    onChanged: notifyListeners,
+    log: (message) => debug.debugLog('Interactivity', message),
+  );
 
   Map<String, String?> macAddresses = {
     'wlan0': null,
@@ -408,6 +412,7 @@ class MqttViewModel extends ChangeNotifier {
     await prefsCheck.setString('app_environment', appEnvironment);
 
     await _loadStoredJsonObj();
+    await _restoreInteractivity();
     await getStoredState();
     await retrieveStoredResponse();
     await loadDeviceInfoFromSharedPreferences();
@@ -2003,13 +2008,7 @@ EOF
     _currentFileProgress = 0.0;
 
     for (final media in downloadTargets) {
-      String? originalUrl;
-      final dlMediaType = media.mediaType?.toLowerCase();
-      if (dlMediaType == 'sticker' || dlMediaType == 'shape') {
-        originalUrl = media.settings?.remoteSrc ?? media.mediaUrl;
-      } else {
-        originalUrl = media.mediaUrl;
-      }
+      final originalUrl = _downloadSourceUrl(media);
 
       if (originalUrl == null || originalUrl.isEmpty) {
         completedDownloads++;
@@ -2027,21 +2026,7 @@ EOF
           originalUrl,
           onProgress: _updateCurrentFileProgress,
         );
-        // Update the appropriate URL field
-        if (dlMediaType == 'sticker' || dlMediaType == 'shape') {
-          // Stickers/shapes: always store local path in settings.remoteSrc so the UI uses it at render time
-          media.settings ??= Settings();
-          media.settings!.remoteSrc = localPath;
-          media.mediaUrl = localPath; // keep mediaUrl in sync for fallback
-        } else if (media.isAd || idLooksLikeAdSlot(media.id)) {
-          media.settings ??= Settings();
-          if (originalUrl.startsWith('http')) {
-            media.settings!.creativeUrl = originalUrl;
-          }
-          media.mediaUrl = localPath;
-        } else {
-          media.mediaUrl = localPath;
-        }
+        _applyLocalMediaPath(media, originalUrl, localPath);
         completedDownloads++;
         _overallProgress = completedDownloads / _downloadCount;
         print(
@@ -2091,6 +2076,35 @@ EOF
       _state = MqttState.campaignScreen;
     }
     notifyListeners();
+  }
+
+  /// The URL a media item's file is downloaded from.
+  String? _downloadSourceUrl(MediaItem media) {
+    final type = media.mediaType?.toLowerCase();
+    if (type == 'sticker' || type == 'shape') {
+      return media.settings?.remoteSrc ?? media.mediaUrl;
+    }
+    return media.mediaUrl;
+  }
+
+  /// Points [media] at its downloaded copy.
+  void _applyLocalMediaPath(
+      MediaItem media, String originalUrl, String localPath) {
+    final type = media.mediaType?.toLowerCase();
+    if (type == 'sticker' || type == 'shape') {
+      // Stickers/shapes: always store local path in settings.remoteSrc so the UI uses it at render time
+      media.settings ??= Settings();
+      media.settings!.remoteSrc = localPath;
+      media.mediaUrl = localPath; // keep mediaUrl in sync for fallback
+    } else if (media.isAd || idLooksLikeAdSlot(media.id)) {
+      media.settings ??= Settings();
+      if (originalUrl.startsWith('http')) {
+        media.settings!.creativeUrl = originalUrl;
+      }
+      media.mediaUrl = localPath;
+    } else {
+      media.mediaUrl = localPath;
+    }
   }
 
   bool _isNestedCampaignMediaItem(MediaItem media) {
@@ -2982,128 +2996,53 @@ EOF
     });
   }
 
+  // Screens that report taps/keys themselves (the no-content view) still
+  // call these, but they only record the value now. Interactivity is driven
+  // from MqttProvider's one app-wide listener, straight into [interactivity],
+  // so a tap or key that reaches two listeners can't fire a trigger twice.
   void setTapPosition(double x, double y) {
     tapX = x;
     tapY = y;
     notifyListeners();
-    // W22: the region hit-test was entirely commented out -- a configured
-    // hotspot could never match a tap at all, regardless of coordinates.
-    _matchAndFireInteractivity(x: x, y: y);
   }
 
   void getKey(String keydata) {
     _key = keydata;
     notifyListeners();
-    // W22: matching was logged ("I am in interactivity by key") but never
-    // actually dispatched the configured trigger(s).
-    _matchAndFireInteractivity(key: keydata);
   }
 
-  double? _asDouble(dynamic v) {
-    if (v == null) return null;
-    if (v is num) return v.toDouble();
-    if (v is String) return double.tryParse(v);
-    return null;
+  static const _interactivityPrefsKey = 'interactivityJson';
+
+  /// Restores the last `create_interactivity` list, so triggers work from
+  /// launch rather than only after the CMS next sends one.
+  Future<void> _restoreInteractivity() async {
+    try {
+      final prefs = await SharedPreferences.getInstance();
+      final stored = prefs.getString(_interactivityPrefsKey);
+      if (stored == null) return;
+      interactivity.setList(interactivityModelFromJson(stored));
+    } catch (error) {
+      _debugLog('stored interactivity list unreadable: $error');
+    }
   }
 
-  // W22: content shown on top of the current campaign in response to a
-  // matched hotspot tap or key press, for the firing Trigger's own
-  // configured duration. Only ever the FIRST Content entry of the FIRST matching
-  // trigger -- a Trigger can carry multiple Content items and/or nested
-  // Zone/MediaItem compositions (Content.zones), but resolving those fully
-  // would mean re-implementing this app's whole zone/media rendering
-  // pipeline a second time against a completely separate, much thinner
-  // model (intractivity_model.dart's own MediaItem/Settings, hidden on
-  // import specifically because they don't match compaign_model.dart's
-  // richer ones). A single flat image/video Content -- by far the common
-  // case for a hotspot popup/promo -- is what this actually supports.
-  //
-  // Also unsupported, confirmed rather than assumed: Trigger.namedRegion
-  // (the CMS's way of saying "show this inside a specific zone", not
-  // full-screen) can't be resolved at all -- CampaignZone (compaign_model.
-  // dart) has no name field anywhere, so there is no data in this app that
-  // maps a name back to on-screen zone bounds. Every trigger this fires
-  // shows full-screen, regardless of namedRegion.
-  Content? _activeInteractivityContent;
-  Content? get activeInteractivityContent => _activeInteractivityContent;
-  Timer? _interactivityOverlayTimer;
-
-  void _matchAndFireInteractivity({
-    double? x,
-    double? y,
-    String? key,
-  }) {
-    final list = _interactivityModel?.data.interactivity;
-    if (list == null || list.isEmpty) return;
-
-    for (final interactivity in list) {
-      // pause is the one reliable, fully-modeled on/off gate available here.
-      // startTime/endTime/startDate/endDate are untyped (dynamic) and
-      // InteractivityDays only ever parses "monday" (a pre-existing gap in
-      // this model, not something introduced or fixed here) -- not safe to
-      // evaluate blindly, so alwaysPlay/day/time scheduling for
-      // interactivity is intentionally NOT enforced here beyond `pause`.
-      if (interactivity.pause) continue;
-
-      bool matched;
-      if (key != null) {
-        matched = keyMatches(interactivity.keyPress, key);
-      } else if (x != null && y != null) {
-        if (interactivity.anyRegion == true) {
-          matched = true;
-        } else {
-          final rx = _asDouble(interactivity.regionX);
-          final ry = _asDouble(interactivity.regionY);
-          final rw = _asDouble(interactivity.regionWidth);
-          final rh = _asDouble(interactivity.regionHeight);
-          matched = rx != null &&
-              ry != null &&
-              rw != null &&
-              rh != null &&
-              isPointInRegion(
-                  x: x,
-                  y: y,
-                  regionX: rx,
-                  regionY: ry,
-                  regionWidth: rw,
-                  regionHeight: rh);
-        }
-      } else {
-        matched = false;
+  /// Downloads trigger content with the campaign download machinery: the
+  /// same targets (nested zones included) and the same local-path
+  /// rewriting, so a tap shows the content at once and offline.
+  Future<void> _localizeInteractivityMedia(List<Campaign> campaigns) async {
+    for (final media in _collectCampaignMediaItemsForDownload(campaigns)) {
+      final originalUrl = _downloadSourceUrl(media);
+      if (originalUrl == null || originalUrl.isEmpty) continue;
+      try {
+        final localPath = await ensureLocalMediaUrl(originalUrl);
+        _applyLocalMediaPath(media, originalUrl, localPath);
+      } catch (error) {
+        // Left on its remote URL -- the renderer can still try the network.
+        _debugLog(
+            'interactivity media download failed for $originalUrl: $error');
       }
-      if (!matched) continue;
-
-      print('[Interactivity] Matched "${interactivity.name}" '
-          '(${interactivity.triggers.length} trigger(s))');
-      for (final trigger in interactivity.triggers) {
-        _fireInteractivityTrigger(trigger);
-      }
-      return; // first match wins -- matches getKey's prior single-match intent
     }
-  }
-
-  void _fireInteractivityTrigger(Trigger trigger) {
-    if (trigger.content.isEmpty) {
-      print('[Interactivity] Trigger has no content -- nothing to show');
-      return;
-    }
-    final content = trigger.content.first;
-    final mediaType = content.mediaType.toLowerCase();
-    if (mediaType.startsWith('video')) {
-      // Not implemented -- see the class doc above _activeInteractivityContent.
-      print('[Interactivity] Trigger content is video ($mediaType) -- '
-          'video interactivity overlays are not supported, skipping');
-      return;
-    }
-    _interactivityOverlayTimer?.cancel();
-    _activeInteractivityContent = content;
     notifyListeners();
-    final durationSeconds = trigger.duration > 0 ? trigger.duration : 10;
-    _interactivityOverlayTimer =
-        Timer(Duration(seconds: durationSeconds), () {
-      _activeInteractivityContent = null;
-      notifyListeners();
-    });
   }
 
   // Keys that mean "this payload carries Player Configuration settings",
@@ -3635,9 +3574,20 @@ EOF
       if (count > 0) {
         _startDownloadingForCampaign();
       }
-    } else if (jsonObj["action"] == "publish_interactivity") {
-      _interactivityModel = interactivityModelFromJson(jsonEncode(jsonObj));
-      print("i am in intractvity");
+    } else if (jsonObj["action"] == "create_interactivity" ||
+        jsonObj["action"] == "publish_interactivity") {
+      // The backend sends the player's FULL current list as
+      // create_interactivity on every create, update and delete.
+      // publish_interactivity is what this used to listen for -- nothing
+      // sends it -- kept only as an alias.
+      interactivity.setList(InteractivityModel.fromJson(jsonObj));
+      final prefs = await SharedPreferences.getInstance();
+      await prefs.setString(_interactivityPrefsKey, jsonEncode(jsonObj));
+    } else if (jsonObj["action"] == "run_interactivity") {
+      // The CMS's "On demand" button.
+      final data = jsonObj["data"];
+      final id = data is Map ? data["interactivity_id"]?.toString() : null;
+      if (id != null && id.isNotEmpty) interactivity.runById(id);
     } else if (jsonObj["action"] == "remove_playlist") {
       debugPrint("remove playlist and update screen");
       Map<String, dynamic> sendLog = {
@@ -4041,6 +3991,9 @@ EOF
   }
 
   void _updateIndexForCampain() {
+    // The loop is moving on: the point an enqueued trigger waits for.
+    interactivity.onCampaignAdvance();
+
     final campaigns = _campaignModel?.data?.playerCampaigns;
     final count = campaigns?.length ?? 0;
 
@@ -4356,7 +4309,7 @@ EOF
     _timer?.cancel();
     _pairingPollTimer?.cancel();
     _statusPollTimer?.cancel();
-    _interactivityOverlayTimer?.cancel();
+    interactivity.dispose();
     _networkRecoveryTimer?.cancel();
     _stopPeriodicReporting();
     // W03: releases the MQTT updates subscription too, not just this
@@ -4881,6 +4834,12 @@ EOF
     const String reset = '\x1B[0m';
     const String red = '\x1B[31m';
     const String cyan = '\x1B[36m';
+
+    // every-hour carries no values (the CMS's "play webapp every hour"
+    // trigger): it holds for the first minute of every hour.
+    if (_normalizeRestrictionOperator(restriction.operator) == 'every-hour') {
+      return now.minute == 0;
+    }
 
     if (restriction.values == null || restriction.values!.isEmpty) {
       print("${red}TIME_CHECK:: No values provided for time restriction$reset");
