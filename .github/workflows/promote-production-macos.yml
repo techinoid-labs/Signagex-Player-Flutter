@@ -82,7 +82,9 @@ jobs:
           fi
           # Strict, unlike the staging publish: if this fails, nothing reached
           # the fleet and the run must say so.
-          curl -sf -X POST "https://signagexai.com/v1/player-releases/upload" \
+          # --fail-with-body, not -sf: -s hid the server's answer, so a
+          # rejected upload showed only "exit code 22" with no reason.
+          curl -sS --fail-with-body -X POST "https://signagexai.com/v1/player-releases/upload" \
             -H "x-release-key: $RELEASE_KEY" \
             -F "platform=macos" \
             -F "version=$build_id" \
