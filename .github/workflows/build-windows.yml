@@ -258,7 +258,12 @@ jobs:
             echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping staging publish. This is a deliberate skip, not a failure."
             exit 0
           fi
-          curl -sf -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
+          # Size first: staging's nginx refuses bodies over ~95 MB with a 413
+          # before the backend ever sees them.
+          ls -l dist/
+          # --fail-with-body, not -sf: -s hid the server's answer, so a
+          # rejected upload showed only "exit code 22" with no reason.
+          curl -sS --fail-with-body -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
             -H "x-release-key: $RELEASE_KEY" \
             -F "platform=windows" \
             -F "version=$build_id" \
