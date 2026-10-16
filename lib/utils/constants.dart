@@ -11,7 +11,7 @@ const String apiHost =
 // mqttBroker/mqttPort used to be declared here too ('broker', 1883) but were
 // never referenced anywhere -- dead, and a latent ambiguous-import trap:
 // mqtt_client_service.dart declares its own real mqttBroker/mqttPort
-// ('signagexai.com', 443, the actual broker the app connects to) as
+// ('api.signagex.ai', 443, the actual broker the app connects to) as
 // top-level consts in that file, so any file importing both unprefixed
 // would get a genuine name collision the moment it tried to use either name.
 const String baseurl = "https://$apiHost/v1/";
