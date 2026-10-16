@@ -1,5 +1,5 @@
 (function () {
-  const MQTT_URL = 'wss://signagexai.com:443/mqtt';
+  const MQTT_URL = 'wss://api.signagex.ai/mqtt';
   const PAIR_POLL_MS = 5000;
   const DEFAULT_ITEM_DURATION_MS = 8000;
   // Capture at a real resolution and let encodeCanvasTiered pick the
