@@ -14,7 +14,7 @@ import 'package:typed_data/typed_data.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/globle_variable.dart';
 
-const String mqttBroker = 'signagexai.com';
+const String mqttBroker = 'api.signagex.ai';
 const int mqttPort = 443;
 const String mqttWebSocketPath = '/mqtt';
 
@@ -175,7 +175,7 @@ class MqttClientService {
   }
 
   // ────────────────────────────────
-  // Connect - using wss://signagexai.com/mqtt
+  // Connect - using wss://api.signagex.ai/mqtt
   // ────────────────────────────────
   Future<void> connect() {
     // W03: if a connect is already in flight, wait for that one instead of
