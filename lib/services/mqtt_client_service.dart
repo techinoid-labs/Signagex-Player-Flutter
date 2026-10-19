@@ -52,7 +52,10 @@ class MqttClientService {
     );
 
     _client.useWebSocket = true;
-    _client.useAlternateWebSocketImplementation = true;
+    // The alternate implementation hand-writes the upgrade request with a
+    // trailing space after "HTTP/1.1", which api.signagex.ai's proxy rejects
+    // with 400 Bad Request. The standard dart:io WebSocket sends a valid one.
+    _client.useAlternateWebSocketImplementation = false;
     _client.secure = false;
 
     _client.websocketProtocols = ['mqtt'];
