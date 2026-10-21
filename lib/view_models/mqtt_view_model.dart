@@ -2689,6 +2689,12 @@ EOF
       if (!_mqttClientService.isConnected) {
         _debugLog('_checkPairingStatus: MQTT not connected yet, connecting before subscribe');
         await _mqttClientService.connect();
+      } else if (!_mqttClientService.hasWillFor(globleTopic)) {
+        // Connected before the player code was known, so with no Last Will:
+        // closing the player would leave the CMS showing it online (and
+        // Synced) indefinitely. Reconnect once so the will is registered.
+        _debugLog('_checkPairingStatus: no Last Will for $globleTopic, reconnecting to register it');
+        await _mqttClientService.connect();
       }
 
       subsibeMessage(_topic);
