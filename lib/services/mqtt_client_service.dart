@@ -10,7 +10,7 @@ import 'package:typed_data/typed_data.dart';
 
 import 'package:digital_signage/utils/globle_variable.dart';
 
-const String mqttBroker = 'signagexai.com';
+const String mqttBroker = 'api.signagex.ai';
 const int mqttPort = 443;
 const String mqttWebSocketPath = '/mqtt';
 
@@ -52,7 +52,10 @@ class MqttClientService {
     );
 
     _client.useWebSocket = true;
-    _client.useAlternateWebSocketImplementation = true;
+    // The alternate implementation hand-writes the upgrade request with a
+    // trailing space after "HTTP/1.1", which api.signagex.ai's proxy rejects
+    // with 400 Bad Request. The standard dart:io WebSocket sends a valid one.
+    _client.useAlternateWebSocketImplementation = false;
     _client.secure = false;
 
     _client.websocketProtocols = ['mqtt'];
@@ -120,7 +123,7 @@ class MqttClientService {
   }
 
   // ────────────────────────────────
-  // Connect - using wss://signagexai.com/mqtt
+  // Connect - using wss://api.signagex.ai/mqtt
   // ────────────────────────────────
   /// [playerCode] configures MQTT presence tracking, matching the Android
   /// app: a retained Last Will of {"status":"offline"} on
@@ -390,7 +393,12 @@ class MqttClientService {
     }
   }
 
-  void publish(String topic, String message) {
+  // [qos] and [retain] default to what every existing caller has always sent.
+  // content_synced overrides both: QoS 1, and never retained, because a
+  // retained message on <player_code> would replace the CMS's retained
+  // playback message and the screen would reconnect to nothing.
+  void publish(String topic, String message,
+      {MqttQos qos = MqttQos.atMostOnce, bool retain = true}) {
     if (topic.isEmpty || topic.trim().isEmpty) {
       print('MQTT_LOGS:: Cannot publish - topic is empty');
       return;
@@ -402,15 +410,19 @@ class MqttClientService {
 
       _client.publishMessage(
         topic,
-        MqttQos.atMostOnce,
+        qos,
         buffer,
-        retain: true,
+        retain: retain,
       );
       print('MQTT_LOGS:: Published message to topic $topic: $message');
     } else {
       print('MQTT_LOGS:: Cannot publish - client not connected');
     }
   }
+
+  /// For content_synced: QoS 1 and never retained (see [publish]).
+  void publishSyncAck(String topic, String message) =>
+      publish(topic, message, qos: MqttQos.atLeastOnce, retain: false);
 
   bool get isConnected =>
       _client.connectionStatus?.state == MqttConnectionState.connected;
