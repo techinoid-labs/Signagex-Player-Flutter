@@ -112,6 +112,19 @@ class MqttClientService {
   // no coordination at all.
   Future<void>? _connectingFuture;
 
+  // The Last Will topic the current connection registered, or '' for none.
+  // The will can only be set when connecting, and on a fresh launch MQTT
+  // connects before pairing has returned the player code -- so that first
+  // connection has no will, and closing the player never told the CMS it
+  // went offline. See [hasWillFor].
+  String _willTopic = '';
+
+  /// Whether the current connection will mark [playerCode] offline when it
+  /// drops. False means the caller should reconnect now that it knows the
+  /// code.
+  bool hasWillFor(String playerCode) =>
+      playerCode.isNotEmpty && _willTopic == '$playerCode/player_status';
+
   // ────────────────────────────────
   // Callbacks
   // ────────────────────────────────
@@ -239,6 +252,7 @@ class MqttClientService {
       // the player went offline except our own graceful disconnect, which
       // explains the stuck "Online" + "Sync Issue" combination reported in
       // the CMS.
+      _willTopic = '';
       if (globleTopic.isNotEmpty) {
         final willPayload = Uint8Buffer();
         willPayload.addAll(utf8.encode(jsonEncode({'status': 'offline'})));
@@ -248,6 +262,7 @@ class MqttClientService {
             .withWillPayload(willPayload)
             .withWillQos(MqttQos.atLeastOnce)
             .withWillRetain();
+        _willTopic = '$globleTopic/player_status';
       }
 
       _client.connectionMessage = connMessage;
@@ -481,12 +496,15 @@ class MqttClientService {
     return message;
   }
 
-  // [qos] and [retain] default to what every existing caller has always sent.
-  // content_synced overrides both: QoS 1, and never retained, because a
-  // retained message on <player_code> would replace the CMS's retained
-  // playback message and the screen would reconnect to nothing.
+  // Only <player_code>/player_status is retained by default, so the CMS reads
+  // a screen's current online/offline state as soon as it subscribes.
+  // Everything else used to be retained too, which on <player_code> replaced
+  // the CMS's retained playback message with our own player_details or log
+  // line: a screen that was closed while content was published reopened to
+  // nothing, and never acknowledged it. content_synced also asks for QoS 1.
   void publish(String topic, String message,
-      {MqttQos qos = MqttQos.atMostOnce, bool retain = true}) {
+      {MqttQos qos = MqttQos.atMostOnce, bool? retain}) {
+    retain ??= topic.endsWith('/player_status');
     if (topic.isEmpty || topic.trim().isEmpty) {
       print('MQTT_LOGS:: Cannot publish - topic is empty');
       _debugLog('publish($topic): SKIPPED, topic is empty');
