@@ -1523,10 +1523,33 @@ EOF
 
   void _startDownloadingForCampaign() async {
     if (_state == MqttState.downloading) {
+      // A publish_campaign arriving now leaves its acknowledgement pending;
+      // the running pass sees it on completion and runs again for it.
       print("Downloads are already in progress.");
       return;
     }
 
+    final acksAtStart = _pendingContentSyncAcks.length;
+    final failures = <String>[];
+    try {
+      await _downloadCampaign(failures);
+    } catch (e) {
+      failures.add('campaign download failed: $e');
+      rethrow;
+    } finally {
+      // This pass collected its files before a newer publish replaced
+      // _campaignModel, so the newer one's files may not be on disk yet.
+      // Run again for it rather than acknowledging content not downloaded.
+      if (_pendingContentSyncAcks.length > acksAtStart &&
+          _state != MqttState.downloading) {
+        _startDownloadingForCampaign();
+      } else {
+        _flushContentSyncAcks(failures);
+      }
+    }
+  }
+
+  Future<void> _downloadCampaign(List<String> failures) async {
     // Map<String, dynamic> sendLog = {
     //   "action": "player_logs",
     //   "log": "Download Campaign",
@@ -1615,6 +1638,8 @@ EOF
         notifyListeners();
       } catch (error) {
         print("Error downloading file: $error");
+        failures.add(
+            'download failed: ${Uri.tryParse(originalUrl)?.pathSegments.lastOrNull ?? originalUrl} ($error)');
         // Map<String, dynamic> sendLog = {
         //   "action": "player_logs",
         //   "log": "Download Campaign",
@@ -2449,6 +2474,72 @@ EOF
 // await restartApp();
     final jsonObj = jsonDecode(message);
 
+    // Our own acknowledgement, echoed back because we subscribe to the topic
+    // we publish it on.
+    if (jsonObj["action"] == "content_synced") return;
+
+    final action = jsonObj["action"];
+    try {
+      await _applyIncomingMessage(jsonObj);
+    } catch (e) {
+      if (action == "publish_campaign" || _syncAckOnApply.contains(action)) {
+        _sendContentSynced(jsonObj, error: 'failed to apply $action: $e');
+      }
+      rethrow;
+    }
+    // publish_campaign is acknowledged later, by the download pass that
+    // actually puts it on screen -- see _flushContentSyncAcks.
+    if (_syncAckOnApply.contains(action)) _sendContentSynced(jsonObj);
+  }
+
+  // Pushes acknowledged as soon as they have been handled. See
+  // docs/PLAYER_SYNC_CONTRACT.md for the full list and why the device
+  // commands and run_interactivity are left out.
+  static const _syncAckOnApply = {
+    "remove_campaign",
+    "remove_playlist",
+    "remove_content",
+    "remove_composition",
+    "remove_web_app_instance",
+    "create_interactivity",
+  };
+
+  // publish_campaign pushes received but not yet on screen. The download
+  // pass that finally puts the newest state on screen acknowledges all of
+  // them, since every publish carries the full playback state.
+  final List<Map<String, dynamic>> _pendingContentSyncAcks = [];
+
+  /// Tells the CMS a push has been applied, or why it could not be.
+  /// [push] needs only its "action" and, when the CMS sent one, "sync_id".
+  void _sendContentSynced(Map<String, dynamic> push, {String? error}) {
+    final ack = <String, dynamic>{
+      "action": "content_synced",
+      "status": error == null ? "ok" : "error",
+      "received_action": push["action"],
+      if (push["sync_id"] != null) "sync_id": push["sync_id"],
+      if (error != null)
+        "error": error.length > 500 ? error.substring(0, 500) : error,
+      "sender": Platform.operatingSystem,
+    };
+    print('MQTT_LOGS:: content_synced: ${jsonEncode(ack)}');
+    _mqttClientService.publishSyncAck(topic, jsonEncode(ack));
+  }
+
+  void _flushContentSyncAcks(List<String> failures) {
+    if (_pendingContentSyncAcks.isEmpty) return;
+    final error = failures.isEmpty
+        ? null
+        : failures.length == 1
+            ? failures.first
+            : '${failures.first} (+${failures.length - 1} more)';
+    final pending = List.of(_pendingContentSyncAcks);
+    _pendingContentSyncAcks.clear();
+    for (final push in pending) {
+      _sendContentSynced(push, error: error);
+    }
+  }
+
+  Future<void> _applyIncomingMessage(dynamic jsonObj) async {
     print('Saving JSON Object: $jsonObj');
 
     // Check if message has an action field
@@ -2749,6 +2840,10 @@ EOF
         campaignModelFromJson(jsonEncode(jsonObj)),
         jsonObj,
       );
+      _pendingContentSyncAcks.add({
+        "action": jsonObj["action"],
+        if (jsonObj["sync_id"] != null) "sync_id": jsonObj["sync_id"],
+      });
       // Device tags ride on the campaign payload, not the pairing
       // response -- adopt them before any player_tag restriction is
       // evaluated against them.
@@ -2919,6 +3014,10 @@ EOF
           }
         }
       }
+      // No media at all (e.g. every campaign removed) starts no download
+      // pass, and a pass with nothing to download has already flushed.
+      // While a pass is still downloading, it acknowledges this one.
+      if (_state != MqttState.downloading) _flushContentSyncAcks(const []);
     } else if (jsonObj["action"] == "create_interactivity" ||
         jsonObj["action"] == "publish_interactivity") {
       // The backend sends the player's FULL list on every create, update and
