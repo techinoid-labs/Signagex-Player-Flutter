@@ -537,6 +537,11 @@ class MqttClientService {
   void publishSyncAck(String topic, String message) =>
       publish(topic, message, qos: MqttQos.atLeastOnce, retain: false);
 
+  /// Removes the broker's retained message on [topic]: an empty retained
+  /// payload is how MQTT deletes one.
+  void clearRetained(String topic) =>
+      publish(topic, '', qos: MqttQos.atLeastOnce, retain: true);
+
   bool get isConnected =>
       _client.connectionStatus?.state == MqttConnectionState.connected;
 }
