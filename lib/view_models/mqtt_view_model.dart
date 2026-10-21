@@ -1915,6 +1915,22 @@ EOF
   }
 
   void _startDownloadingForCampaign() async {
+    final myGeneration = ++_contentGeneration;
+    final failures = <String>[];
+    try {
+      await _downloadCampaign(myGeneration, failures);
+    } catch (e) {
+      failures.add('campaign download failed: $e');
+      rethrow;
+    } finally {
+      // A superseded pass leaves its pushes to the newer one, which carries
+      // the full playback state and acknowledges every push still pending.
+      if (myGeneration == _contentGeneration) _flushContentSyncAcks(failures);
+    }
+  }
+
+  Future<void> _downloadCampaign(
+      int myGeneration, List<String> failures) async {
     // W07: bumping (not bailing out when _state is already `downloading`)
     // is deliberate -- the old `if (_state == downloading) return;` guard
     // blocked exactly the case that needed to keep working: campaign B
@@ -1925,7 +1941,7 @@ EOF
     // regardless of which was actually published last. Bumping the
     // generation here lets B's own pass proceed, and lets A's pass
     // recognize at its own completion (below) that it's been superseded.
-    final myGeneration = ++_contentGeneration;
+    // (The bump itself happens in _startDownloadingForCampaign.)
 
     Map<String, dynamic> sendLog = {
       "action": "player_logs",
@@ -2034,6 +2050,8 @@ EOF
         notifyListeners();
       } catch (error) {
         print("Error downloading file: $error");
+        failures.add(
+            'download failed: ${Uri.tryParse(originalUrl)?.pathSegments.lastOrNull ?? originalUrl} ($error)');
         Map<String, dynamic> sendLog = {
           "action": "player_logs",
           "log": "Download Campaign",
@@ -3235,6 +3253,71 @@ EOF
       return;
     }
 
+    // Our own acknowledgement, echoed back because we subscribe to the topic
+    // we publish it on.
+    if (jsonObj["action"] == "content_synced") return;
+
+    final action = jsonObj["action"];
+    try {
+      await _applyIncomingMessage(jsonObj);
+    } catch (e) {
+      if (action == "publish_campaign" || _syncAckOnApply.contains(action)) {
+        _sendContentSynced(jsonObj, error: 'failed to apply $action: $e');
+      }
+      rethrow;
+    }
+    // publish_campaign is acknowledged later, by the download pass that
+    // actually puts it on screen -- see _flushContentSyncAcks.
+    if (_syncAckOnApply.contains(action)) _sendContentSynced(jsonObj);
+  }
+
+  // Pushes acknowledged as soon as they have been handled. See
+  // docs/PLAYER_SYNC_CONTRACT.md for the full list and why the device
+  // commands and run_interactivity are left out.
+  static const _syncAckOnApply = {
+    "remove_campaign",
+    "remove_playlist",
+    "remove_content",
+    "remove_composition",
+    "remove_web_app_instance",
+    "create_interactivity",
+  };
+
+  // publish_campaign pushes received but not yet on screen. A newer push can
+  // supersede an older one mid-download (W07); the pass that finally commits
+  // the newest state acknowledges all of them, since it is the full state.
+  final List<Map<String, dynamic>> _pendingContentSyncAcks = [];
+
+  /// Tells the CMS a push has been applied, or why it could not be.
+  /// [push] needs only its "action" and, when the CMS sent one, "sync_id".
+  void _sendContentSynced(Map<String, dynamic> push, {String? error}) {
+    final ack = <String, dynamic>{
+      "action": "content_synced",
+      "status": error == null ? "ok" : "error",
+      "received_action": push["action"],
+      if (push["sync_id"] != null) "sync_id": push["sync_id"],
+      if (error != null)
+        "error": error.length > 500 ? error.substring(0, 500) : error,
+    };
+    _debugLog('content_synced: ${jsonEncode(ack)}');
+    _mqttClientService.publishSyncAck(topic, jsonEncode(ack));
+  }
+
+  void _flushContentSyncAcks(List<String> failures) {
+    if (_pendingContentSyncAcks.isEmpty) return;
+    final error = failures.isEmpty
+        ? null
+        : failures.length == 1
+            ? failures.first
+            : '${failures.first} (+${failures.length - 1} more)';
+    final pending = List.of(_pendingContentSyncAcks);
+    _pendingContentSyncAcks.clear();
+    for (final push in pending) {
+      _sendContentSynced(push, error: error);
+    }
+  }
+
+  Future<void> _applyIncomingMessage(Map<String, dynamic> jsonObj) async {
     print('Saving JSON Object: $jsonObj');
 
     // Check if message has an action field
@@ -3453,6 +3536,10 @@ EOF
       );
       final campaigns = incomingCampaignModel.data?.playerCampaigns;
       final count = campaigns?.length ?? 0;
+      _pendingContentSyncAcks.add({
+        "action": jsonObj["action"],
+        if (jsonObj["sync_id"] != null) "sync_id": jsonObj["sync_id"],
+      });
       _debugLog(
           'publish_campaign received: $count campaign(s) currentIndex=$_currentIndexOfCapmaign '
           '${campaigns?.map((c) => "[id=${c.campaignId} name=${c.campaignName} composition=${c.isCompositionLayout}]").join(" ")}');
@@ -3468,6 +3555,8 @@ EOF
         _debugLog(
             'publish_campaign contains no campaigns; showing no-content screen');
         notifyListeners();
+        // Nothing to download, so no download pass will acknowledge it.
+        _flushContentSyncAcks(const []);
         return;
       }
       _campaignModel = incomingCampaignModel;
