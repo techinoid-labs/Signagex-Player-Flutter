@@ -481,7 +481,12 @@ class MqttClientService {
     return message;
   }
 
-  void publish(String topic, String message) {
+  // [qos] and [retain] default to what every existing caller has always sent.
+  // content_synced overrides both: QoS 1, and never retained, because a
+  // retained message on <player_code> would replace the CMS's retained
+  // playback message and the screen would reconnect to nothing.
+  void publish(String topic, String message,
+      {MqttQos qos = MqttQos.atMostOnce, bool retain = true}) {
     if (topic.isEmpty || topic.trim().isEmpty) {
       print('MQTT_LOGS:: Cannot publish - topic is empty');
       _debugLog('publish($topic): SKIPPED, topic is empty');
@@ -495,9 +500,9 @@ class MqttClientService {
 
       _client.publishMessage(
         topic,
-        MqttQos.atMostOnce,
+        qos,
         buffer,
-        retain: true,
+        retain: retain,
       );
       print('MQTT_LOGS:: Published message to topic $topic: $taggedMessage');
       successRequests++;
@@ -509,6 +514,10 @@ class MqttClientService {
           'publish($topic): FAILED -- client state is ${_client.connectionStatus?.state}, NOT actually sent');
     }
   }
+
+  /// For content_synced: QoS 1 and never retained (see [publish]).
+  void publishSyncAck(String topic, String message) =>
+      publish(topic, message, qos: MqttQos.atLeastOnce, retain: false);
 
   bool get isConnected =>
       _client.connectionStatus?.state == MqttConnectionState.connected;
