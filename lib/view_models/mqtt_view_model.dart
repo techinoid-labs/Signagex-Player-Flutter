@@ -2384,6 +2384,42 @@ EOF
   // with, be tampered with by, or be mistaken for the user's own files,
   // and a future eviction policy can safely operate on this directory
   // alone.
+  /// Forgets everything this screen was given to play: what is on screen,
+  /// the saved copy it restores from, its triggers, its downloaded files,
+  /// and the broker's retained campaign for its player code.
+  Future<void> _wipeContent(String why) async {
+    _debugLog('wiping content: $why');
+    // Any download pass still running is now stale and won't commit.
+    ++_contentGeneration;
+    _timerOfCampaign?.cancel();
+    _timerOfCampaign = null;
+    _timer?.cancel();
+    _timer = null;
+    _currentIndexOfCapmaign = 0;
+    _currentIndex = 0;
+    _campaignModel = null;
+    _playListModel = null;
+    storedJsonObj = {};
+    _pendingContentSyncAcks.clear();
+    interactivity.setList(
+        InteractivityModel(action: '', interactivity: const [], raw: const {}));
+    if (globleTopic.isNotEmpty) _mqttClientService.clearRetained(globleTopic);
+    // The campaign and playlist views can't render without their model.
+    if (_state != MqttState.pairedScreen) _state = MqttState.noContent;
+    notifyListeners();
+
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove('jsonObj');
+    await prefs.remove(_interactivityPrefsKey);
+    try {
+      final dir = await _cacheRootDirectory();
+      _cacheRootCached = null;
+      if (await dir.exists()) await dir.delete(recursive: true);
+    } catch (e) {
+      _debugLog('wiping content: could not delete media cache -- $e');
+    }
+  }
+
   Future<Directory> _cacheRootDirectory() async {
     if (_cacheRootCached != null) return _cacheRootCached!;
     final support = await getApplicationSupportDirectory();
@@ -2738,11 +2774,20 @@ EOF
         });
       } else if (response["paired"] == false) {
         print("this is state screeen ${response["paired"]}");
-        await prefs.setBool('storeState', response["paired"]);
-        storeState = false;
-
+        // Arriving at the pairing code from anywhere else means this screen
+        // was deleted or unpaired in the CMS (or reinstalled). Its old
+        // content must not come back once it is paired again, and the player
+        // code is derived from the device, so a re-paired screen subscribes
+        // to the same topic and the broker would replay the old retained
+        // campaign. Set before any await so a retained push arriving now
+        // already sees the pairing screen and is ignored.
+        final enteringPairing = _state != MqttState.pairedScreen;
         _stopPeriodicReporting();
         _state = MqttState.pairedScreen;
+        if (enteringPairing) await _wipeContent('player is not paired');
+
+        await prefs.setBool('storeState', response["paired"]);
+        storeState = false;
 
         _pairingPollTimer ??=
             Timer.periodic(const Duration(seconds: 10), (_) async {
@@ -3389,6 +3434,16 @@ EOF
         return;
     }
 
+    if ((jsonObj["action"] == "publish_playlist" ||
+            jsonObj["action"] == "publish_campaign") &&
+        _state == MqttState.pairedScreen) {
+      // Content for a screen showing its pairing code is what the broker
+      // still had retained from before it was deleted. Once it is paired
+      // again the CMS publishes afresh, and the next subscribe delivers it.
+      _debugLog('${jsonObj["action"]} ignored: player is not paired');
+      return;
+    }
+
     if (jsonObj["action"] == "publish_playlist" ||
         jsonObj["action"] == "publish_campaign") {
       // Refresh tags / name / location before the restrictions attached to
@@ -3727,6 +3782,9 @@ EOF
 
       _mqttClientService.publish(topic, jsonEncode(sendLog));
       debugPrint("remove playlist and update screen");
+      // prefs.clear() alone left the campaign playing from memory and its
+      // files on disk, so a re-paired screen came back showing it.
+      await _wipeContent('action_delete');
       SharedPreferences prefs = await SharedPreferences.getInstance();
       prefs.clear();
       await _checkPairingStatus();
