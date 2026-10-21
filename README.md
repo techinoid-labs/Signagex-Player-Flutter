@@ -1,6 +1,29 @@
 # digital_signage
 
-A new Flutter project.
+SignageX player for Windows, macOS and Linux, built with Flutter.
+
+## Project layout
+
+```
+lib/
+  main.dart          app entry point
+  data/              API client, network layer, shared preferences
+  models/            campaign, playlist, interactivity and proof-of-play models
+  provider/          app-wide provider
+  services/          MQTT client, release update check, diagnostic upload
+  view_models/       MQTT view model (player state), system settings
+  views/             full-screen views: connecting, campaign, playlist, stopped...
+  widgets/           small reusable widgets
+  utils/             constants, logging, platform and time helpers
+test/                unit tests
+assets/              images and app files bundled into the build
+windows/ macos/ linux/ android/ ios/ web/   Flutter platform runners
+docs/                runbooks and design notes
+tools/windows-sandbox/   Windows Sandbox test harness (double-click the .wsb)
+.github/workflows/   staging builds and the manual "Promote to production"
+```
+
+Each desktop platform ships from its own branch (`windows`, `macos`, `linux`).
 
 ## Building for macOS and testing on another MacBook
 
