@@ -25,7 +25,17 @@ VERSION="${1:?usage: make_deb.sh <version> <output .deb> [suffix]}"
 OUTPUT="${2:?usage: make_deb.sh <version> <output .deb> [suffix]}"
 SUFFIX="${3:-}"
 
-BUNDLE="build/linux/x64/release/bundle"
+# Target architecture. Defaults to the build host (dpkg's name: amd64/arm64),
+# overridable with DEB_ARCH. Flutter writes the bundle under a matching
+# directory -- x64 for amd64, arm64 for arm64 -- so the two must stay in step.
+DEB_ARCH="${DEB_ARCH:-$(dpkg --print-architecture)}"
+case "$DEB_ARCH" in
+  amd64) FLUTTER_ARCH=x64 ;;
+  arm64) FLUTTER_ARCH=arm64 ;;
+  *) echo "error: unsupported architecture '$DEB_ARCH' (expected amd64 or arm64)" >&2; exit 1 ;;
+esac
+
+BUNDLE="build/linux/$FLUTTER_ARCH/release/bundle"
 BIN="signagex-player"
 PKG="signagex-player${SUFFIX:+-$SUFFIX}"
 INSTALL_DIR="/opt/$PKG"
@@ -96,7 +106,7 @@ Package: $PKG
 Version: $DEB_VERSION
 Section: video
 Priority: optional
-Architecture: amd64
+Architecture: $DEB_ARCH
 Maintainer: SignageX <support@signagex.ai>
 Installed-Size: $INSTALLED_KB
 Depends: xdotool, policykit-1, libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,

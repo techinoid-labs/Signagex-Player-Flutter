@@ -44,7 +44,17 @@ VERSION="${1:?usage: make_appimage.sh <version> <output .AppImage> [suffix]}"
 OUTPUT="${2:?usage: make_appimage.sh <version> <output .AppImage> [suffix]}"
 SUFFIX="${3:-}"
 
-BUNDLE="build/linux/x64/release/bundle"
+# Target architecture. Defaults to the build host; override with APPIMAGE_ARCH.
+# uname -m / linuxdeploy use x86_64 / aarch64, while Flutter writes the bundle
+# under x64 / arm64 -- the case below maps between the two.
+APPIMAGE_ARCH="${APPIMAGE_ARCH:-$(uname -m)}"
+case "$APPIMAGE_ARCH" in
+  x86_64)        FLUTTER_ARCH=x64 ;;
+  aarch64|arm64) APPIMAGE_ARCH=aarch64; FLUTTER_ARCH=arm64 ;;
+  *) echo "error: unsupported architecture '$APPIMAGE_ARCH' (expected x86_64 or aarch64)" >&2; exit 1 ;;
+esac
+
+BUNDLE="build/linux/$FLUTTER_ARCH/release/bundle"
 BIN="signagex-player"
 NAME="SignageX Player${SUFFIX:+ ($SUFFIX)}"
 
@@ -118,7 +128,7 @@ export NO_STRIP=1
 export OUTPUT="$OUTPUT"
 export VERSION="$VERSION"
 
-ARCH=x86_64 "$LINUXDEPLOY" \
+ARCH="$APPIMAGE_ARCH" "$LINUXDEPLOY" \
   --appdir "$APPDIR" \
   --executable "$APPDIR/usr/bin/$BIN" \
   --executable "$APPDIR/usr/bin/xdotool" \

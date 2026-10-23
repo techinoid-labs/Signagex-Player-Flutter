@@ -345,6 +345,9 @@ jobs:
             echo "Once tested, release with the **Promote Linux to production** workflow, run id \`${{ github.run_id }}\`."
           } >> "$GITHUB_STEP_SUMMARY"
 
+  # ARM64 builds and packages are independently gated by build-linux-arm64.yml.
+  # They never publish to the amd64 release feed.
+
   publish-staging:
     needs: [test, package]
     if: github.ref == 'refs/heads/linux'

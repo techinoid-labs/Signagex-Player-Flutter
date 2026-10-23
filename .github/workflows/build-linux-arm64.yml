@@ -1,0 +1,162 @@
+name: Build Linux ARM64
+
+# Separate from amd64 publication. No production/staging feed mutation.
+on:
+  workflow_dispatch:
+  push:
+    branches: [linux]
+    paths:
+      - 'lib/**'
+      - 'linux/**'
+      - 'pubspec.*'
+      - '.github/workflows/build-linux-arm64.yml'
+permissions:
+  contents: read
+concurrency:
+  group: linux-arm64-${{ github.ref }}
+  cancel-in-progress: true
+env:
+  FLUTTER_VERSION: '3.27.4'
+jobs:
+  package-arm64:
+    runs-on: ubuntu-22.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      # Bootstrap the pinned Flutter source on native ARM64; do not use
+      # an x64 SDK archive or emulation for the compiler/runtime.
+      - name: Install Flutter for native ARM64
+        run: |
+          test "$(uname -m)" = aarch64
+          git clone --depth 1 --branch "$FLUTTER_VERSION" https://github.com/flutter/flutter.git "$RUNNER_TEMP/flutter-arm64"
+          echo "$RUNNER_TEMP/flutter-arm64/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/flutter-arm64/bin/flutter" --version
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            clang cmake ninja-build pkg-config \
+            libgtk-3-dev liblzma-dev libstdc++-12-dev \
+            desktop-file-utils file xdotool
+          sudo apt-get install -y \
+            libpulse0 libasound2 \
+            libnss3 libnspr4 \
+            libatk1.0-0 libatk-bridge2.0-0 libcups2 \
+            libdrm2 libgbm1 libxkbcommon0 \
+            libxcomposite1 libxdamage1 libxrandr2 libxfixes3 libxext6 \
+            libpango-1.0-0 libcairo2 libxss1
+
+      - name: Install a clang new enough for CEF
+        run: |
+          set -euo pipefail
+          want=18
+          if ! command -v "clang-$want" >/dev/null 2>&1; then
+            echo "clang-$want not on the image; installing from apt.llvm.org"
+            wget -qO llvm.sh https://apt.llvm.org/llvm.sh
+            chmod +x llvm.sh
+            sudo ./llvm.sh "$want"
+          fi
+          "clang-$want" --version
+          echo "CC=clang-$want" >> "$GITHUB_ENV"
+          echo "CXX=clang++-$want" >> "$GITHUB_ENV"
+
+      - name: Enable Linux desktop support
+        run: flutter config --enable-linux-desktop
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Compute build id
+        id: build_id
+        run: echo "id=arm64-v${{ github.run_number }}" >> "$GITHUB_OUTPUT"
+
+      # The aarch64 build of linuxdeploy, not the x86_64 one the amd64 job
+      # fetches. make_appimage.sh passes ARCH=aarch64 to it automatically on
+      # this runner (uname -m).
+      - name: Fetch linuxdeploy (aarch64)
+        run: |
+          set -euo pipefail
+          sudo apt-get install -y patchelf librsvg2-dev
+          base=https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous
+          curl -sSfL -o linuxdeploy "$base/linuxdeploy-aarch64.AppImage"
+          curl -sSfL -o linuxdeploy-plugin-gtk.sh \
+            https://raw.githubusercontent.com/linuxdeploy/linuxdeploy-plugin-gtk/master/linuxdeploy-plugin-gtk.sh
+          chmod +x linuxdeploy linuxdeploy-plugin-gtk.sh
+          ./linuxdeploy --appimage-extract >/dev/null
+          echo "LINUXDEPLOY=$PWD/squashfs-root/AppRun" >> "$GITHUB_ENV"
+          echo "LINUXDEPLOY_PLUGINS=gtk" >> "$GITHUB_ENV"
+          echo "APPIMAGE_EXTRACT_AND_RUN=1" >> "$GITHUB_ENV"
+          echo "$PWD" >> "$GITHUB_PATH"
+
+      - name: Analyze and test
+        run: |
+          flutter analyze --no-fatal-warnings --no-fatal-infos
+          flutter test
+
+      - name: Build production
+        run: flutter build linux --release --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
+
+      - name: Report the compiler and flags CMake actually used
+        if: always()
+        run: |
+          out=build/linux/arm64/release
+          echo "=================== CMakeCache ==================="
+          if [ -f "$out/CMakeCache.txt" ]; then
+            grep -E '^CMAKE_(C|CXX)_COMPILER:|^CMAKE_CXX_STANDARD|^CMAKE_CXX_EXTENSIONS' "$out/CMakeCache.txt" || true
+          else
+            echo "No CMakeCache.txt -- the build never configured."
+          fi
+
+      - name: Validate the desktop entry
+        run: desktop-file-validate linux/packaging/ai.signagex.player.desktop
+
+      # make_deb.sh / make_appimage.sh read the arch from the build host
+      # (dpkg --print-architecture -> arm64, uname -m -> aarch64), so only the
+      # output filenames below say arm64/aarch64 explicitly.
+      - name: Package production
+        run: |
+          ./linux/packaging/make_deb.sh "${{ steps.build_id.outputs.id }}" \
+            "dist/signagex-player_${{ steps.build_id.outputs.id }}_arm64.deb"
+          ./linux/packaging/make_appimage.sh "${{ steps.build_id.outputs.id }}" \
+            "dist/SignageX-Player-${{ steps.build_id.outputs.id }}-aarch64.AppImage"
+
+      - name: Install the package to prove it is well formed
+        run: |
+          sudo apt-get install -y "./dist/signagex-player_${{ steps.build_id.outputs.id }}_arm64.deb"
+          test -x /usr/bin/signagex-player
+          sudo apt-get remove -y signagex-player
+
+      - name: Build staging
+        run: flutter build linux --release --dart-define=APP_ENV=staging --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
+
+      - name: Package staging
+        run: |
+          ./linux/packaging/make_deb.sh "${{ steps.build_id.outputs.id }}" \
+            "dist/signagex-player-staging_${{ steps.build_id.outputs.id }}_arm64.deb" staging
+          ./linux/packaging/make_appimage.sh "${{ steps.build_id.outputs.id }}" \
+            "dist/SignageX-Player-Staging-${{ steps.build_id.outputs.id }}-aarch64.AppImage" Staging
+
+      - name: Verify native binaries and record checksums
+        run: |
+          file build/linux/arm64/release/bundle/signagex-player | grep -i 'aarch64'
+          readelf -h build/linux/arm64/release/bundle/lib/libcef.so | grep AArch64
+          for deb in dist/*_arm64.deb; do
+            test "$(dpkg-deb -f "$deb" Architecture)" = arm64
+          done
+          sha256sum dist/*.deb dist/*.AppImage > dist/SHA256SUMS
+          printf 'commit=%s\nrun=%s\narchitecture=arm64\nstatus=hardware-validation-pending\n' "$GITHUB_SHA" "$GITHUB_RUN_ID" > dist/build-identity.txt
+
+      - name: Upload arm64 packages
+        uses: actions/upload-artifact@v4
+        with:
+          name: signagex-player-arm64
+          if-no-files-found: error
+          path: |
+            dist/SHA256SUMS
+            dist/build-identity.txt
+            dist/signagex-player_*_arm64.deb
+            dist/SignageX-Player-*-aarch64.AppImage
+            dist/signagex-player-staging_*_arm64.deb
+            dist/SignageX-Player-Staging-*-aarch64.AppImage
+
