@@ -31,6 +31,9 @@ https://docs.github.com/en/actions/reference/runners/github-hosted-runners
 on a native ARM64 runner. It analyzes/tests, creates separate `_arm64.deb` and
 `-aarch64.AppImage` artifacts, checks ELF/package architecture, installs the
 production Debian package and records SHA256SUMS plus commit identity.
+Pi packages exclude MDK’s optional `libmdk-rockchip.so` backend: it requires
+Rockchip-specific `librockchip_mpp.so.1`, which a Pi does not provide. The core
+MDK/FFmpeg runtime remains bundled.
 Failures fail this workflow. It does not publish to either amd64 release feed.
 Build identifiers use `arm64-vN`, independent of the amd64 v15 release.
 

@@ -116,6 +116,9 @@ jobs:
       # output filenames below say arm64/aarch64 explicitly.
       - name: Package production
         run: |
+          # MDK's multi-arch SDK includes an optional Rockchip-only backend.
+          # Pi does not provide librockchip_mpp; keep the core MDK/FFmpeg path.
+          rm -f build/linux/arm64/release/bundle/lib/libmdk-rockchip.so
           ./linux/packaging/make_deb.sh "${{ steps.build_id.outputs.id }}" \
             "dist/signagex-player_${{ steps.build_id.outputs.id }}_arm64.deb"
           ./linux/packaging/make_appimage.sh "${{ steps.build_id.outputs.id }}" \
@@ -132,6 +135,7 @@ jobs:
 
       - name: Package staging
         run: |
+          rm -f build/linux/arm64/release/bundle/lib/libmdk-rockchip.so
           ./linux/packaging/make_deb.sh "${{ steps.build_id.outputs.id }}" \
             "dist/signagex-player-staging_${{ steps.build_id.outputs.id }}_arm64.deb" staging
           ./linux/packaging/make_appimage.sh "${{ steps.build_id.outputs.id }}" \
