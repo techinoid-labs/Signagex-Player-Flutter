@@ -72,6 +72,11 @@ if [ -n "$SUFFIX" ]; then
     "$desktop"
 fi
 
+# Optional kiosk provisioning; activation requires an explicit administrator action.
+mkdir -p "$ROOT$INSTALL_DIR/kiosk" "$ROOT/usr/share/polkit-1/rules.d"
+cp linux/packaging/kiosk/* "$ROOT$INSTALL_DIR/kiosk/"
+cp linux/packaging/49-signagex-reboot.rules "$ROOT/usr/share/polkit-1/rules.d/49-$PKG-reboot.rules"
+
 # --- icons ---------------------------------------------------------------
 for png in linux/packaging/icons/signagex-player-*.png; do
   size="${png##*-}"; size="${size%.png}"
@@ -94,7 +99,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: SignageX <support@signagex.ai>
 Installed-Size: $INSTALLED_KB
-Depends: libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,
+Depends: xdotool, policykit-1, libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,
  libxkbcommon0, libgbm1, libdrm2, libxcomposite1, libxdamage1, libxrandr2,
  libatk1.0-0, libatk-bridge2.0-0, libpango-1.0-0, libcairo2,
  libasound2t64 | libasound2, libcups2t64 | libcups2

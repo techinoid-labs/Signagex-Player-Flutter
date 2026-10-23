@@ -1,0 +1,7 @@
+// Explicit opt-in: only the local active kiosk user in this group may reboot.
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.freedesktop.login1.reboot" &&
+        subject.local && subject.active && subject.isInGroup("signagex-reboot")) {
+        return polkit.Result.YES;
+    }
+});

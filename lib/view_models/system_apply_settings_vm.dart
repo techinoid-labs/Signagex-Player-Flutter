@@ -141,13 +141,13 @@ class DeviceSettingsViewModel with ChangeNotifier {
   /// getactivewindow here (the minimized window is no longer "active" by
   /// definition), so this searches by the app's own window title instead
   /// (set via gtk_window_set_title in linux/runner/my_application.cc,
-  /// "digital_signage") -- reliable regardless of what else is running on
+  /// "SignageX Player") -- reliable regardless of what else is running on
   /// the kiosk. xdotool's windowactivate both focuses AND de-iconifies
   /// (un-minimizes) a window, per its own docs.
   Future<String> pressBackForLinux() async {
     try {
       final result = await Process.run('xdotool',
-          ['search', '--name', 'digital_signage', 'windowactivate']);
+          ['search', '--name', '^SignageX Player$', 'windowactivate']);
       if (result.exitCode != 0) {
         print('MQTT_LOGS:: xdotool windowactivate (back) failed: ${result.stderr}');
         return 'Error: ${result.stderr}';
@@ -163,7 +163,7 @@ class DeviceSettingsViewModel with ChangeNotifier {
     print("Attempting to restart the device...");
 
     // Execute the reboot command
-    final result = await Process.run('pkexec', ['systemctl', 'reboot']);
+    final result = await Process.run('systemctl', ['--no-ask-password', 'reboot']);
 
     print('Exit code: ${result.exitCode}');
     print('Stdout: ${result.stdout}');

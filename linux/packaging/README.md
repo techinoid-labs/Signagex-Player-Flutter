@@ -8,7 +8,7 @@ questions.
 | `.AppImage` | **Default.** One executable file that needs nothing installed first: `chmod +x`, run. No root, no package manager, no dependency resolution, nothing to uninstall. |
 | `.deb` | The screen runs Ubuntu or Debian *and* you want system integration: a launcher entry, apt-managed upgrades, a package the machine knows about. |
 
-The AppImage carries every shared library the player links against,
+The AppImage bundles xdotool for X11 remote input and carries every shared library the player links against,
 including the embedded browser's, so a bare machine with a desktop session
 and nothing else on it will run it.
 
@@ -137,3 +137,39 @@ and commit the resulting lock alongside the change.
 would produce a package that fails to start on every 22.04 screen in the
 field with a `GLIBC_2.39 not found` error and no other clue. Raise the pin
 only when no 22.04 screens remain.
+
+## Optional dedicated kiosk session
+
+On Ubuntu/Debian, after installing the .deb, run:
+
+```bash
+sudo /opt/signagex-player/kiosk/install.sh kiosk /usr/bin/signagex-player
+```
+
+Create the ordinary `kiosk` user first. The script installs Openbox, unclutter,
+X11 screen controls and a selectable **SignageX Kiosk** login session. It starts
+and restarts the player fullscreen, hides the cursor and disables blanking.
+Select that session at graphical login. For appliance power-on startup, configure
+your display manager to automatically log in that user into this session; the
+script deliberately does not rewrite an unknown display manager's settings.
+Only run one kiosk session per machine. Run provisioning while online.
+
+For AppImage, extract it (`./SignageX-Player.AppImage --appimage-extract`), then
+run `sudo ./squashfs-root/usr/bin/kiosk/install.sh kiosk /absolute/path/SignageX-Player.AppImage`.
+Keep the AppImage at that persistent path. The administrator-installed session
+and policy remain on the host when the AppImage is replaced or deleted.
+
+Provisioning opts the named user into the `signagex-reboot` group. The supplied
+polkit rule permits only login1's ordinary reboot action for a local, active
+member of that group; it does not authorize arbitrary commands or bypass
+inhibitors/other sessions. Log out and in after changing group membership.
+The player uses `systemctl --no-ask-password reboot` so authorization failures
+are reported without waiting for a password dialog. Desktop installations can
+opt in separately by creating this group and adding the intended user; AppImage
+also needs the supplied rule installed by an administrator and systemd/logind
+with polkit available. Reboot privileges are not granted just by opening it.
+
+To remove kiosk provisioning, remove the SignageX xsessions entry,
+/usr/local/libexec/signagex-kiosk-session, /etc/signagex-kiosk-player and the
+administrator-installed /etc/polkit-1/rules.d/49-signagex-reboot.rules; remove
+the user's signagex-reboot group membership and undo automatic login.

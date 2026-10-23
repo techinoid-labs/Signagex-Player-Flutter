@@ -65,6 +65,12 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" \
 # including CEF, which is most of the size.
 cp -R "$BUNDLE/." "$APPDIR/usr/bin/"
 
+# xdotool is invoked at runtime, so linuxdeploy must collect it explicitly.
+command -v xdotool >/dev/null || { echo "error: install xdotool before packaging" >&2; exit 1; }
+cp "$(command -v xdotool)" "$APPDIR/usr/bin/xdotool"
+cp -R linux/packaging/kiosk "$APPDIR/usr/bin/kiosk"
+cp linux/packaging/49-signagex-reboot.rules "$APPDIR/usr/bin/kiosk/"
+
 desktop="$APPDIR/usr/share/applications/ai.signagex.player.desktop"
 sed -e "s|^Name=SignageX Player$|Name=$NAME|" \
     linux/packaging/ai.signagex.player.desktop > "$desktop"
@@ -77,6 +83,7 @@ cp linux/packaging/icons/signagex-player-256.png \
 cat > "$APPDIR/AppRun" <<'APPRUN'
 #!/bin/bash
 HERE="$(dirname "$(readlink -f "$0")")"
+export PATH="$HERE/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$HERE/usr/bin/lib:$HERE/usr/lib:${LD_LIBRARY_PATH:-}"
 # Set by linuxdeploy's gtk plugin hook when it is present; harmless if not.
 for hook in "$HERE"/apprun-hooks/*.sh; do
@@ -114,6 +121,7 @@ export VERSION="$VERSION"
 ARCH=x86_64 "$LINUXDEPLOY" \
   --appdir "$APPDIR" \
   --executable "$APPDIR/usr/bin/$BIN" \
+  --executable "$APPDIR/usr/bin/xdotool" \
   --desktop-file "$desktop" \
   --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/signagex-player.png" \
   "${lib_args[@]}" \
