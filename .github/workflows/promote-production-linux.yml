@@ -76,7 +76,7 @@ jobs:
           deb="$(ls dist/signagex-player_*_amd64.deb | head -n 1)"
           # Strict, unlike the staging publish: if this fails, nothing reached
           # the fleet and the run must say so.
-          curl -sS --fail-with-body --max-time 900 -X POST "https://api.signagex.ai/v1/player-releases/upload" \
+          curl -sS --fail-with-body --max-time 900 -X POST "https://signagexai.com/v1/player-releases/upload" \
             -H "x-release-key: $RELEASE_KEY" \
             -F "platform=linux" \
             -F "version=$build_id" \
@@ -88,7 +88,7 @@ jobs:
           # An upload that returns success but leaves the feed unchanged is
           # the failure worth catching here -- devices read the feed, not the
           # upload response.
-          served="$(curl -sf "https://api.signagex.ai/v1/player-releases/latest?platform=linux" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)"
+          served="$(curl -sf "https://signagexai.com/v1/player-releases/latest?platform=linux" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)"
           if [ "$served" = "$build_id" ]; then
             echo "Production feed now serves $served."
           else
