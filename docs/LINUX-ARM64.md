@@ -1,7 +1,7 @@
 # Raspberry Pi / Linux ARM64 bring-up
 
-Status: dedicated build path added; native CI compilation and Pi hardware
-acceptance are not yet recorded. This is not a production support claim.
+Status: native ARM64 CI passed for `arm64-v2`, commit `0cbdf64`. Pi hardware
+acceptance remains pending. This is a test build, not a production support claim.
 
 ## Dependency audit (2026-10-23)
 
@@ -48,7 +48,7 @@ Initial target: Pi 4/5 with 64-bit Ubuntu Desktop and an X11 session.
 Raspberry Pi OS is not certified; 32-bit armhf is excluded. Record exact Pi,
 RAM, OS/kernel, graphics driver and display settings before testing.
 
-- [ ] Native CI: Dart analysis/tests, CEF/MDK compilation, ELF architecture,
+- [x] Native CI: Dart analysis/tests, CEF/MDK compilation, ELF architecture,
       .deb install, AppImage creation and checksums.
 - [ ] Launch each format as an ordinary user on the Pi.
 - [ ] Pair the correct channel, play image/video/web content and verify audio.
@@ -58,3 +58,33 @@ RAM, OS/kernel, graphics driver and display settings before testing.
 - [ ] Test remote screenshots/input and Home/Back under X11.
 - [ ] Provision the kiosk, log in again, test authorized reboot and power cycle.
 - [ ] Record failures/limitations before adding a public Pi download/support claim.
+
+## First successful native build — arm64-v2
+
+Run: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/40029365326
+Artifact: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/40029365326/artifacts/12535426799
+
+Native ARM64 analysis/tests, both flavour compiles, .deb/AppImage creation,
+production Debian installation, ELF/package architecture checks and checksum
+recording passed on 2026-10-23. The first run failed while packaging MDK's
+optional Rockchip backend; commit `0cbdf64` excludes that plugin for Pi builds.
+
+The artifact archive includes both channels and formats (about 1.8 GB total).
+Download while signed into GitHub. Extract it into a directory named `dist`;
+from its parent directory run:
+
+```bash
+sha256sum -c dist/SHA256SUMS
+# Continue only if all checksum checks report OK.
+sudo apt install ./dist/signagex-player_arm64-v2_arm64.deb
+signagex-player
+```
+
+The production-flavour test package uses production account pairing. To test
+against staging instead, install `signagex-player-staging_arm64-v2_arm64.deb`
+and run `signagex-player-staging`. Do not run both simultaneously. Debian
+package version is `0.arm64-v2`; architecture must report `arm64`.
+The matching AppImages are `SignageX-Player-arm64-v2-aarch64.AppImage` and
+`SignageX-Player-Staging-arm64-v2-aarch64.AppImage`.
+
+These test artifacts are not published to the amd64 update feeds or website.
