@@ -147,7 +147,7 @@ class DeviceSettingsViewModel with ChangeNotifier {
   Future<String> pressBackForLinux() async {
     try {
       final result = await Process.run('xdotool',
-          ['search', '--name', '^SignageX Player$', 'windowactivate']);
+          ['search', '--name', r'^SignageX Player$', 'windowactivate']);
       if (result.exitCode != 0) {
         print('MQTT_LOGS:: xdotool windowactivate (back) failed: ${result.stderr}');
         return 'Error: ${result.stderr}';
