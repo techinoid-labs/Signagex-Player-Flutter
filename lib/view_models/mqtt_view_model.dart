@@ -886,6 +886,10 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> _fetchCurrentLocation() async {
+    if (Platform.isWindows) {
+      await _fetchWindowsLocation();
+      return;
+    }
     try {
       await _getLocation();
 
@@ -899,6 +903,63 @@ class MqttViewModel extends ChangeNotifier {
       print('sadasdasasda$deviceInfoMap');
     } catch (e) {
       print('Error fetching location: $e');
+    }
+  }
+
+  bool _windowsLocationInFlight = false;
+
+  /// Windows location without the geolocator plugin.
+  ///
+  /// geolocator_windows_plugin.dll crashed the whole player on a tester's
+  /// Windows 11 PC -- 0xC000027B, a WinRT error the plugin raised from a
+  /// native callback, where no Dart try/catch can reach it -- about four
+  /// seconds after every launch, right after the WMI query called this.
+  /// Windows' own location API is used from a separate PowerShell process
+  /// instead, so when location is off, denied or broken only that process
+  /// fails, and the player carries on without a position as it always did
+  /// when location was unavailable.
+  Future<void> _fetchWindowsLocation() async {
+    if (_windowsLocationInFlight) return;
+    _windowsLocationInFlight = true;
+    const script = r'''
+Add-Type -AssemblyName System.Device
+$w = New-Object System.Device.Location.GeoCoordinateWatcher
+$w.Start()
+$deadline = (Get-Date).AddSeconds(10)
+while ($w.Status -ne 'Ready' -and $w.Permission -ne 'Denied' -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 200 }
+$loc = $w.Position.Location
+if ($w.Permission -eq 'Denied') { 'denied' }
+elseif ($loc.IsUnknown) { 'unknown' }
+else { '{0},{1}' -f $loc.Latitude.ToString([Globalization.CultureInfo]::InvariantCulture), $loc.Longitude.ToString([Globalization.CultureInfo]::InvariantCulture) }
+$w.Stop()
+''';
+    try {
+      final process = await Process.start(
+          'powershell', ['-NoProfile', '-NonInteractive', '-Command', script]);
+      final stdoutText = process.stdout.transform(utf8.decoder).join();
+      final exitCode = await process.exitCode.timeout(
+        const Duration(seconds: 20),
+        onTimeout: () {
+          process.kill();
+          return -1;
+        },
+      );
+      final output = (await stdoutText).trim();
+      final parts = output.split(',');
+      final lat = parts.length == 2 ? double.tryParse(parts[0]) : null;
+      final lon = parts.length == 2 ? double.tryParse(parts[1]) : null;
+      if (exitCode == 0 && lat != null && lon != null) {
+        devicesinfo["latitude"] = lat;
+        devicesinfo["longitude"] = lon;
+        _debugLog('windows location: $lat,$lon');
+      } else {
+        _debugLog('windows location unavailable (exit=$exitCode, '
+            'result="$output") -- reporting none');
+      }
+    } catch (e) {
+      _debugLog('windows location lookup failed: $e');
+    } finally {
+      _windowsLocationInFlight = false;
     }
   }
 
