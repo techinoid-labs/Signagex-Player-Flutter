@@ -2,11 +2,60 @@
 #include <flutter/flutter_view_controller.h>
 #include <windows.h>
 
+#include <cstdio>
+#include <cwchar>
+
 #include "flutter_window.h"
 #include "utils.h"
 #include "kiosk_identity.h"
 
 namespace {
+// Filled in before the handler is installed, so the handler itself does as
+// little as possible inside a process that has already crashed.
+wchar_t g_native_crash_path[32768] = {};
+
+// Records where a native crash happened, next to the exe as crash-native.txt;
+// the next run includes it in the crash upload. The watchdog's exit code
+// only says THAT the player crashed. A tester's player crashing ~5 seconds
+// after every launch left nothing in the Dart log, so the only way to learn
+// which module failed was to ask someone to dig through Event Viewer.
+//
+// Fail-fast exceptions (0xC0000409, 0xC0000602) bypass this handler by
+// design; for those the watchdog's exit code is still recorded.
+LONG WINAPI RecordNativeCrash(EXCEPTION_POINTERS* info) {
+  const EXCEPTION_RECORD* record = info ? info->ExceptionRecord : nullptr;
+  void* address = record ? record->ExceptionAddress : nullptr;
+  char module_name[MAX_PATH] = "unknown";
+  unsigned long long offset = 0;
+  HMODULE module = nullptr;
+  if (address &&
+      GetModuleHandleExA(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                             GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                         static_cast<LPCSTR>(address), &module) &&
+      module) {
+    GetModuleFileNameA(module, module_name, MAX_PATH);
+    offset = reinterpret_cast<unsigned long long>(address) -
+             reinterpret_cast<unsigned long long>(module);
+  }
+  char text[MAX_PATH + 160];
+  const int length = snprintf(
+      text, sizeof(text),
+      "exception=0x%08lX module=%s offset=0x%llX thread=%lu\r\n",
+      record ? record->ExceptionCode : 0ul, module_name, offset,
+      GetCurrentThreadId());
+  HANDLE file = CreateFileW(g_native_crash_path, GENERIC_WRITE,
+                            FILE_SHARE_READ, nullptr, CREATE_ALWAYS,
+                            FILE_ATTRIBUTE_NORMAL, nullptr);
+  if (file != INVALID_HANDLE_VALUE) {
+    DWORD written = 0;
+    if (length > 0) {
+      WriteFile(file, text, static_cast<DWORD>(length), &written, nullptr);
+    }
+    CloseHandle(file);
+  }
+  return EXCEPTION_CONTINUE_SEARCH;
+}
+
 class KeepAwake {
  public:
   KeepAwake() {
@@ -27,6 +76,10 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
       KioskObjectName(directory, L"player").c_str()));
   if (!player_mutex.get()) return EXIT_FAILURE;
   if (GetLastError() == ERROR_ALREADY_EXISTS) return EXIT_SUCCESS;
+
+  const auto crash_path = directory + L"\\crash-native.txt";
+  wcsncpy_s(g_native_crash_path, crash_path.c_str(), _TRUNCATE);
+  SetUnhandledExceptionFilter(RecordNativeCrash);
 
   // Attach to console when present (e.g., 'flutter run') or create a
   // new console when running with a debugger.

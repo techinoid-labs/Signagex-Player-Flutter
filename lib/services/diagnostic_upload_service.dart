@@ -29,6 +29,10 @@ Future<void> _debugLog(String message) =>
 /// PREVIOUS run crashed, and its contents are that run's exit code.
 const String kCrashMarkerFileName = 'crash-marker.txt';
 
+/// Written next to the exe by the runner's unhandled-exception handler:
+/// the exception code and the module and offset the crash happened in.
+const String kNativeCrashFileName = 'crash-native.txt';
+
 class DiagnosticUploadService {
   DiagnosticUploadService({Dio? dio}) : _dio = dio ?? Dio();
 
@@ -134,6 +138,21 @@ class DiagnosticUploadService {
     } catch (_) {}
     await _debugLog('previous run exited abnormally (exit=$exitCode) '
         '-- uploading its log');
+
+    // Written by the runner's crash handler (windows/runner/main.cpp): the
+    // exception code and the module it happened in. Logged so it travels in
+    // the upload -- the exit code alone says the player crashed, not where.
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent;
+      final native = File('${exeDir.path}\\$kNativeCrashFileName');
+      if (await native.exists()) {
+        await _debugLog(
+            'native crash details: ${(await native.readAsString()).trim()}');
+        await native.delete();
+      }
+    } catch (error) {
+      await _debugLog('could not read native crash details: $error');
+    }
 
     // Uploads the CURRENT log, not the ".previous" one. The debug log is a
     // single continuous file appended across runs -- it is only rotated when

@@ -33,8 +33,11 @@ class MyHttpOverrides extends HttpOverrides {
   }
 }
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // Before anything logs, so every line is written synchronously and survives
+  // a native crash (see debug_log.dart).
+  await debug.initDebugLog();
   MediaKit.ensureInitialized();
   // Confirmed real blind spot while chasing a live "screen stops updating
   // forever" report: a widget's State got disposed immediately after a
