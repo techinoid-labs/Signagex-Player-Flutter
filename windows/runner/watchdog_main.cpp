@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <cstdio>
 #include <string>
 
 #include "kiosk_identity.h"
@@ -175,8 +176,12 @@ int APIENTRY wWinMain(HINSTANCE instance, HINSTANCE, wchar_t*, int) {
     DWORD code = 0;
     if (!GetExitCodeProcess(process.get(), &code)) break;
     const unsigned delay = policy.DelayAfterExit(code, GetTickCount64() - started);
-    Log(directory, "player exit=" + std::to_string(code) +
-        " restart delay seconds=" + std::to_string(delay));
+    // Hex as well: Windows crash codes are documented and searched as
+    // 0xC0000005, not 3221225477.
+    char hex_code[16];
+    snprintf(hex_code, sizeof(hex_code), "0x%08lX", code);
+    Log(directory, "player exit=" + std::to_string(code) + " (" + hex_code +
+        ") restart delay seconds=" + std::to_string(delay));
     // Record an abnormal exit so the NEXT player run can upload the log
     // of the run that died. Only the supervisor knows an exit was
     // abnormal -- the replacement process starts with no memory of it --

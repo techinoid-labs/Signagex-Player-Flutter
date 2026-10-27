@@ -56,7 +56,55 @@ Future<void> _rotateIfOversized(File file) async {
   }
 }
 
+// Set by initDebugLog(). Once known, lines are written synchronously: queued
+// async writes die with the process, so a player that crashed natively a few
+// seconds after launch left a log that stopped well before the crash (the
+// last lines were still waiting in _writeChain), and pointed at whichever
+// step happened to be flushed last rather than the one that was running.
+String? _logPath;
+
+/// Resolves the log file's location once so every later line can be written
+/// synchronously. Call before runApp(); until it completes, lines fall back
+/// to the queued async path below.
+Future<void> initDebugLog() async {
+  try {
+    final dir = await getApplicationSupportDirectory();
+    await Directory(dir.path).create(recursive: true);
+    _logPath = '${dir.path}\\signagex_debug.log';
+  } catch (e) {
+    stderr.writeln('debugLog init failed: $e');
+  }
+}
+
+void _writeSync(String path, String tag, String message) {
+  try {
+    final file = File(path);
+    _currentLogBytes ??= file.existsSync() ? file.lengthSync() : 0;
+    if (_currentLogBytes! >= _kMaxLogBytes) {
+      try {
+        file.renameSync('$path.previous');
+      } catch (e) {
+        stderr.writeln('debugLog rotation failed: $e');
+      }
+      _currentLogBytes = 0;
+    }
+    file.writeAsStringSync(
+      '${DateTime.now().toIso8601String()} [$tag] $message\n',
+      mode: FileMode.append,
+      flush: true,
+    );
+    _currentLogBytes = (_currentLogBytes ?? 0) + message.length + tag.length + 40;
+  } catch (e) {
+    stderr.writeln('[$tag] debugLog failed: $e');
+  }
+}
+
 Future<void> debugLog(String tag, String message) {
+  final path = _logPath;
+  if (path != null) {
+    _writeSync(path, tag, message);
+    return Future.value();
+  }
   final next = _writeChain.then((_) async {
     try {
       final dir = await getApplicationSupportDirectory();

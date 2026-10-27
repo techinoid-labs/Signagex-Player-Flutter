@@ -1417,20 +1417,47 @@ EOF
   /// Polls briefly rather than hooking the device-info path, so nothing in
   /// startup has to know about crash reporting. Gives up quietly after the
   /// deadline; the marker is left in place so the next launch retries.
+  ///
+  /// A player that crashes a few seconds after every launch never lived long
+  /// enough for that query, so its crash was never reported. It now uses the
+  /// identity saved by an earlier run straight away, and on Windows reads the
+  /// MAC directly: the backend registers the machine UUID as the MAC there,
+  /// which is a single quick WMI lookup rather than the full system query.
   Future<void> _reportPreviousCrashWhenIdentityReady() async {
-    const attempts = 20;
+    final prefs = await SharedPreferences.getInstance();
+    final savedCode = prefs.getString(_kCrashReportCodeKey) ?? '';
+    final savedMac = prefs.getString(_kCrashReportMacKey) ?? '';
+    if (savedCode.isNotEmpty && savedMac.isNotEmpty) {
+      await _diagnostics.uploadPreviousRunIfItCrashed(savedCode, savedMac);
+    }
+
+    String windowsUuid = '';
+    const attempts = 60;
     for (var i = 0; i < attempts; i++) {
       final code = globleTopic.isNotEmpty ? globleTopic : _topic;
-      final mac = _registeredMacAddress;
+      var mac = _registeredMacAddress;
+      if (mac.isEmpty && Platform.isWindows) {
+        if (windowsUuid.isEmpty) {
+          final uuid = await getDeviceID();
+          if (!uuid.startsWith('Error')) windowsUuid = uuid;
+        }
+        mac = windowsUuid;
+      }
       if (code.isNotEmpty && mac.isNotEmpty) {
+        await prefs.setString(_kCrashReportCodeKey, code);
+        await prefs.setString(_kCrashReportMacKey, mac);
+        // A no-op when the saved identity above already sent it.
         await _diagnostics.uploadPreviousRunIfItCrashed(code, mac);
         return;
       }
-      await Future.delayed(const Duration(seconds: 3));
+      await Future.delayed(const Duration(seconds: 1));
     }
     _debugLog('crash report skipped: no player code/MAC after '
-        '${attempts * 3}s -- will retry next launch');
+        '${attempts}s -- will retry next launch');
   }
+
+  static const _kCrashReportCodeKey = 'crash_report_player_code';
+  static const _kCrashReportMacKey = 'crash_report_mac';
 
   /// The MAC the backend has on record for this device.
   ///
@@ -3296,6 +3323,9 @@ EOF
     print('Received message in store state: $storeState');
     print('i am in recive msgss:');
 // await restartApp();
+    // An empty payload is a cleared retained message -- usually our own,
+    // from _wipeContent -- not a broken one.
+    if (message.trim().isEmpty) return;
     Map<String, dynamic> jsonObj;
     try {
       jsonObj = jsonDecode(message) as Map<String, dynamic>;

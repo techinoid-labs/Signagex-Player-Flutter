@@ -16,8 +16,10 @@ int main() {
     Check(policy.DelayAfterExit(0xc0000005, 1000) == delay,
           "crash backoff must increase");
   }
-  Check(policy.DelayAfterExit(1, 1000) == 0, "crash loop must stop");
-  Check(policy.DelayAfterExit(1, WatchdogPolicy::kStableRunMs - 1) == 0,
+  Check(policy.DelayAfterExit(1, 1000) == WatchdogPolicy::kCooldownSeconds,
+        "crash loop must slow to the cooldown, not stop");
+  Check(policy.DelayAfterExit(1, WatchdogPolicy::kStableRunMs - 1) ==
+            WatchdogPolicy::kCooldownSeconds,
         "short uptime must not reset budget");
   Check(policy.DelayAfterExit(1, WatchdogPolicy::kStableRunMs) == 5,
         "stable uptime must restore restart budget");
