@@ -74,6 +74,8 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" \
 # ICU data, and lib/ holds the engine plus every plugin's shared library --
 # including CEF, which is most of the size.
 cp -R "$BUNDLE/." "$APPDIR/usr/bin/"
+# Work on the package copy, never the original CI bundle.
+python3 linux/packaging/trim_browser.py "$APPDIR/usr/bin"
 
 # xdotool is invoked at runtime, so linuxdeploy must collect it explicitly.
 command -v xdotool >/dev/null || { echo "error: install xdotool before packaging" >&2; exit 1; }
@@ -122,8 +124,8 @@ done < <(find "$APPDIR/usr/bin/lib" -name '*.so*' -type f -print0 2>/dev/null)
 
 echo "Collecting dependencies for ${#lib_args[@]} bundled libraries..."
 
-# NO_STRIP: CEF ships prebuilt and stripping it has been a source of
-# crashes that only appear in packaged builds.
+# Keep linuxdeploy from stripping further. trim_browser.py removes debug
+# sections only and verifies all allocated sections; runtime symbols stay intact.
 export NO_STRIP=1
 export OUTPUT="$OUTPUT"
 export VERSION="$VERSION"

@@ -57,6 +57,8 @@ trap 'rm -rf "$ROOT"' EXIT
 
 mkdir -p "$ROOT$INSTALL_DIR" "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/DEBIAN"
 cp -R "$BUNDLE/." "$ROOT$INSTALL_DIR/"
+# Work on the package copy, never the original CI bundle.
+python3 linux/packaging/trim_browser.py "$ROOT$INSTALL_DIR"
 ln -s "$INSTALL_DIR/$BIN" "$ROOT/usr/bin/$PKG"
 
 # --- launcher entry ------------------------------------------------------
