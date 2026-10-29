@@ -31,8 +31,8 @@ own architectures. No system-browser dependency or feature removal is added.
 - Full amd64 run: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/40889900136
   Passed analysis/tests, production/staging builds, packaging and installation.
 - Native ARM64 run: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/40889905045
-  Confirm its final status when selecting artifacts; it includes architecture
-  verification, Debian installation, checksums and separate test artifacts.
+  Passed native compilation, production/staging packaging, architecture
+  verification, Debian installation, checksums and artifact upload.
 - v15-derived candidate version: `15+sizeaudit1`.
 - Candidate SHA-256: `963c797f6ca6574c6dddda90e502250401921c18fbcd968b8e5c97a4cb88d4f7`.
 
