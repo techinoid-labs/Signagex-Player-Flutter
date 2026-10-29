@@ -469,18 +469,13 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ./dist/signagex-player_15+sizeaudit1_amd64.deb
           python3 - <<'CHECK'
-          import ctypes
-          from pathlib import Path
+          import subprocess, sys
+          probe = "import ctypes,sys; lib=ctypes.CDLL(sys.argv[1]); f=lib.cef_api_hash; f.argtypes=[ctypes.c_int]; f.restype=ctypes.c_char_p; value=f(0); assert value; print(value.decode())"
           def api_hash(path):
-              lib = ctypes.CDLL(str(path))
-              function = lib.cef_api_hash
-              function.argtypes = [ctypes.c_int]
-              function.restype = ctypes.c_char_p
-              value = function(0)
-              assert value
-              return value
-          original = api_hash(Path('/tmp/original-libcef.so'))
-          trimmed = api_hash(Path('/opt/signagex-player/lib/libcef.so'))
+              # CEF uses static TLS: load each version in its own process.
+              return subprocess.check_output([sys.executable, '-c', probe, path], text=True).strip()
+          original = api_hash('/tmp/original-libcef.so')
+          trimmed = api_hash('/opt/signagex-player/lib/libcef.so')
           assert original == trimmed, (original, trimmed)
           print('Original and trimmed Chromium libraries load and expose the same CEF API hash.')
           CHECK
