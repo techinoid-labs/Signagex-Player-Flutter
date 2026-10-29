@@ -59,6 +59,12 @@ video, audio and web rendering are not accepted as physically verified.
 
 Outstanding findings:
 
+**Superseded by the broader [2026-10-29 QA report](LINUX-QA-2026-10-29.md).**
+That report records visible image/video/clock screenshots, dependency fixes,
+Home/Back and isolated-network checks, plus a current browser-runtime crash
+and offline-widget failure. All 20 automated tests and fresh amd64/ARM64
+packaging CI passed; these do not close hardware/runtime acceptance.
+
 - Video remained in its initialization/loading state. No baseline comparison
   establishes whether this is specific to trimming; do not call playback passed.
 - `scrot` was absent, preventing the player's remote screenshot feature.
