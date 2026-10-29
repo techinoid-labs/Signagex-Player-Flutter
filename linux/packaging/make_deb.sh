@@ -111,7 +111,8 @@ Priority: optional
 Architecture: $DEB_ARCH
 Maintainer: SignageX <support@signagex.ai>
 Installed-Size: $INSTALLED_KB
-Depends: xdotool, policykit-1, libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,
+Depends: xdotool, scrot, policykit-1, libva2, libva-drm2, libva-x11-2, libvdpau1,
+ libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,
  libxkbcommon0, libgbm1, libdrm2, libxcomposite1, libxdamage1, libxrandr2,
  libatk1.0-0, libatk-bridge2.0-0, libpango-1.0-0, libcairo2,
  libasound2t64 | libasound2, libcups2t64 | libcups2
