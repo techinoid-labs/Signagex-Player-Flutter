@@ -425,3 +425,68 @@ jobs:
               exit 1
               ;;
           esac
+
+  size-audit:
+    # Audit the exact published v15 artifact independently of full recompiles.
+    if: startsWith(github.ref, 'refs/heads/perf/linux-browser-size')
+    runs-on: ubuntu-22.04
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: signagex-player-deb
+          path: original
+          run-id: 40011248815
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Measure and trim the verified production package
+        run: |
+          set -euo pipefail
+          deb=original/signagex-player_v15_amd64.deb
+          echo "095b0766f82ed34ce5987212a059d6367713a9ea2ea5cb3634aabf7d2c50b041  $deb" | sha256sum -c -
+          dpkg-deb -R "$deb" work
+          cp work/opt/signagex-player/lib/libcef.so /tmp/original-libcef.so
+          python3 linux/packaging/trim_browser.py work/opt/signagex-player
+          # Make an explicitly distinct test version; leave v15's release untouched.
+          sed -i 's/^Version:.*/Version: 15+sizeaudit1/' work/DEBIAN/control
+          installed=$(du -sk work/opt/signagex-player | cut -f1)
+          sed -i "s/^Installed-Size:.*/Installed-Size: $installed/" work/DEBIAN/control
+          mkdir -p dist
+          dpkg-deb --build -Zxz --root-owner-group work dist/signagex-player_15+sizeaudit1_amd64.deb
+          {
+            echo '### Published v15 size audit'
+            echo "Original browser bytes: $(stat -c%s /tmp/original-libcef.so)"
+            echo "Trimmed browser bytes: $(stat -c%s work/opt/signagex-player/lib/libcef.so)"
+            echo "Original package bytes: $(stat -c%s "$deb")"
+            echo "Trimmed package bytes: $(stat -c%s dist/*.deb)"
+            echo "Trimmed installed KiB: $installed"
+          } | tee dist/size-report.txt >> "$GITHUB_STEP_SUMMARY"
+          (cd dist && sha256sum *.deb > SHA256SUMS)
+      - name: Install and verify browser ABI
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./dist/signagex-player_15+sizeaudit1_amd64.deb
+          python3 - <<'CHECK'
+          import ctypes
+          from pathlib import Path
+          def api_hash(path):
+              lib = ctypes.CDLL(str(path))
+              function = lib.cef_api_hash
+              function.argtypes = [ctypes.c_int]
+              function.restype = ctypes.c_char_p
+              value = function(0)
+              assert value
+              return value
+          original = api_hash(Path('/tmp/original-libcef.so'))
+          trimmed = api_hash(Path('/opt/signagex-player/lib/libcef.so'))
+          assert original == trimmed, (original, trimmed)
+          print('Original and trimmed Chromium libraries load and expose the same CEF API hash.')
+          CHECK
+          dpkg-query -W signagex-player
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signagex-player-size-test-amd64
+          path: dist/
+          if-no-files-found: error
