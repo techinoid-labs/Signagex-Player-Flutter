@@ -160,8 +160,7 @@ Keep the AppImage at that persistent path. The administrator-installed session
 and policy remain on the host when the AppImage is replaced or deleted.
 
 Provisioning opts the named user into the `signagex-reboot` group. The supplied
-polkit rule permits only login1's ordinary reboot action for a local, active
-member of that group; it does not authorize arbitrary commands or bypass
+polkit rule permits only login1's ordinary reboot action for a member of that administrator-managed group, including a supervised user service; it does not authorize arbitrary commands or bypass
 inhibitors/other sessions. Log out and in after changing group membership.
 The player uses `systemctl --no-ask-password reboot` so authorization failures
 are reported without waiting for a password dialog. Desktop installations can
@@ -173,3 +172,31 @@ To remove kiosk provisioning, remove the SignageX xsessions entry,
 /usr/local/libexec/signagex-kiosk-session, /etc/signagex-kiosk-player and the
 administrator-installed /etc/polkit-1/rules.d/49-signagex-reboot.rules; remove
 the user's signagex-reboot group membership and undo automatic login.
+
+
+## Supervised startup on a Raspberry Pi desktop
+
+For an installed Debian package, run as the ordinary graphical player user:
+
+```bash
+sh /opt/signagex-player/kiosk/install-user-service.sh
+```
+
+This replaces that user's SignageX desktop autostart entry with a launcher for
+`signagex-player.service`, a systemd user service. It imports the graphical
+session's DISPLAY and XAUTHORITY, starts fullscreen under X11, and restarts the
+whole player process group three seconds after an exit. The existing autostart
+entry is backed up once with `.before-supervision`. Start from the graphical
+session or log in again after provisioning. This does not switch the desktop
+from Wayland to X11; configure that separately on the device.
+
+The optional reboot policy grants only login1's ordinary reboot action to the
+administrator-enrolled `signagex-reboot` group. It deliberately supports a
+supervised service without an interactive session. It does not grant arbitrary
+root commands, ignore-inhibitor actions or multiple-session reboot actions.
+
+For diagnostics, use `systemctl --user status signagex-player` and the system
+journal filtered by `_SYSTEMD_USER_UNIT=signagex-player.service`. To remove
+supervision, stop the service, restore the saved desktop autostart entry, remove
+`~/.config/systemd/user/signagex-player.service` and
+`~/.local/bin/signagex-start-supervised`, then run `systemctl --user daemon-reload`.

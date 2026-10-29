@@ -1,0 +1,17 @@
+[Unit]
+Description=SignageX Player
+PartOf=graphical-session.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/signagex-player
+Environment=GDK_BACKEND=x11
+Environment=SIGNAGEX_KIOSK=1
+Restart=always
+RestartSec=3
+TimeoutStopSec=15
+KillMode=control-group
+
+[Install]
+WantedBy=graphical-session.target

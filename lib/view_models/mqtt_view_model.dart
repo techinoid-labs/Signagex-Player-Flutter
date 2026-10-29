@@ -3,6 +3,9 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
 import 'dart:ui';
+import '../utils/mqtt_state.dart';
+import '../utils/player_recovery_policy.dart';
+export '../utils/mqtt_state.dart';
 
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 
@@ -75,25 +78,6 @@ void _mqttAgentDebugLog(
 }
 // #endregion
 
-enum MqttState {
-  initial,
-  success,
-  failure,
-  noContent,
-  campaignScreen,
-  connectionScreen,
-  noInternet,
-  downloading,
-  pairedScreen,
-  playlistScreen,
-  // PLAYER_STOP_REASON_CONTRACT: paired:false + action:"action_stop_player"
-  // on a player/connection/ response. Distinct from pairedScreen (a
-  // genuinely never-paired device) -- this player IS paired, just
-  // temporarily stopped by the backend (licence/subscription/account
-  // issue), so it must keep its cache and pairing state exactly as-is and
-  // just stop showing content until the next poll comes back paired again.
-  playerStopped,
-}
 
 class MqttViewModel extends ChangeNotifier {
   // Release builds have no console -- print() output goes nowhere visible on
@@ -215,7 +199,9 @@ class MqttViewModel extends ChangeNotifier {
     String? jsonString = prefs.getString('deviceInfoMap');
     await prefs.remove('deviceInfoMap');
     if (jsonString != null) {
-      deviceInfoMap = Map<String, dynamic>.from(jsonDecode(jsonString));
+      deviceInfoMap
+        ..clear()
+        ..addAll(Map<String, dynamic>.from(jsonDecode(jsonString)));
       print('Loaded device info from SharedPreferences: $deviceInfoMap');
     } else {
       print('No device info found in SharedPreferences.');
@@ -320,6 +306,7 @@ class MqttViewModel extends ChangeNotifier {
   // base64 stream "loading infinitely") means overlapping captures are a
   // real scenario, not just a theoretical one.
   bool _remoteViewCaptureInFlight = false;
+  bool _remoteHighResolution = false;
 
   Future<void> _captureAndPublishRemoteViewFrame() async {
     if (!_remoteViewActive) return;
@@ -385,7 +372,8 @@ class MqttViewModel extends ChangeNotifier {
         // just quality, and remember the scale factor so incoming click
         // coordinates (in the space of this smaller frame) can be mapped
         // back to real screen pixels.
-        final resized = _resizeAndCompressForRemoteView(imageBytes);
+        final resized = _resizeAndCompressForRemoteView(
+          imageBytes, maxBytes: _remoteHighResolution ? 64 * 1024 : 15 * 1024);
         if (resized != null) {
           compressedBytes = resized.bytes;
           _remoteViewScaleX = resized.scaleX;
@@ -501,7 +489,9 @@ class MqttViewModel extends ChangeNotifier {
     Uint8List bytes, {
     int maxBytes = 15 * 1024,
   }) {
-    const tiers = [
+    final tiers = [
+      if (_remoteHighResolution) (width: 1280, quality: 75),
+      if (_remoteHighResolution) (width: 1024, quality: 65),
       (width: 640, quality: 45),
       (width: 480, quality: 40),
       (width: 320, quality: 35),
@@ -1167,6 +1157,7 @@ class MqttViewModel extends ChangeNotifier {
     try {
       final systemInfo = await _collectLinuxSystemInfo();
       _applyLinuxSystemInfo(systemInfo);
+      _updateLinuxDisplayInfo();
       systemInfo.forEach((key, value) {
         print('$key: $value');
       });
@@ -1366,6 +1357,21 @@ class MqttViewModel extends ChangeNotifier {
     }
   }
 
+  bool _retainCachedPlayback() {
+    // Network failure is not an unpair or licence-stop instruction. Only an
+    // explicit server response may revoke an already-paired cached session.
+    final restored = cachedStateAfterNetworkFailure(
+      current: _state,
+      paired: storeState == true && _storedApiResponse?['paired'] == true,
+      hasCampaign: _campaignModel != null,
+      hasPlaylist: _playListModel != null,
+    );
+    if (restored == null) return false;
+    _state = restored;
+    notifyListeners();
+    return true;
+  }
+
   Future<void> _mqttConnection() async {
     if (_mqttConnecting) return;
     _mqttConnecting = true;
@@ -1373,6 +1379,11 @@ class MqttViewModel extends ChangeNotifier {
       debugPrint("Attempting to reconnect to MQTT.");
       if (_topic.isNotEmpty) {
         await _restoreSessionFromStorage();
+        if (_mqttClientService.isConnected) {
+          _needsReconnect = false;
+          _networkRecoveryTimer?.cancel();
+          _networkRecoveryTimer = null;
+        }
         return;
       }
       await _mqttClientService.connect(playerCode: _topic);
@@ -1385,6 +1396,10 @@ class MqttViewModel extends ChangeNotifier {
       _networkRecoveryTimer?.cancel();
       _networkRecoveryTimer = null;
     } catch (error) {
+      if (_retainCachedPlayback()) {
+        _startNetworkRecovery();
+        return;
+      }
       _state = MqttState.noInternet;
       notifyListeners();
       debugPrint("Error during MQTT reinitialization: $error");
@@ -2229,7 +2244,24 @@ class MqttViewModel extends ChangeNotifier {
     _currentIndexOfCapmaign = 0;
   }
 
+  void _updateLinuxDisplayInfo() {
+    if (!Platform.isLinux || PlatformDispatcher.instance.views.isEmpty) return;
+    final size = PlatformDispatcher.instance.views.first.physicalSize;
+    if (size.width <= 0 || size.height <= 0) return;
+    devicesinfo['device_resolution'] = {
+      'resolution': '(${size.width.round()},${size.height.round()})',
+      'width': size.width.round(),
+      'height': size.height.round(),
+      'density': 1,
+    };
+    devicesinfo['device_model'] = devicesinfo['hardware_details']?['model'] ?? 'Linux';
+    devicesinfo['action'] = 'player_details';
+    devicesinfo['last_seen'] = DateTime.now().toUtc().toIso8601String();
+    devicesinfo['player_version'] = 'Version: arm64-recovery-20261029';
+  }
+
   Future<void> _checkPairingStatus({bool refresh = false}) async {
+    _updateLinuxDisplayInfo();
     if (_topic.isNotEmpty && !refresh) {
       debugPrint('Pairing skipped: player_code already set ($_topic)');
       return;
@@ -2411,6 +2443,12 @@ class MqttViewModel extends ChangeNotifier {
       _pairingRetryCount = 0;
     } catch (error) {
       debugPrint("Error during pairing check: $error");
+      if (_retainCachedPlayback()) {
+        _pairingRetryCount = 0;
+        _debugLog('Pairing server unavailable; retaining cached playback');
+        _startNetworkRecovery();
+        return;
+      }
 
       // A stopped player already has the pairing poll quietly retrying
       // every 15s, so a transient network error here must not escalate into
@@ -2651,27 +2689,31 @@ class MqttViewModel extends ChangeNotifier {
     }
     print(jsonObj["action"]);
     if (jsonObj["action"] == "action_reboot") {
-      print("action rebooot");
-      Map<String, dynamic> sendLog = {
-        "action": "Action Reboot",
-        "name": "Player ${deviceInfo!["hardware_details"]["model"]}",
-        "type": "info",
-        "dateTime": DateTime.now().toIso8601String(),
-      };
-
-      _mqttClientService.publish(topic, jsonEncode(sendLog));
-      var data = {"success": true};
-      publishMessage(globleTopic, jsonEncode(data));
-
-      if (Platform.isMacOS) {
-        deviceSettings.rebootDeviceForMacOS();
+      try {
+        _mqttClientService.publish(topic, jsonEncode({
+          'action': 'player_logs',
+          'log': 'Action Reboot',
+          'name': 'Player ${devicesinfo["hardware_details"]?["model"] ?? ""}',
+          'type': 'info',
+          'date_time': DateTime.now().toIso8601String(),
+        }));
+      } catch (e) {
+        _debugLog('Reboot diagnostic publish failed: $e');
+      }
+      if (Platform.isLinux) {
+        final result = await deviceSettings.rebootDeviceForLinux();
+        _debugLog('Linux reboot result: $result');
+        publishMessage(globleTopic, jsonEncode({
+          'success': !result.startsWith('Error:'),
+          'action': 'reboot_result',
+          'message': result,
+        }));
+      } else if (Platform.isMacOS) {
+        await deviceSettings.rebootDeviceForMacOS();
       } else if (Platform.isAndroid) {
-        print("i am here for andorind");
-        deviceSettings.rebootDeviceForAndroid();
+        await deviceSettings.rebootDeviceForAndroid();
       } else if (Platform.isWindows) {
-        deviceSettings.rebootDeviceForWindows();
-      } else if (Platform.isLinux) {
-        deviceSettings.rebootDeviceForLinux();
+        await deviceSettings.rebootDeviceForWindows();
       }
     } else if (jsonObj["action"] == "action_setup_player") {
       Map<String, dynamic> sendLog = {
@@ -2817,7 +2859,11 @@ class MqttViewModel extends ChangeNotifier {
     } else if (jsonObj["action"] == "stop_remote_view") {
       print("MQTT_LOGS:: stop_remote_view received");
       _stopRemoteView();
+    } else if (jsonObj["action"] == "high_res") {
+      _remoteHighResolution = true;
+      _startRemoteView();
     } else if (jsonObj["action"] == "low_res") {
+      _remoteHighResolution = false;
       // Observed from a real CMS session: the web remote-view page can
       // send this without ever sending start_remote_view first. Treat it
       // as an equivalent start trigger too — _startRemoteView() already
@@ -2826,19 +2872,15 @@ class MqttViewModel extends ChangeNotifier {
       print("MQTT_LOGS:: low_res received — starting remote view");
       _startRemoteView();
     } else if (jsonObj["action"] == "click") {
-      // Same field names as the Android app's InputAction.getClick — x/y in
-      // the pixel space of the most recent remote-view frame we published.
-      // That frame is shrunk on Linux (see _resizeAndCompressForRemoteView),
-      // so scale back up to real screen pixels before injecting.
+      // The CMS scales clicks into the reported device resolution already.
+      // Resizing the transmitted JPEG must not scale the input a second time.
       print("MQTT_LOGS:: click received: $jsonObj");
       if (Platform.isLinux) {
         final x = (jsonObj["x"] as num?)?.toDouble();
         final y = (jsonObj["y"] as num?)?.toDouble();
         if (x != null && y != null) {
-          deviceSettings.moveCursorAndClickForLinux(
-            x * _remoteViewScaleX,
-            y * _remoteViewScaleY,
-          );
+          final result = await deviceSettings.moveCursorAndClickForLinux(x, y);
+          _debugLog('Linux remote click: $result');
         }
       }
     } else if (jsonObj["action"] == "scroll") {
@@ -2858,10 +2900,10 @@ class MqttViewModel extends ChangeNotifier {
               endX != null &&
               endY != null) {
             deviceSettings.dragForLinux(
-              startX * _remoteViewScaleX,
-              startY * _remoteViewScaleY,
-              endX * _remoteViewScaleX,
-              endY * _remoteViewScaleY,
+              startX,
+              startY,
+              endX,
+              endY,
             );
           }
         }

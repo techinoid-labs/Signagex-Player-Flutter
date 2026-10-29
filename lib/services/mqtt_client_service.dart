@@ -134,6 +134,10 @@ class MqttClientService {
   /// at all — the player_logs/heartbeat messages are a separate mechanism
   /// the CMS's presence tracking doesn't watch.
   Future<void> connect({String? playerCode}) {
+    // Registration refreshes are not a request to tear down a healthy socket.
+    if (isConnected && (playerCode == null || playerCode == _playerCode)) {
+      return Future<void>.value();
+    }
     final inFlight = _connectFuture;
     if (inFlight != null) {
       print('MQTT_LOGS:: connect() already in progress, awaiting it instead '

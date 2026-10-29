@@ -1,7 +1,10 @@
-// Explicit opt-in: only the local active kiosk user in this group may reboot.
+// Explicit administrator opt-in for unattended player reboot. A systemd user
+// service has no interactive session, so subject.active/local cannot gate this.
+// Group members receive only login1's ordinary reboot action, not arbitrary
+// commands, other login1 actions, or the ignore-inhibitors/multiple-session forms.
 polkit.addRule(function(action, subject) {
     if (action.id === "org.freedesktop.login1.reboot" &&
-        subject.local && subject.active && subject.isInGroup("signagex-reboot")) {
+        subject.isInGroup("signagex-reboot")) {
         return polkit.Result.YES;
     }
 });
