@@ -74,10 +74,14 @@ mkdir -p "$APPDIR/usr/bin" "$APPDIR/usr/lib" "$APPDIR/usr/share/applications" \
 # ICU data, and lib/ holds the engine plus every plugin's shared library --
 # including CEF, which is most of the size.
 cp -R "$BUNDLE/." "$APPDIR/usr/bin/"
+# Work on the package copy, never the original CI bundle.
+python3 linux/packaging/trim_browser.py "$APPDIR/usr/bin"
 
 # xdotool is invoked at runtime, so linuxdeploy must collect it explicitly.
 command -v xdotool >/dev/null || { echo "error: install xdotool before packaging" >&2; exit 1; }
 cp "$(command -v xdotool)" "$APPDIR/usr/bin/xdotool"
+command -v scrot >/dev/null || { echo "error: install scrot before packaging" >&2; exit 1; }
+cp "$(command -v scrot)" "$APPDIR/usr/bin/scrot"
 cp -R linux/packaging/kiosk "$APPDIR/usr/bin/kiosk"
 cp linux/packaging/49-signagex-reboot.rules "$APPDIR/usr/bin/kiosk/"
 
@@ -95,6 +99,7 @@ cat > "$APPDIR/AppRun" <<'APPRUN'
 HERE="$(dirname "$(readlink -f "$0")")"
 export PATH="$HERE/usr/bin:$PATH"
 export LD_LIBRARY_PATH="$HERE/usr/bin/lib:$HERE/usr/lib:${LD_LIBRARY_PATH:-}"
+export IMLIB2_LOADER_PATH="$HERE/usr/lib/imlib2/loaders"
 # Set by linuxdeploy's gtk plugin hook when it is present; harmless if not.
 for hook in "$HERE"/apprun-hooks/*.sh; do
   [ -r "$hook" ] && . "$hook"
@@ -116,14 +121,28 @@ fi
 # dlopen'd by the engine rather than linked into it, so nothing would walk
 # their dependencies otherwise -- and CEF's are the ones that matter most.
 lib_args=()
+# scrot's writers are also loaded dynamically by Imlib2. Remote view uses JPEG.
+mkdir -p "$APPDIR/usr/lib/imlib2/loaders"
+for format in png jpeg; do
+  loader="$(find /usr/lib -path "*/imlib2/loaders/$format.so" -print -quit)"
+  [ -n "$loader" ] || { echo "error: missing Imlib2 $format loader" >&2; exit 1; }
+  cp "$loader" "$APPDIR/usr/lib/imlib2/loaders/$format.so"
+  lib_args+=(--library "$APPDIR/usr/lib/imlib2/loaders/$format.so")
+done
+# MDK loads these with dlopen; dependency scanning cannot discover them.
+for soname in libva.so.2 libva-drm.so.2 libva-x11.so.2 libvdpau.so.1; do
+  library="$(ldconfig -p | awk -v name="$soname" '$1 == name && !found { print $NF; found = 1 }')"
+  [ -n "$library" ] || { echo "error: missing runtime library $soname" >&2; exit 1; }
+  lib_args+=(--library "$library")
+done
 while IFS= read -r -d '' so; do
   lib_args+=(--library "$so")
 done < <(find "$APPDIR/usr/bin/lib" -name '*.so*' -type f -print0 2>/dev/null)
 
 echo "Collecting dependencies for ${#lib_args[@]} bundled libraries..."
 
-# NO_STRIP: CEF ships prebuilt and stripping it has been a source of
-# crashes that only appear in packaged builds.
+# Keep linuxdeploy from stripping further. trim_browser.py removes debug
+# sections only and verifies all allocated sections; runtime symbols stay intact.
 export NO_STRIP=1
 export OUTPUT="$OUTPUT"
 export VERSION="$VERSION"
@@ -132,6 +151,7 @@ ARCH="$APPIMAGE_ARCH" "$LINUXDEPLOY" \
   --appdir "$APPDIR" \
   --executable "$APPDIR/usr/bin/$BIN" \
   --executable "$APPDIR/usr/bin/xdotool" \
+  --executable "$APPDIR/usr/bin/scrot" \
   --desktop-file "$desktop" \
   --icon-file "$APPDIR/usr/share/icons/hicolor/256x256/apps/signagex-player.png" \
   "${lib_args[@]}" \

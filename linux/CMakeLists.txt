@@ -121,6 +121,35 @@ set_target_properties(${BINARY_NAME}
 # them to the application.
 include(flutter/generated_plugins.cmake)
 
+# Keep the upstream pub cache intact. Generate reviewed Linux-only overrides
+# for the pinned browser plugin; source drift fails configuration closed.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+get_target_property(CEF_PLUGIN_SOURCE_DIR webview_cef_plugin SOURCE_DIR)
+set(CEF_SAFE_DIR "${CMAKE_CURRENT_BINARY_DIR}/cef_safety")
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cef_safety/prepare.py"
+          "${CEF_PLUGIN_SOURCE_DIR}" "${CEF_SAFE_DIR}"
+  RESULT_VARIABLE CEF_SAFE_RESULT
+)
+if(NOT CEF_SAFE_RESULT EQUAL 0)
+  message(FATAL_ERROR "Could not prepare Linux browser safety fixes")
+endif()
+get_target_property(CEF_PLUGIN_SOURCES webview_cef_plugin SOURCES)
+set(CEF_SAFE_SOURCES)
+foreach(CEF_SOURCE IN LISTS CEF_PLUGIN_SOURCES)
+  get_filename_component(CEF_SOURCE_NAME "${CEF_SOURCE}" NAME)
+  if(CEF_SOURCE_NAME STREQUAL "webview_cef_plugin.cc" OR
+     CEF_SOURCE_NAME STREQUAL "webview_plugin.cc")
+    list(APPEND CEF_SAFE_SOURCES "${CEF_SAFE_DIR}/${CEF_SOURCE_NAME}")
+  else()
+    get_filename_component(CEF_SOURCE_ABS "${CEF_SOURCE}" ABSOLUTE
+                           BASE_DIR "${CEF_PLUGIN_SOURCE_DIR}")
+    list(APPEND CEF_SAFE_SOURCES "${CEF_SOURCE_ABS}")
+  endif()
+endforeach()
+set_property(TARGET webview_cef_plugin PROPERTY SOURCES "${CEF_SAFE_SOURCES}")
+target_include_directories(webview_cef_plugin PRIVATE "${CEF_PLUGIN_SOURCE_DIR}")
+
 
 # === Installation ===
 # By default, "installing" just makes a relocatable bundle in the build
