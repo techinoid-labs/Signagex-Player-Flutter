@@ -1,5 +1,16 @@
 name: Promote ARM64 Linux to production
 on:
+  workflow_call:
+    inputs:
+      run_id:
+        required: true
+        type: string
+      confirm:
+        required: true
+        type: string
+    secrets:
+      PLAYER_RELEASE_UPLOAD_KEY:
+        required: true
   workflow_dispatch:
     inputs:
       run_id:

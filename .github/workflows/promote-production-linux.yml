@@ -12,6 +12,11 @@ name: Promote Linux to production
 on:
   workflow_dispatch:
     inputs:
+      architecture:
+        description: Target architecture feed
+        type: choice
+        options: [amd64, arm64]
+        default: amd64
       run_id:
         description: "Run id of the Build Linux run to promote (from its URL). Its staging build should already have been tested."
         required: true
@@ -22,7 +27,15 @@ on:
         type: string
 
 jobs:
+  promote-arm64:
+    if: inputs.architecture == 'arm64'
+    uses: ./.github/workflows/promote-production-arm64.yml
+    with:
+      run_id: ${{ inputs.run_id }}
+      confirm: ${{ inputs.confirm }}
+    secrets: inherit
   promote:
+    if: inputs.architecture != 'arm64'
     runs-on: ubuntu-latest
     steps:
       - name: Require explicit confirmation
