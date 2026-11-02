@@ -33,6 +33,26 @@ def download(url, destination, hosts):
             digest.update(block); output.write(block)
     return digest.hexdigest()
 
+def debian_version(build):
+    """The same normalization used by make_deb.sh, for both architectures."""
+    if not isinstance(build, str) or not build:
+        return None
+    value = build[1:] if build.startswith('v') else build
+    if not value:
+        return None
+    return value if value[0].isdigit() else '0.' + value
+
+def healthy_release(health, current_pid, version, now):
+    import math
+    if not isinstance(health, dict) or current_pid <= 0:
+        return False
+    timestamp = health.get('timestamp')
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+        return False
+    return (type(health.get('pid')) is int and health['pid'] == current_pid
+        and 0 <= now - timestamp < 20
+        and debian_version(health.get('build')) == version)
+
 def update_status(status, version=''):
     directory = pathlib.Path('/var/lib/signagex-player')
     directory.mkdir(parents=True,exist_ok=True)
@@ -131,8 +151,7 @@ def main():
                     try:
                         health = json.loads(health_file.read_text()[:4096])
                         current_pid = int(run(*restart,'show','signagex-player.service','-p','MainPID','--value'))
-                        build = str(health.get('build',''))
-                        if health.get('pid') == current_pid and time.time()-health.get('timestamp',0) < 20 and release['version'] in (build, '0.'+build):
+                        if healthy_release(health, current_pid, release['version'], time.time()):
                             run(*restart,'is-active','signagex-player.service'); healthy = True; break
                     except (OSError, ValueError, subprocess.CalledProcessError): pass
                 if not healthy: raise ValueError('Updated player did not pass its event-loop health check')

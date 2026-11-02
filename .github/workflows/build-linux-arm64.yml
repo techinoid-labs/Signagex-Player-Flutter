@@ -97,6 +97,9 @@ jobs:
           flutter analyze --no-fatal-warnings --no-fatal-infos
           flutter test
           python3 -m unittest discover -s linux/packaging/tests -v
+          clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            linux/cef_safety/tests/page_frame_gate_test.cc -o /tmp/cef-page-gate-test
+          /tmp/cef-page-gate-test
 
       - name: Build production
         run: flutter build linux --release --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}

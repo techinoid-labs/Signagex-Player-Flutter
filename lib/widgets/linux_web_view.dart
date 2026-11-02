@@ -55,14 +55,14 @@ class _LinuxWebViewState extends State<LinuxWebView> {
         print('[WEB_RECOVERY] failed page detected');
         unawaited(LinuxConfiguration.instance.event?.call('Web page connection failed; automatic retry active', 'warning') ?? Future.value());
       }
-      _failed = true;
+      setState(() => _failed = true);
       unawaited(_retryFailedPage());
     } else {
       if (_failed) {
         print('[WEB_RECOVERY] page recovered');
         unawaited(LinuxConfiguration.instance.event?.call('Web page recovered', 'info') ?? Future.value());
       }
-      _failed = false;
+      if (_failed) setState(() => _failed = false);
       _retry.recovered();
     }
   }
@@ -113,7 +113,26 @@ class _LinuxWebViewState extends State<LinuxWebView> {
   @override
   Widget build(BuildContext context) => ValueListenableBuilder<bool>(
     valueListenable: _controller,
-    builder: (_, ready, __) =>
+    builder: (_, ready, __) => ColoredBox(
+      color: Colors.black,
+      child: Stack(fit: StackFit.expand, children: [
         ready ? _controller.webviewWidget : _controller.loadingWidget,
+        if (_failed)
+          const Align(
+            alignment: Alignment.bottomRight,
+            child: Padding(
+              padding: EdgeInsets.all(8),
+              child: Material(
+                color: Colors.black87,
+                child: Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Text('Web content unavailable · retrying',
+                    style: TextStyle(color: Colors.white, fontSize: 12)),
+                ),
+              ),
+            ),
+          ),
+      ]),
+    ),
   );
 }
