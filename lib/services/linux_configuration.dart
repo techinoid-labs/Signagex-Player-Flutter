@@ -170,6 +170,13 @@ class LinuxConfiguration extends ChangeNotifier {
     ];
     for (final key in orderedKeys) {
       if (!settings.containsKey(key)) continue;
+      // The CMS schema includes null scalar defaults even when a setting has
+      // never been configured. They are not device commands. Explicit false,
+      // zero and rotation "0" remain meaningful and must still be applied.
+      if (settings[key] == null && !const {'working_schedule','content_update_interval','brightness','logo','reboot'}.contains(key)) {
+        if (!values.containsKey(key)) results.remove(key);
+        continue;
+      }
       final value = settings[key] ??
           (key == 'working_schedule'
               ? {'type': 'always', 'schedule': []}

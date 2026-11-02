@@ -6,7 +6,7 @@ This change implements protocol version 1 across the configuration form, backend
 
 The backend increments `configuration_revision` atomically and clears the previous result when writable settings are saved. It sends the complete desired settings with `action_setup_player`. The player serializes application, persists accepted values, rejects stale revisions, and publishes a non-retained QoS 1 `settings_applied` response containing the revision and per-setting `applied`, `failed`, `pending`, or `unsupported` results. A result for an older revision cannot overwrite the latest result.
 
-`playerConfigurationStatus(player_code)` is an organization-scoped, read-only GraphQL query. The CMS polls it while the configuration panel is open. Applied settings collapse under a disclosure; errors and pending requirements stay visible. Capabilities are reported in `player_details`. Telemetry is not re-sent as editable configuration.
+`playerConfigurationStatus(player_code)` is an organization-scoped, read-only GraphQL query. The CMS polls it while the configuration panel is open. Applied settings collapse under a disclosure; errors and pending requirements stay visible. Capabilities are reported in `player_details`. Telemetry is not re-sent as editable configuration. Null scalar schema defaults mean no change; explicit false, zero and rotation "0" are applied. Null compound policies reset to their documented defaults.
 
 A successful device result means the validated OS operation completed. Physical speaker/display output and all hardware-specific combinations still require acceptance testing.
 

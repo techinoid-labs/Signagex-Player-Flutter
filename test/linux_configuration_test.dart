@@ -25,6 +25,16 @@ void main() {
     expect(calls.where((v)=>v.first=='xrandr'),isEmpty);
     expect(ack['results']['volume']['status'],'applied');
   });
+  test('CMS null scalar defaults leave controls unconfigured', () async {
+    final ack=await config.apply({'configuration_revision':1,'volume':null,'volume_timeout':null,'launch_on_boot':null,'mute_audio':null,'screen_rotation':null});
+    expect(ack['results'],isEmpty);
+    expect(config.values,isEmpty);
+    expect(calls.where((call)=>call.first=='systemctl' || call.first=='xrandr' || (call.first=='wpctl' && call[1]=='set-volume')),isEmpty);
+    await config.apply({'configuration_revision':2,'volume':0,'mute_audio':false});
+    expect(config.values['volume'],0); expect(config.values['mute_audio'],false);
+    await config.apply({'configuration_revision':3,'volume':null});
+    expect(config.values['volume'],0);
+  });
   test('brightness normalizes percentage and targets one display', () async {
     await config.apply({'configuration_revision':1,'brightness':{'value':50,'mode':'manual'}});
     expect(calls,contains(equals(['xrandr','--output','HDMI-1','--brightness','0.50'])));
