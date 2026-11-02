@@ -256,7 +256,6 @@ class MqttViewModel extends ChangeNotifier {
     String? jsonString = prefs.getString('jsonObj');
 
     if (jsonString != null) {
-      print('Retrieved JSON from SharedPreferences: $jsonString');
       storedJsonObj = jsonDecode(jsonString);
       print('Loaded JSON Object: $storedJsonObj');
       notifyListeners();
@@ -286,10 +285,8 @@ class MqttViewModel extends ChangeNotifier {
 
     if (jsonString != null) {
       final jsonResponse = jsonDecode(jsonString) as Map<String, dynamic>;
-      print('Retrieved stored response: $jsonResponse');
       _topic = jsonResponse["player_code"] ?? "";
       _captureRestrictionContext(jsonResponse);
-      debugPrint("This is the response from the$topic API: $jsonResponse");
       if (_topic.isNotEmpty) {
         globleTopic = _topic;
       }
@@ -2733,7 +2730,7 @@ class MqttViewModel extends ChangeNotifier {
 
     // Our own acknowledgement, echoed back because we subscribe to the topic
     // we publish it on.
-    if (["content_synced", "settings_applied", "resource_usage", "player_logs", "player_details"].contains(jsonObj["action"])) return;
+    if (["content_synced", "settings_applied", "resource_usage", "player_logs", "player_details", "sealed_v2"].contains(jsonObj["action"])) return;
 
     final action = jsonObj["action"];
     try {
@@ -2800,7 +2797,6 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> _applyIncomingMessage(dynamic jsonObj) async {
-    print('Saving JSON Object: $jsonObj');
 
     // Check if message has an action field
     if (jsonObj["action"] == null) {
@@ -3066,7 +3062,7 @@ class MqttViewModel extends ChangeNotifier {
     } else if (jsonObj["action"] == "click") {
       // The CMS scales clicks into the reported device resolution already.
       // Resizing the transmitted JPEG must not scale the input a second time.
-      print("MQTT_LOGS:: click received: $jsonObj");
+      print("MQTT_LOGS:: click received");
       if (Platform.isLinux) {
         final x = (jsonObj["x"] as num?)?.toDouble();
         final y = (jsonObj["y"] as num?)?.toDouble();
@@ -3078,7 +3074,7 @@ class MqttViewModel extends ChangeNotifier {
     } else if (jsonObj["action"] == "scroll") {
       // Same shape as Android's InputAction.getScroll: hold/release objects
       // each carrying an x/y pair, treated as a press-drag-release gesture.
-      print("MQTT_LOGS:: scroll received: $jsonObj");
+      print("MQTT_LOGS:: scroll received");
       if (Platform.isLinux) {
         final hold = jsonObj["hold"];
         final release = jsonObj["release"];
@@ -3101,7 +3097,7 @@ class MqttViewModel extends ChangeNotifier {
         }
       }
     } else if (jsonObj["action"] == "send_text") {
-      print("MQTT_LOGS:: send_text received: $jsonObj");
+      print("MQTT_LOGS:: send_text received");
       if (Platform.isLinux) {
         final text = jsonObj["message"]?.toString();
         if (text != null && text.isNotEmpty) {
@@ -3112,14 +3108,14 @@ class MqttViewModel extends ChangeNotifier {
       // CMS "home screen" remote-view button. Matches Android's PRESS_HOME
       // (input keyevent 3 / GLOBAL_ACTION_HOME) — a raw OS key injection,
       // not app-level navigation.
-      print("MQTT_LOGS:: press_home received: $jsonObj");
+      print("MQTT_LOGS:: press_home received");
       if (Platform.isLinux) {
         deviceSettings.pressHomeForLinux();
       }
     } else if (jsonObj["action"] == "press_back") {
       // Undoes press_home -- there was previously no way to bring the
       // player back into view remotely after Home minimized it.
-      print("MQTT_LOGS:: press_back received: $jsonObj");
+      print("MQTT_LOGS:: press_back received");
       if (Platform.isLinux) {
         deviceSettings.pressBackForLinux();
       }
