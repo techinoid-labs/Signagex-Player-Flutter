@@ -14,6 +14,7 @@ import 'package:webview_cef/webview_cef.dart' as cef;
 import 'package:digital_signage/provider/main_provider.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/globle_variable.dart';
+import 'package:digital_signage/utils/linux_video_options.dart';
 
 class MyHttpOverrides extends HttpOverrides {
   @override
@@ -56,7 +57,7 @@ void main() async {
   };
 
   if (Platform.isLinux) {
-    fvp.registerWith(options: {'platforms': ['linux']});
+    fvp.registerWith(options: linuxVideoOptions(Platform.environment));
     await cef.WebviewManager().initialize();
   }
 
