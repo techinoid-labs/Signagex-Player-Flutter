@@ -40,9 +40,11 @@ def inspect(home, started, expected_build):
         except (OSError,ValueError): pass
     free = shutil.disk_usage(home).free
     if free < 512*1024*1024: problems.append('storage_below_512MiB')
-    logs = command('journalctl','--user','-u','signagex-player','--since',f'@{started}',
-        '--no-pager','-o','cat','--grep','segfault|SIGSEGV|page check unavailable|Unhandled exception|Framework error')
-    if logs: problems.append('error_markers_in_soak_window')
+    journal = subprocess.run(['journalctl','--user','-u','signagex-player','--since',f'@{started}',
+        '--no-pager','-o','cat','--grep','segfault|SIGSEGV|page check unavailable|Unhandled exception|Framework error'],
+        capture_output=True,text=True,timeout=10)
+    if journal.returncode not in (0,1): raise RuntimeError('journal_unavailable')
+    if journal.stdout.strip(): problems.append('error_markers_in_soak_window')
     preferences = json.loads((state/'shared_preferences.json').read_text())
     configuration = json.loads(preferences.get('flutter.linux_configuration','{}'))
     return {'timestamp':time.time(),'pid':pid,'restarts':int(properties.get('NRestarts','0')),
@@ -95,7 +97,7 @@ def main():
         if remaining <= 0:break
         # Short waits allow service cancellation to flush an honest report.
         until=time.monotonic()+min(args.interval,remaining)
-        while not stopped and time.monotonic()<until:time.sleep(min(1,until-time.monotonic()))
+        while not stopped and time.monotonic()<until:time.sleep(max(0,min(1,until-time.monotonic())))
     report('interrupted' if stopped else 'failed' if failures else 'passed')
     return 1 if stopped or failures else 0
 
