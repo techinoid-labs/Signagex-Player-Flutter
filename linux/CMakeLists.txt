@@ -139,7 +139,8 @@ set(CEF_SAFE_SOURCES)
 foreach(CEF_SOURCE IN LISTS CEF_PLUGIN_SOURCES)
   get_filename_component(CEF_SOURCE_NAME "${CEF_SOURCE}" NAME)
   if(CEF_SOURCE_NAME STREQUAL "webview_cef_plugin.cc" OR
-     CEF_SOURCE_NAME STREQUAL "webview_plugin.cc")
+     CEF_SOURCE_NAME STREQUAL "webview_plugin.cc" OR
+     CEF_SOURCE_NAME STREQUAL "webview_app.cc")
     list(APPEND CEF_SAFE_SOURCES "${CEF_SAFE_DIR}/${CEF_SOURCE_NAME}")
   else()
     get_filename_component(CEF_SOURCE_ABS "${CEF_SOURCE}" ABSOLUTE
