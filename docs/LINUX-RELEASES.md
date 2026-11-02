@@ -46,7 +46,7 @@ rebuilding the player. Production promotion run: 40023379283.
 - Hardware validation remains pending. Staging v15 is a separate package with
   its own checksum; do not mix staging and production pairing or installers.
 
-## arm64-v9 — configuration release candidate — 2026-11-02
+## arm64-v9 — withdrawn configuration candidate — 2026-11-02
 
 - Source: `0300b15026c818696c8748b3bdd7e53a8d43fd6a`.
 - Native ARM64 CI: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/41513597098
@@ -57,3 +57,25 @@ rebuilding the player. Production promotion run: 40023379283.
 - Local verification: 43 Flutter tests and ARM64 AOT compilation passed.
 - Native CI, complete-package installation, production feed publication and
   hardware acceptance are tracked separately in this release's rollout record.
+
+The v9 latest manifest was withdrawn after the physical Pi exposed a native
+browser first-paint crash. The candidate was not retained as the production
+latest release. See `ARM64-CONFIGURATION-ROLLOUT-2026-11-02.md` for the fixes,
+rollback and replacement release evidence.
+
+## arm64-v12 — configuration and secure remote view — 2026-11-02
+
+- Source: `bd749ec2763b141565e7d4cab4c1f704e7377158`.
+- Native CI: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/41519481230 (successful).
+- Package: `signagex-player_arm64-v12_arm64.deb`; Debian version `0.arm64-v12`.
+- SHA-256: `86f86001b2992ecc1831187f928e92360df148039f398f83c423efb580c865ce`.
+- Includes first-paint browser safety, null-default handling and signed/encrypted
+  CMS remote-view support in addition to the configuration implementation.
+- Full source, native build, physical installation and production promotion
+  evidence are recorded in the rollout document.
+
+- Production promotion passed: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/41523199417
+- Live production ARM64 feed verified at `0.arm64-v12` with the checksum above.
+- Physical Pi installation, graphical autostart after reboot, retained settings,
+  secure live remote view and signed Home confirmation passed.
+- Restricted updater check passed (`up-to-date`); automatic updates remain off.
