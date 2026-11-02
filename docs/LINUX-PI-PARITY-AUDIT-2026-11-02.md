@@ -85,7 +85,7 @@ Remaining: all target-specific acceptance rows not covered below (including cold
 - Native AMD64 run: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/41531661040
 - Native ARM64 run: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/41531664939
 - Source `33594cc`; AMD64 filename `signagex-player_v43_amd64.deb`, Debian version `43`, ~137 MiB. SHA256 `2289421219a4b68d58d62fbd588bd9a14284829d42707507b1c396d7fb7aa196`, independently matched on Mac and Byte.
-- ARM64 test package `signagex-player_arm64-v19_arm64.deb`, Debian `0.arm64-v19`; CI records SHA256SUMS in its artifact. It has not been installed on a Pi by this task; production Pi v12 is unchanged.
+- ARM64 test package `signagex-player_arm64-v19_arm64.deb`, Debian `0.arm64-v19`; CI records SHA256SUMS in its artifact. It has not been installed on a Pi by this task; this historical deployment did not change the Pi. Subsequent Pi work is tracked separately.
 - v43 was extracted into `/home/techinoid/.local/opt/signagex-v43`. This is a supervised user-bundle lab deployment, not a root Debian upgrade; system dpkg still holds the older package.
 - User service updated to the packaged watchdog unit; existing Intel driver/display/render-limit overrides retained. Existing v40 bundle retained. Private pre-upgrade unit/drop-in/preferences backup: `/home/techinoid/signagex-diagnostics/pre-v43`, created with restrictive permissions.
 - Service MainPID 23161, watchdog 75 seconds, NRestarts=0 across the inspected startup window. Fresh health.json reports v43 and PID23161. Secure protocol Python adapter runs from the v43 bundle (not the old system package).
@@ -108,4 +108,29 @@ systemctl --user start signagex-player
 systemctl --user show signagex-player -p MainPID -p NRestarts
 ```
 
-This returns execution to the retained v40 bundle. Preference backup is private recovery material, not something to publish or restore routinely over newer state. Root-installed upgrades, destructive updater rollback, boot after power loss, cold offline startup, full CMS controls, audio listening and 24-hour soak remain unvalidated. Draft reviews: player PR51 and CMS PR535; neither is merged by this task.
+This returns execution to the retained v40 bundle. Preference backup is private recovery material, not something to publish or restore routinely over newer state. Root-installed upgrades, destructive updater rollback, boot after power loss, cold offline startup, full CMS controls, audio listening and 24-hour soak remain unvalidated. Historical review status at v43: player PR51 and CMS PR535 were drafts. See the current update below.
+
+
+## Current acceptance update — v50, 2026-11-02
+
+This section supersedes historical v40/v43 status above. Owner names below refer to responsible roles; hardware acceptance is not implied by implementation completion.
+
+| Area | Owner | Status | Validation evidence / remaining work |
+| --- | --- | --- | --- |
+| Browser recovery and page paint gate | Linux player | Implemented; bounded Byte validation passed on v46 | Native main-frame failure recovery; last-good-frame gate; C++ sanitizer checks. Proxy fault restored cleanly. No JavaScript polling health probes. |
+| Configuration via production CMS | CMS/backend + Linux | Four live settings passed | Org-scoped ownership fix is deployed. Byte revision 1 acknowledged volume 35, mute true, brightness 90/manual and touch feedback true. wpctl and xrandr independently confirmed volume/mute/brightness. Revision 2 restored volume 100, unmuted, brightness 100/manual, touch feedback false; all acknowledged applied. |
+| CMS uptime | CMS | Merged and deployed | PR535, main 6f000f94166d22240e0fc4fa766b0abdd276e9a0; both Vercel checks passed; 25 focused tests and TypeScript passed. |
+| Backend ownership/configuration | Backend | Production deployment passed | Run 41545021288; API 2/2 and worker 1/1 use dafb983. Integrates upstream main e0623ab ownership fix while preserving the already-running Android pilot. Previous image bae39a0 retained as rollout rollback reference. |
+| Cold offline player start | Linux QA | Passed on v46 | Player-only systemd AF_UNIX restriction denied Internet sockets; host/SSH networking stayed available. Fresh health, retained pairing and campaign, screenshot shows cached content. Restriction removed and normal startup verified. This is not a whole-machine offline boot. Report: ~/signagex-diagnostics/v46-offline-start/report.json. |
+| Remote control | Linux QA | Partial hardware acceptance | v43 production live view, Home and Back acknowledged (412/363 ms); reconnect observed. Epoch/observer/handover/geometry regression tests implemented. Full simultaneous-viewer physical acceptance still open. |
+| Hardware audio/display adapters | Linux QA | Adapter checks passed | Volume, mute, brightness and reversible rotation tested; speaker-test completed. Listener confirmation of audible output remains open. |
+| Video | Linux + hardware QA | Implemented; visual acceptance open | Duplicate decoder removed, callback generation fenced, Intel full driver retained, optional render limit preserved. Earlier user reported 1080p stutter and 720p improvement; do not claim smooth 1080p acceptance. |
+| Updater/startup contracts | Linux | Implemented and regression tested | Debian build-name normalization, fresh health verification, interrupted-update rollback fixtures, relocated user-service paths and quoting. Root-installed upgrade/reboot acceptance needs local administrator step. Automatic updates remain OFF. |
+| Latest amd64 package | Linux CI | Built and deployed to lab user bundle | Source 658cb54; run 41545466100 passed. signagex-player_v50_amd64.deb SHA256 9556b4345481921260989ef9cb377ff9a26bd3c94034c9800dbf53293dee6fd3 matched on Mac and Byte. Fresh v50 health PID43574, cached campaign unchanged. |
+| Latest ARM64 package | Linux CI | Native build running | Run 41545469815; record final result before declaring this combined build ready for Pi hardware testing. Existing Pi release work is separate and untouched. |
+| 24-hour stability | Linux QA | RUNNING, not passed | Unit signagex-soak-v50; private report ~/signagex-diagnostics/v50-24h-soak/report.json. Tracks health, restart/PID changes, resource usage and error markers without storing raw payloads. |
+| Internal OS package and boot/reboot | Device administrator + Linux QA | Pending local administrator action | System dpkg remains v25; v50 currently runs as a supervised extracted bundle. Prepared finish-byte-setup.sh verifies and installs v50 and provisions limited reboot/update groups; no automatic reboot or auto-update enablement. |
+
+Additional implementation f7c2984 adds page-frame gating, updater/startup/telemetry and controller fencing tests; 863341b/555cb18 add the bounded soak runner and empty-journal handling. Merge 658cb54 retains upstream Pi logging/recovery work and avoids competing CEF patch pipelines mutating the shared dependency cache.
+
+v50 rollback: stop the user service, restore ~/signagex-diagnostics/pre-v50/validated-build.conf to ~/.config/systemd/user/signagex-player.service.d/validated-build.conf, daemon-reload and start. The retained v46 bundle is the previous execution target; preserve current pairing/cache. No release-feed promotion is performed by this validation update.
