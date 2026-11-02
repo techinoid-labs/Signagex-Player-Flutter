@@ -9,6 +9,10 @@ namespace signagex {
 // thread owns that snapshot until its next copy_pixels call has completed.
 class FrameStore {
  public:
+  // Flutter can request a texture immediately after registration, before CEF's
+  // first OnPaint. Always supply a valid transparent pixel in that interval.
+  FrameStore() : displayed_(4, 0), displayed_width_(1), displayed_height_(1) {}
+
   bool PublishBgra(const void* source, int width, int height) {
     if (!source || width <= 0 || height <= 0 ||
         uint64_t(width) * uint64_t(height) > 64 * 1024 * 1024) return false;
