@@ -2727,10 +2727,7 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> _handleIncomingMessage(String message) async {
-    print('Received message in ViewModel: $message');
 
-    print('Received message in store state: $storeState');
-    print('i am in recive msgss:');
 // await restartApp();
     final jsonObj = jsonDecode(message);
 

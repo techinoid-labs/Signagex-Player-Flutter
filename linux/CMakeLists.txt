@@ -119,6 +119,16 @@ set_target_properties(${BINARY_NAME}
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
+# Patch the pinned CEF dependency before its sources are compiled. Fail closed
+# if upstream changes the load handlers so recovery is never silently disabled.
+find_package(Python3 REQUIRED COMPONENTS Interpreter)
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/packaging/patch_cef_load_events.py"
+    "${CMAKE_CURRENT_SOURCE_DIR}/flutter/ephemeral/.plugin_symlinks/webview_cef/common/webview_handler.cc"
+  RESULT_VARIABLE CEF_LOAD_PATCH_RESULT)
+if(NOT CEF_LOAD_PATCH_RESULT EQUAL 0)
+  message(FATAL_ERROR "Unable to install CEF native load events")
+endif()
 include(flutter/generated_plugins.cmake)
 
 # Keep the upstream pub cache intact. Generate reviewed Linux-only overrides

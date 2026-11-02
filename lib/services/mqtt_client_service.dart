@@ -63,7 +63,7 @@ class MqttClientService {
     _client.websocketProtocols = ['mqtt'];
 
     _client.keepAlivePeriod = 60;
-    _client.logging(on: true);
+    _client.logging(on: false);
 
     _client.autoReconnect = true;
     _client.resubscribeOnAutoReconnect = true;
@@ -389,9 +389,6 @@ class MqttClientService {
     }
 
     receivedMessageNotifier.value = payload;
-    print('MQTT_LOGS:: New data arrived payload is $payload');
-    print(
-        'MQTT_LOGS:: New data arrived: topic ...$globleTopic.... <${messages[0].topic}>, payload is $payload');
 
     try {
       jsonDecode(payload);
@@ -412,7 +409,7 @@ class MqttClientService {
         retain: false,
       );
 
-      print('Message published to topic: $topic');
+
     } else {
       print('Cannot publish: MQTT client not connected.');
     }
@@ -439,7 +436,7 @@ class MqttClientService {
         buffer,
         retain: retain,
       );
-      print('MQTT_LOGS:: Published message to topic $topic: $message');
+
     } else {
       print('MQTT_LOGS:: Cannot publish - client not connected');
     }
