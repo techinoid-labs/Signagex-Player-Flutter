@@ -88,6 +88,14 @@ app = replace_once(app, '\tif (process_type.empty())\n\t{', '''\tif (process_typ
             command_line->AppendSwitchWithValue("password-store", "basic");
         }''')
 (output / "webview_app.cc").write_text(app)
+for parameters in ('functionName, arg1', 'functionName, jsonString, arg2',
+                   'functionName, jsonString, arg2, arg3'):
+    # V8 extension native declarations cannot contain formal parameters.
+    # Invalid syntax prevents the entire bridge (including EvaluateCallback)
+    # from loading, so Dart page-health probes otherwise never complete.
+    app = replace_once(app, f'native function jsCmd({parameters});',
+                       'native function jsCmd();')
+(output / "webview_app.cc").write_text(app)
 for name in ("frame_store.h", "webview_cef_texture.h"):
     shutil.copyfile(Path(__file__).parent / name, output / name)
 print("Prepared thread-owned CEF loop and lifetime-safe texture sources")

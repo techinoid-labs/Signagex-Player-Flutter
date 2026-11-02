@@ -1224,6 +1224,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   }
 
   void _initializeNextVideo(MediaItem nextMedia) {
+    if (Platform.isLinux) {
+      // The visible VideoPlayerWidget owns decoding. The zone's media timer
+      // already controls duration; a second, invisible player doubles decode
+      // work and audio without contributing a frame to the screen.
+      setState(() {});
+      return;
+    }
     final mediaUrl = nextMedia.mediaUrl ?? '';
     if (mediaUrl.isEmpty) {
       print("[LOG] Video URL is empty, skipping");

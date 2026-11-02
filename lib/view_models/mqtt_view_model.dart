@@ -2257,7 +2257,8 @@ class MqttViewModel extends ChangeNotifier {
     devicesinfo['device_model'] = devicesinfo['hardware_details']?['model'] ?? 'Linux';
     devicesinfo['action'] = 'player_details';
     devicesinfo['last_seen'] = DateTime.now().toUtc().toIso8601String();
-    devicesinfo['player_version'] = 'Version: arm64-recovery-20261029';
+    const buildId = String.fromEnvironment('APP_BUILD_ID', defaultValue: 'development');
+    devicesinfo['player_version'] = 'Version: $buildId';
   }
 
   Future<void> _checkPairingStatus({bool refresh = false}) async {
