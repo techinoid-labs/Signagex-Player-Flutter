@@ -58,4 +58,5 @@ MQTT subscription and health were verified through SSH instead.
 The temporary HTTPS rejection rule was removed, and GNOME proxy mode is back to
 its original `none`. Automatic-update preference was not changed.
 
-Final production promotion workflow: 41544151406 (verification pending).
+Final production promotion workflow: 41544151406 succeeded. The production
+ARM64 feed reports `0.arm64-v23` with the exact package checksum above.
