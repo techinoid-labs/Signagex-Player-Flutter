@@ -1,5 +1,6 @@
 import 'dart:io';
 import 'linux_configuration.dart';
+import '../utils/linux_temperature.dart';
 
 /// Backend units: memory MiB, disk KiB, network KiB per sample, uptime seconds.
 class LinuxTelemetry {
@@ -45,7 +46,7 @@ class LinuxTelemetry {
         .split(RegExp(r'\s+'));
     final available = memory['MemAvailable'] ?? memory['MemFree'] ?? 0;
     final totalMemory = memory['MemTotal'] ?? 0;
-    final temperature = File('/sys/class/thermal/thermal_zone0/temp');
+    final temperature = await linuxCpuTemperature(Directory('/sys/class/thermal'));
     final result = <String, dynamic>{
       'memory': {
         'free': available / 1024,
@@ -64,11 +65,7 @@ class LinuxTelemetry {
           'inKB': (rx - previous[0]).clamp(0, 1 << 62) / 1024,
           'outKB': (tx - previous[1]).clamp(0, 1 << 62) / 1024
         },
-      if (await temperature.exists())
-        'temperature': {
-          'value':
-              double.parse((await temperature.readAsString()).trim()) / 1000
-        },
+      if (temperature != null) 'temperature': {'value': temperature},
     };
     return result;
   }
