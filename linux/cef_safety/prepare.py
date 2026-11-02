@@ -14,6 +14,7 @@ expected = {
     "webview_cef_plugin.cc": "278ed9ee69226255b00a78e513b329e4d8351786e22cdf56391ab1d2569bf3b9",
     "../common/webview_plugin.cc": "07015082a3d3f014dafae41c84eecf7bd103a62192b416e9a1ba30cc1eb4ecbf",
     "../common/webview_app.cc": "5dae0b4ef6399b9f8f70fc399a7b4719e4a2f0af2a1c33ce99fcef9342bff960",
+    "../common/webview_handler.cc": "8ff8b2bc7eb8886062a836f79074c75dad68eca5f62e503a0181e39fa960b88c",
 }
 texts = {}
 for name, digest in expected.items():
@@ -88,14 +89,26 @@ app = replace_once(app, '\tif (process_type.empty())\n\t{', '''\tif (process_typ
             command_line->AppendSwitchWithValue("password-store", "basic");
         }''')
 (output / "webview_app.cc").write_text(app)
-for parameters in ('functionName, arg1', 'functionName, jsonString, arg2',
-                   'functionName, jsonString, arg2, arg3'):
-    # V8 extension native declarations cannot contain formal parameters.
-    # Invalid syntax prevents the entire bridge (including EvaluateCallback)
-    # from loading, so Dart page-health probes otherwise never complete.
-    app = replace_once(app, f'native function jsCmd({parameters});',
-                       'native function jsCmd();')
-(output / "webview_app.cc").write_text(app)
+handler = texts["../common/webview_handler.cc"]
+handler = replace_once(handler, '''    // Allow Chrome to show the error page.''', '''    // Forward main-frame failures before Chrome replaces the document with
+    // its own error page. No JavaScript bridge or document inspection needed.
+    if (frame->IsMain() && errorCode != ERR_ABORTED && onLoadEnd) {
+        onLoadEnd(browser->GetIdentifier(),
+                  "signagex-load-failed:" + std::to_string(int(errorCode)));
+    }
+
+    // Allow Chrome to show the error page.''')
+handler = replace_once(handler, '''    if(onLoadEnd){
+        onLoadEnd(browser->GetIdentifier(), frame->GetURL());
+    }''', '''    // Do not mistake Chrome/data error documents (status 0) or a child
+    // frame's successful load for recovery of the main document.
+    const std::string url = frame->GetURL().ToString();
+    if (onLoadEnd && frame->IsMain() &&
+        (httpStatusCode > 0 || url.rfind("file:", 0) == 0)) {
+        onLoadEnd(browser->GetIdentifier(), httpStatusCode >= 400
+            ? "signagex-load-failed:" + std::to_string(httpStatusCode) : url);
+    }''')
+(output / "webview_handler.cc").write_text(handler)
 for name in ("frame_store.h", "webview_cef_texture.h"):
     shutil.copyfile(Path(__file__).parent / name, output / name)
 print("Prepared thread-owned CEF loop and lifetime-safe texture sources")
