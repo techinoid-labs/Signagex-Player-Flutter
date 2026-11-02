@@ -10,7 +10,7 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
-import 'package:webview_cef/webview_cef.dart' as cef;
+import '../widgets/linux_web_view.dart';
 import 'package:video_player/video_player.dart';
 
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
@@ -2914,7 +2914,7 @@ class _WBViewWidgetState extends State<WBViewWidget> {
     }
 
     if (Platform.isLinux) {
-      return _LinuxWebViewWidget(url: targetUrl);
+      return LinuxWebView(url: targetUrl);
     }
 
     // #region agent log
@@ -2973,62 +2973,6 @@ class _WBViewWidgetState extends State<WBViewWidget> {
           ),
         ],
       ),
-    );
-  }
-}
-
-class _LinuxWebViewWidget extends StatefulWidget {
-  final String url;
-  const _LinuxWebViewWidget({required this.url});
-
-  @override
-  State<_LinuxWebViewWidget> createState() => _LinuxWebViewWidgetState();
-}
-
-class _LinuxWebViewWidgetState extends State<_LinuxWebViewWidget> {
-  late cef.WebViewController _controller;
-
-  void _onReadyChanged() {
-    print(
-        '[LOG] _LinuxWebViewWidget - ready=${_controller.value} url=${widget.url}');
-  }
-
-  @override
-  void initState() {
-    super.initState();
-    print('[LOG] _LinuxWebViewWidget - initState url=${widget.url}');
-    // injectUserScripts is deliberately not passed.
-    //
-    // It is optional, and what was passed was an EMPTY InjectUserScripts --
-    // no scripts, so no behaviour. It is also the one symbol webview_cef
-    // 0.2.2 does not export from its main library (it lives under src/),
-    // which is what made it the visible failure when CI resolved that
-    // version. Dropping a no-op argument is a better answer than reaching
-    // into another package's src/ to keep it.
-    _controller = cef.WebviewManager().createWebView(
-      loading: const Center(child: CircularProgressIndicator()),
-    );
-    _controller.addListener(_onReadyChanged);
-    _controller.initialize(widget.url).then((_) {
-      print('[LOG] _LinuxWebViewWidget - initialize completed for ${widget.url}');
-    }).catchError((Object e, StackTrace st) {
-      print('[ERROR] _LinuxWebViewWidget - initialize failed for ${widget.url}: $e');
-    });
-  }
-
-  @override
-  void dispose() {
-    _controller.removeListener(_onReadyChanged);
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return ValueListenableBuilder<bool>(
-      valueListenable: _controller,
-      builder: (_, ready, __) =>
-          ready ? _controller.webviewWidget : _controller.loadingWidget,
     );
   }
 }

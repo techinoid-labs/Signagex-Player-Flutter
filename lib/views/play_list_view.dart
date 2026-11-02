@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import '../widgets/linux_web_view.dart';
 
 import 'package:flutter/material.dart';
 
@@ -860,6 +861,8 @@ class _WBViewWidgetState extends State<WBViewWidget> {
     } else {
       targetUrl = 'file://${widget.media}';
     }
+
+    if (Platform.isLinux) return LinuxWebView(url: targetUrl);
 
     return SizedBox.expand(
       child: Column(
