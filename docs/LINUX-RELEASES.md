@@ -31,3 +31,29 @@ v15 staging SHA-256:
 - Checks passed:
 - Hardware tested:
 - Known issues / remaining work:
+
+## v15 production promotion — 2026-10-23
+
+Promoted the existing production artifact from CI run 40011248815 without
+rebuilding the player. Production promotion run: 40023379283.
+
+- Package: `signagex-player-production-v15_amd64.deb`
+- Channel: production; pairs with production CMS.
+- SHA-256: `095b0766f82ed34ce5987212a059d6367713a9ea2ea5cb3634aabf7d2c50b041`
+- Download: https://norwin.sfo3.digitaloceanspaces.com/player-releases/production/linux/signagex-player-production-v15_amd64.deb
+- API backend rolled out on DOKS to image `424ddf5` with 512 MiB upload support
+  and versioned Debian filenames; both API replicas ready. Promotion passed.
+- Hardware validation remains pending. Staging v15 is a separate package with
+  its own checksum; do not mix staging and production pairing or installers.
+
+## arm64-v9 — configuration release candidate — 2026-11-02
+
+- Source: `0300b15026c818696c8748b3bdd7e53a8d43fd6a`.
+- Native ARM64 CI: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/41513597098
+- Adds device-confirmed CMS settings, Linux schedules/controls, triggers,
+  diagnostics, asset caching and an administrator-enabled managed updater.
+- Update transactions run independently of the player service so restarts
+  cannot terminate the installer or rollback check.
+- Local verification: 43 Flutter tests and ARM64 AOT compilation passed.
+- Native CI, complete-package installation, production feed publication and
+  hardware acceptance are tracked separately in this release's rollout record.

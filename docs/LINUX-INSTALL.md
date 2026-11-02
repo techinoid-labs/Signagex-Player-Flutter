@@ -58,3 +58,24 @@ find ~/.local/share -name signagex_debug.log
 Record results against v15 in LINUX-RELEASES.md. For a new version, add a release
 entry and update the pinned URL, filename and checksum together. Do not use a
 latest URL with a historical checksum.
+
+## Production v15 — promoted 2026-10-23
+
+For customer-account pairing use the production package instead of the staging
+steps above. Both packages have CI version v15, but target different accounts
+and have different checksums. Use only the intended player at a time.
+
+```bash
+cd ~/Downloads
+curl -fL 'https://norwin.sfo3.digitaloceanspaces.com/player-releases/production/linux/signagex-player-production-v15_amd64.deb' -o signagex-player-production-v15_amd64.deb
+echo '095b0766f82ed34ce5987212a059d6367713a9ea2ea5cb3634aabf7d2c50b041  signagex-player-production-v15_amd64.deb' | sha256sum -c -
+# Continue only after OK.
+sudo apt update
+sudo apt install ./signagex-player-production-v15_amd64.deb
+signagex-player
+dpkg-query -W signagex-player
+```
+
+Claim the displayed code in your production SignageX account. For optional
+kiosk setup, use `/opt/signagex-player/kiosk/install.sh` and
+`/usr/bin/signagex-player`. The same physical validation checklist applies.

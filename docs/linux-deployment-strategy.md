@@ -17,13 +17,13 @@ pushed on different cadences by different mechanisms. Don't conflate them.
 
 | Layer | What it is | Frequency | Status |
 |---|---|---|---|
-| **1. OS** | Ubuntu base + kiosk session (Openbox/GNOME, autostart, no blanking) | Once, or re-image | To build per plan |
+| **1. OS** | Ubuntu base + kiosk session (Openbox/GNOME, autostart, no blanking) | Once, or re-image | Optional kiosk tooling built; appliance image and power-on validation pending |
 | **2. Player app** | the `.deb` / AppImage / Flutter bundle | On each release | ✅ CI builds it (`build-linux.yml`) |
 | **3. Content / config** | campaigns, playlists, screen settings | Continuous, live | ✅ player's MQTT + CMS sync |
 
-**Layer 3 is already solved** — the player pulls content from the CMS over MQTT
-at runtime (`api.signagex.ai`). So deployment work is really only **Layer 1
-(OS)** and **Layer 2 (app)**.
+**Layer 3 is implemented** through player MQTT/CMS sync. Staging and production
+use separate environments. Byte content delivery, offline recovery and pairing
+still need end-to-end validation; implementation alone is not hardware proof.
 
 ---
 
@@ -99,46 +99,67 @@ player all at once.
    base we fully control.
 2. **Next — Plan B** scripts (autoinstall seed + Ansible) so screens #2–#20 are
    repeatable, not hand-built.
-3. **Then — one Plan C track** (lean: **balenaCloud**, for the bundled remote
-   fleet management) for the production fleet.
+3. **Then — evaluate and select one Plan C track** for the production fleet;
+   no update-platform vendor has been selected.
 
 ---
 
 ## 5. Linux readiness checklist
 
-Checked against source on 2026-10-23. A source implementation is not proof of
-successful CI, installation, or hardware behavior. Checked items below mean
-implemented; field validation remains explicitly unchecked.
+Updated 2026-10-23 against source, the v15 CI run and live staging download.
+**Owner assignments have not been agreed.** Every owner below is unassigned;
+the role in parentheses identifies the proposed responsibility, not a commitment.
+Checked boxes mean the stated deliverable is complete at the evidence level
+shown. They do not imply hardware acceptance. Pending rows state the evidence
+needed to close them. See [release history](LINUX-RELEASES.md) and
+[v15 installation and test instructions](LINUX-INSTALL.md).
 
 ### Tier 0 — player and kiosk hardening
 
-- [x] Declare xdotool in .deb dependencies and bundle it in AppImage.
-- [x] Match Back activation to the runner title, SignageX Player, including the GTK header-bar path.
-- [x] Use systemctl --no-ask-password reboot with a narrow login1 polkit rule for the local, active signagex-reboot group member. No general pkexec authorization.
-- [x] Ship an optional Openbox X11 kiosk session: fullscreen, player startup/restart, cursor hiding, and blanking disabled.
-- [ ] Prove Home/Back and mouse/keyboard input on a clean X11 host with both packages.
-- [ ] Prove unattended reboot as the kiosk user and denial for an unauthorized user.
-- [ ] Prove kiosk startup after power loss; configure display-manager automatic login on the appliance.
+| Done | Deliverable | Owner | Status | Validation evidence / acceptance needed |
+|---|---|---|---|---|
+| [x] | xdotool in .deb dependencies and bundled in AppImage | Unassigned (player engineering) | Built in v15; CI passed | `linux/packaging/make_deb.sh`, `make_appimage.sh`; CI [v15](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/40011248815). Clean-host remote-input test pending. |
+| [x] | Back window-title match and Dart raw regex | Unassigned (player engineering) | Built in v15; analysis/build passed | `lib/view_models/system_apply_settings_vm.dart`, `linux/runner/my_application.cc`; commits `2ed6172`, `a88f5b8`. Byte Home/Back test pending. |
+| [x] | Restricted kiosk reboot authorization | Unassigned (player engineering) | Built in v15; opt-in | `linux/packaging/49-signagex-reboot.rules`; `systemctl --no-ask-password reboot`. Requires provisioning and a new login for group membership. |
+| [x] | Optional Openbox X11 kiosk session | Unassigned (device engineering) | Built in v15 | `linux/packaging/kiosk/`: fullscreen, player startup/restart, cursor hiding and blanking prevention. Display-manager automatic login remains host configuration. |
+| [ ] | Remote input and Home/Back on both package formats | Unassigned (QA/device engineering) | Hardware validation pending | Record version, OS, X11 session, hardware and results for .deb and AppImage. |
+| [ ] | Unattended reboot and authorization boundary | Unassigned (QA/device engineering) | Hardware validation pending | Demonstrate kiosk-user reboot and rejection for an unauthorized user; record results. |
+| [ ] | Kiosk startup after power loss | Unassigned (device engineering) | Configuration and validation pending | Configure automatic login, perform physical power cycle, confirm fullscreen playback and no blanking. |
 
 ### Tier 1 — supported software and first appliance
 
-- [x] Implement amd64 .deb/AppImage packaging and CI workflows.
-- [x] Implement code/QR enrollment: Linux registration and polling in lib/view_models/mqtt_view_model.dart; QR in lib/views/digivision_view.dart; CMS code submission in ClassicSetupPlayerModal.tsx; backend createPlayer handling.
-- [x] Implement device registry, organization licence-capacity checks, and player licence status in the backend.
-- [ ] Obtain a successful Linux CI release build and validate the produced packages.
-- [ ] Test fresh signup/account access, code claim, organization ownership, pairing persistence, unpair/re-pair, licence exhaustion and revocation end to end.
-- [ ] Test content download, offline playback, reconnect, remote control, reboot and restart on a real unit.
-- [ ] Publish downloads, supported-platform requirements, installation/pairing instructions and support contact.
-- [ ] Build a platform-detecting installer with explicit supported-host checks and release integrity verification; the proposed get.signagex.ai endpoint is not yet a shipped feature.
-- [ ] Produce and test a generic golden image; reset player enrollment/cache, machine identity and SSH host keys before cloning. Verify two clones enroll as separate devices.
-- [ ] Agree Azulle hardware configuration, imaging process, pricing, minimum order, fulfillment and warranty responsibilities directly with the vendor.
-- [ ] If Raspberry Pi is in scope, first prove ARM64 browser/video dependencies, then add CI and hardware tests.
+| Done | Deliverable | Owner | Status | Validation evidence / acceptance needed |
+|---|---|---|---|---|
+| [x] | amd64 .deb/AppImage build and packaging | Unassigned (release engineering) | CI verified for v15 | [v15 CI](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/40011248815): analysis/tests, production/staging builds, packaging and Debian installation passed. This does not prove playback. |
+| [x] | Code/QR pairing and enrollment implementation | Unassigned (player/CMS engineering) | Already built; Linux end-to-end validation pending | Player `lib/view_models/mqtt_view_model.dart` and `lib/views/digivision_view.dart`; CMS `ClassicSetupPlayerModal.tsx`; backend `players.resolver.ts` createPlayer flow. Not a missing implementation. |
+| [x] | Device registry and licence enforcement implementation | Unassigned (backend engineering) | Already built; lifecycle validation pending | Backend `players.service.ts`: organization licence-pool checks and player licence status; player entities/creation flow. Not a missing implementation. |
+| [x] | Publish v15 staging package | Unassigned (release engineering) | Live staging verified | Publication job passed. Nginx upload route and backend allow 512 MB; route timeouts raised. Backend upload-limit commit `24aab62`. |
+| [x] | Versioned .deb download filename and retained version links | Unassigned (backend engineering) | Live staging verified | Backend commit `6e50568`; [pinned v15 download](https://norwin.sfo3.digitaloceanspaces.com/player-releases/staging/linux/signagex-player-staging-v15_amd64.deb) returned HTTP 200 and Content-Disposition filename `signagex-player-staging-v15_amd64.deb`. Latest metadata reports v15 and SHA-256 `7e09cffaf5d868077ac81d362bb1de9f8e0d973340d2d5de87f14ce6d97a5e0b`. |
+| [x] | Version-specific install/test runbook and release history | Unassigned (documentation/release engineering) | Written; Byte execution pending | [LINUX-INSTALL.md](LINUX-INSTALL.md), [LINUX-RELEASES.md](LINUX-RELEASES.md); player commit `647daff`. Includes checksum, package-version check and remaining tests. |
+| [ ] | Account, enrollment and licence lifecycle acceptance | Unassigned (QA/CMS engineering) | Linux end-to-end validation pending | Fresh account/code claim, organization ownership, persistence, unpair/re-pair, capacity exhaustion and revocation; save results against release version. |
+| [ ] | Byte playback and recovery acceptance | Unassigned (QA/device engineering) | No completed Byte validation record in this session | Follow v15 runbook: image/video/audio, cached playback offline, reconnect, remote control, restart and reboot. Requires on-screen/audio confirmation and physical power-cycle testing. Do not infer that Linux has never run on any hardware. |
+| [ ] | Public website downloads and supported-platform/support pages | Unassigned (website/product) | Not verified as delivered | Staging endpoint and repository docs exist. Provide customer-facing pages, tested OS/architecture matrix, pairing instructions and support contact before closing. |
+| [ ] | One-line installer | Unassigned (release engineering) | Planned; not delivered in this work | Detect supported hosts; verify release integrity; prove clean-host install. `get.signagex.ai` remains a proposed endpoint. |
+| [ ] | Sanitized, repeatable golden image | Unassigned (device engineering) | Pending proven unit | Reset pairing/cache, credentials, machine identity and SSH host keys. Record image version/checksum and demonstrate independent enrollment on two cloned units. |
+| [ ] | Azulle appliance specification and commercial process | Unassigned (business operations/device engineering) | Terms and outreach status unverified | Confirm RAM/storage, imaging, pricing, minimum order, fulfillment and warranty in vendor evidence. No sent-email claim is established here. |
+| [ ] | ARM64 / Raspberry Pi | Unassigned (product/player engineering) | Scope decision and feasibility pending; not shipped | Confirm CI scaffold status from source before claiming it exists. Prove ARM64 CEF/video dependencies, CI artifacts and real Pi operation before support claims. |
 
-### Tier 2 — scale after validation
+### Tier 2 — reach and scale
 
-- [ ] Evaluate an OS/app update platform with recovery, rollback and fleet visibility; no vendor is selected.
-- [ ] Add Wayland remote input support if required; current xdotool input requires X11.
-- [ ] Add RPM, Snap, Flatpak or other formats only against demonstrated requirements.
+| Done | Deliverable | Owner | Status | Validation evidence / acceptance needed |
+|---|---|---|---|---|
+| [ ] | OS/app OTA with recovery and fleet visibility | Unassigned (platform engineering/product) | Evaluation pending; no vendor selected | Select an approach, demonstrate upgrade/rollback and recovery on hardware. Content sync and release publication already exist; neither establishes OS-level OTA. |
+| [ ] | Wayland remote input | Unassigned (player engineering) | Not implemented in the current xdotool input path | Demonstrate input/control under a named Wayland compositor. This limitation does not establish that all player rendering is X11-only. |
+| [ ] | Additional package formats | Unassigned (release engineering/product) | Demand-driven backlog | RPM/Snap/Flatpak/Docker need explicit scope and validated artifacts; current verified formats are amd64 .deb and AppImage. |
+
+### Evidence and ownership maintenance
+
+For each validation, record release version, commit/CI run, date, tester,
+hardware/OS/session, result and a link to logs or a test report. Replace an
+unassigned owner only after assignment is agreed. A source fix closes an
+implementation row; only the recorded acceptance test closes its validation row.
+The Byte's current BIOS/keyboard/access state and USB readiness are unverified
+here; confirm them directly rather than calling a wired keyboard the sole blocker.
 
 ## 6. Two customer delivery pipelines
 
