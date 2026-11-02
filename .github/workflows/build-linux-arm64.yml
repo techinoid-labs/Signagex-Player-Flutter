@@ -4,7 +4,7 @@ name: Build Linux ARM64
 on:
   workflow_dispatch:
   push:
-    branches: [linux]
+    branches: [linux, perf/linux-browser-size]
     paths:
       - 'lib/**'
       - 'linux/**'
@@ -65,7 +65,10 @@ jobs:
         run: flutter config --enable-linux-desktop
 
       - name: Install dependencies
-        run: flutter pub get
+        run: |
+          cp linux/packaging/pubspec.lock pubspec.lock
+          cp linux/packaging/pubspec_overrides.yaml pubspec_overrides.yaml
+          flutter pub get --enforce-lockfile
 
       - name: Compute build id
         id: build_id

@@ -89,6 +89,21 @@ mkdir -p "$ROOT$INSTALL_DIR/kiosk" "$ROOT/usr/share/polkit-1/rules.d"
 cp linux/packaging/kiosk/* "$ROOT$INSTALL_DIR/kiosk/"
 cp linux/packaging/49-signagex-reboot.rules "$ROOT/usr/share/polkit-1/rules.d/49-$PKG-reboot.rules"
 
+# Managed Linux configuration helpers. Update permission remains administrator opt-in.
+mkdir -p "$ROOT/usr/lib/signagex-player" "$ROOT/usr/bin"
+install -m 755 linux/packaging/update-player "$ROOT/usr/lib/signagex-player/update-player"
+mkdir -p "$ROOT/usr/lib/systemd/system"
+install -m 644 linux/packaging/signagex-update-recover.service "$ROOT/usr/lib/systemd/system/signagex-update-recover.service"
+install -m 644 linux/packaging/50-signagex-update.rules "$ROOT/usr/share/polkit-1/rules.d/50-signagex-update.rules"
+install -m 755 linux/packaging/kiosk/start-supervised.sh "$ROOT/usr/bin/signagex-player-start-supervised"
+channel_api=https://api.signagex.ai
+if [ "$SUFFIX" = staging ]; then channel_api=https://stage.signagexai.com; fi
+release_platform=linux
+if [ "$DEB_ARCH" = arm64 ]; then release_platform=linux-arm64; fi
+printf '{"manifest":"%s/v1/player-releases/latest?platform=%s","package":"%s","architecture":"%s","platform":"%s"}\n' "$channel_api" "$release_platform" "$PKG" "$DEB_ARCH" "$release_platform" > "$ROOT/usr/lib/signagex-player/update-channel.json"
+sed -i "s|^ExecStart=/usr/bin/signagex-player$|ExecStart=/usr/bin/$PKG|" "$ROOT$INSTALL_DIR/kiosk/signagex-player.service"
+
+
 # --- icons ---------------------------------------------------------------
 for png in linux/packaging/icons/signagex-player-*.png; do
   size="${png##*-}"; size="${size%.png}"
@@ -102,6 +117,8 @@ done
 # needs beyond a bare desktop install. Alternatives are spelled out for both
 # sides of Ubuntu's 64-bit time_t transition, so the same .deb installs on
 # 22.04 and 24.04 rather than failing dependency resolution on one of them.
+CONFLICTING_PACKAGE=signagex-player-staging
+if [ -n "$SUFFIX" ]; then CONFLICTING_PACKAGE=signagex-player; fi
 INSTALLED_KB="$(du -sk "$ROOT$INSTALL_DIR" | cut -f1)"
 cat > "$ROOT/DEBIAN/control" <<CONTROL
 Package: $PKG
@@ -111,7 +128,8 @@ Priority: optional
 Architecture: $DEB_ARCH
 Maintainer: SignageX <support@signagex.ai>
 Installed-Size: $INSTALLED_KB
-Depends: xdotool, scrot, policykit-1, libva2, libva-drm2, libva-x11-2, libvdpau1,
+Conflicts: $CONFLICTING_PACKAGE
+Depends: xdotool, scrot, polkitd | policykit-1, pkexec, wireplumber, x11-xserver-utils, python3, curl, libva2, libva-drm2, libva-x11-2, libvdpau1,
  libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,
  libxkbcommon0, libgbm1, libdrm2, libxcomposite1, libxdamage1, libxrandr2,
  libatk1.0-0, libatk-bridge2.0-0, libpango-1.0-0, libcairo2,
@@ -128,6 +146,11 @@ CONTROL
 cat > "$ROOT/DEBIAN/postinst" <<'POSTINST'
 #!/bin/sh
 set -e
+getent group signagex-updates >/dev/null || groupadd --system signagex-updates
+if command -v systemctl >/dev/null; then
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable signagex-update-recover.service 2>/dev/null || true
+fi
 # Refresh the caches the shell reads, so the icon and launcher entry appear
 # without a logout.
 if [ -x "$(command -v gtk-update-icon-cache)" ]; then

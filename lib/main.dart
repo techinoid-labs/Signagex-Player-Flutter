@@ -1,4 +1,7 @@
 import 'dart:io';
+import 'dart:async';
+import 'services/linux_configuration.dart';
+import 'services/linux_diagnostics.dart';
 // Prefixed: dart:ui re-declares several names (Color, Offset, Size, Rect,
 // TextDirection...) that flutter/material.dart also exports with its own
 // versions -- only PlatformDispatcher is actually needed from here.
@@ -40,9 +43,11 @@ void main() async {
   FlutterError.onError = (FlutterErrorDetails details) {
     debug.debugLog(
         'FlutterError', '${details.exceptionAsString()}\n${details.stack}');
+    if (Platform.isLinux) { unawaited(LinuxDiagnostics.instance.record('Framework error: ${details.exceptionAsString()}', 'error',stack:details.stack).catchError((_){})); }
     FlutterError.presentError(details);
   };
   ui.PlatformDispatcher.instance.onError = (error, stack) {
+    if (Platform.isLinux) { unawaited(LinuxDiagnostics.instance.record('Unhandled exception: $error','error',stack:stack).catchError((_){})); }
     debug.debugLog('PlatformDispatcher', 'uncaught: $error\n$stack');
     // Returns TRUE ("handled") deliberately. Returning false tells the
     // engine the error is unhandled and lets it tear the process down -- a
@@ -56,7 +61,9 @@ void main() async {
   };
 
   if (Platform.isLinux) {
-    fvp.registerWith(options: {'platforms': ['linux']});
+    LinuxDiagnostics.instance.start();
+    await LinuxConfiguration.instance.start();
+    fvp.registerWith(options: {'platforms': ['linux'], if (LinuxConfiguration.instance.safeVideo) 'video.decoders': ['FFmpeg']});
     await cef.WebviewManager().initialize();
   }
 

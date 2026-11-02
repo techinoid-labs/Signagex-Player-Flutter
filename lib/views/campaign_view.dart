@@ -1,4 +1,8 @@
 import 'dart:async';
+import '../services/linux_configuration.dart';
+import '../services/linux_interactivity.dart';
+import '../services/linux_playback_gate.dart';
+import '../widgets/linux_configured_surface.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -668,6 +672,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     _adProofReported = false;
     _webViewWidgetBuilders.clear();
     _videoController?.removeListener(_checkVideoPlaybackDuration);
+    LinuxPlaybackGate.instance.remove(_videoController);
     _videoController?.dispose();
     _videoController = null;
     _videoStartTime = null;
@@ -1257,11 +1262,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     );
     // #endregion
 
+    LinuxPlaybackGate.instance.remove(_videoController);
     _videoController?.dispose();
     final VideoPlayerController controller = isNetwork
         ? VideoPlayerController.network(mediaUrl)
         : VideoPlayerController.file(File(localPath!));
 
+    LinuxPlaybackGate.instance.register(controller, triggered: widget.campaignId?.startsWith('trigger:') ?? false);
     _videoController = controller
       ..initialize().then((_) {
         if (_isDisposed || !mounted) return;
@@ -1362,6 +1369,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   bool _isDisposed = false;
 
   void _onMediaEnd() {
+    if (Platform.isLinux && !(widget.campaignId?.startsWith('trigger:') ?? false)) LinuxInteractivity.instance.boundary();
     _timer?.cancel();
 
     if (_videoController != null) {
@@ -1370,7 +1378,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (!_isDisposed && mounted) {
       _videoController?.pause();
-      _videoController?.dispose();
+      LinuxPlaybackGate.instance.remove(_videoController);
+    _videoController?.dispose();
       _videoController = null;
       _videoStartTime = null;
       _targetDuration = null;
@@ -1477,6 +1486,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     _restrictionCheckTimer?.cancel();
     _adSlotRecheckTimer?.cancel();
     _videoController?.removeListener(_checkVideoPlaybackDuration);
+    LinuxPlaybackGate.instance.remove(_videoController);
     _videoController?.dispose();
     _videoController = null;
     super.dispose();
@@ -1485,7 +1495,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   @override
   Widget build(BuildContext context) {
     if (widget.mediaItems.isEmpty) {
-      return Center(child: Text("Zone ${widget.zoneId}: No media items."));
+      return ConfiguredEmptyState(child: Center(child: Text("Zone ${widget.zoneId}: No media items.")));
     }
 
     if (_currentMediaIndex < 0 ||
@@ -1942,6 +1952,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       return VideoPlayerWidget(
         key: ValueKey('${media.id ?? ''}_${_currentMediaIndex}'),
         filePath: mediaUrl,
+        triggered: widget.campaignId?.startsWith('trigger:') ?? false,
         onVideoEnd: () {
           if (!(_timer?.isActive ?? false)) {
             _onMediaEnd();
@@ -2002,6 +2013,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       return VideoPlayerWidget(
         key: ValueKey('${media.id ?? ''}_${_currentMediaIndex}'),
         filePath: mediaUrl,
+        triggered: widget.campaignId?.startsWith('trigger:') ?? false,
         onVideoEnd: () {
           if (!(_timer?.isActive ?? false)) {
             _onMediaEnd();
@@ -2039,6 +2051,7 @@ class VideoPlayerWidget extends StatefulWidget {
   final VoidCallback onVideoEnd;
   final String transitionType;
   final double volume;
+  final bool triggered;
 
   const VideoPlayerWidget({
     super.key,
@@ -2046,6 +2059,7 @@ class VideoPlayerWidget extends StatefulWidget {
     required this.onVideoEnd,
     required this.transitionType,
     this.volume = 1.0,
+    this.triggered = false,
   });
 
   @override
@@ -2101,6 +2115,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     // Dispose any previous controller before re-initializing
     if (_controller != null) {
       try {
+        LinuxPlaybackGate.instance.remove(_controller);
         _controller!.dispose();
       } catch (_) {}
       _controller = null;
@@ -2109,6 +2124,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     final VideoPlayerController controller = _isNetworkUrl
         ? VideoPlayerController.network(widget.filePath)
         : VideoPlayerController.file(File(widget.filePath));
+    LinuxPlaybackGate.instance.register(controller, triggered: widget.triggered);
     _controller = controller
       ..initialize().then(
         (_) {
@@ -2238,6 +2254,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     if (oldWidget.filePath != widget.filePath) {
       if (_controller != null) {
         _controller!.removeListener(_checkVideoEnd);
+        LinuxPlaybackGate.instance.remove(_controller);
         _controller!.dispose();
         _controller = null;
       }
@@ -2295,7 +2312,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   void dispose() {
     if (_controller != null) {
       _controller!.removeListener(_checkVideoEnd);
-      _controller!.dispose();
+      LinuxPlaybackGate.instance.remove(_controller);
+        _controller!.dispose();
     }
     super.dispose();
   }

@@ -1,0 +1,56 @@
+name: Promote ARM64 Linux to production
+on:
+  workflow_dispatch:
+    inputs:
+      run_id:
+        description: Successful ARM64 build run tested on the Pi
+        required: true
+        type: string
+      confirm:
+        description: Type release to publish to the production ARM64 feed
+        required: true
+        type: string
+permissions:
+  contents: read
+  actions: read
+concurrency:
+  group: production-arm64-release
+  cancel-in-progress: false
+jobs:
+  promote:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
+        run: test "$CONFIRM" = release
+      - uses: actions/download-artifact@v4
+        with:
+          name: signagex-player-arm64
+          path: dist
+          run-id: ${{ inputs.run_id }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Verify and publish exact production package
+        env:
+          RELEASE_KEY: ${{ secrets.PLAYER_RELEASE_UPLOAD_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$RELEASE_KEY"
+          sha256sum --check dist/SHA256SUMS
+          packages=(dist/signagex-player_*_arm64.deb)
+          test "${#packages[@]}" = 1
+          deb="${packages[0]}"
+          test "$(dpkg-deb -f "$deb" Architecture)" = arm64
+          test "$(dpkg-deb -f "$deb" Package)" = signagex-player
+          version="$(dpkg-deb -f "$deb" Version)"
+          checksum="$(sha256sum "$deb" | cut -d' ' -f1)"
+          curl --fail-with-body --silent --show-error -X POST https://api.signagex.ai/v1/player-releases/upload \
+            -H "x-release-key: $RELEASE_KEY" -F platform=linux-arm64 -F "version=$version" -F "file=@$deb" > response.json
+          curl --fail --silent --show-error 'https://api.signagex.ai/v1/player-releases/latest?platform=linux-arm64' > feed.json
+          python3 - "$version" "$checksum" <<'PY'
+          import json, sys
+          feed = json.load(open('feed.json'))
+          assert feed['version'] == sys.argv[1], feed
+          assert feed['sha256'] == sys.argv[2], feed
+          print('Production ARM64 feed verified:', feed['version'], feed['sha256'])
+          PY

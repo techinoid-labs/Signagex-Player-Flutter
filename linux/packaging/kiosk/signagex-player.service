@@ -8,6 +8,8 @@ Type=simple
 ExecStart=/usr/bin/signagex-player
 Environment=GDK_BACKEND=x11
 Environment=SIGNAGEX_KIOSK=1
+WatchdogSec=75
+NotifyAccess=all
 Restart=always
 RestartSec=3
 TimeoutStopSec=15

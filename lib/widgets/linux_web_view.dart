@@ -1,4 +1,5 @@
 import 'dart:async';
+import '../services/linux_configuration.dart';
 
 import 'package:flutter/material.dart';
 import 'package:webview_cef/webview_cef.dart' as cef;
@@ -70,7 +71,7 @@ class _LinuxWebViewState extends State<LinuxWebView> {
       if (!mounted || generation != _generation) return;
       final status = result.toString();
       if (status.contains('signagex-load-failed')) {
-        if (!_failed) print('[WEB_RECOVERY] failed page detected');
+        if (!_failed) { print('[WEB_RECOVERY] failed page detected'); unawaited(LinuxConfiguration.instance.event?.call('Web page connection failed; automatic retry active','warning') ?? Future.value()); }
         _failed = true;
         final now = DateTime.now();
         if (_retry.shouldRetry(now)) {
@@ -80,7 +81,7 @@ class _LinuxWebViewState extends State<LinuxWebView> {
               .timeout(const Duration(seconds: 4));
         }
       } else if (status.contains('signagex-load-healthy')) {
-        if (_failed) print('[WEB_RECOVERY] page recovered');
+        if (_failed) { print('[WEB_RECOVERY] page recovered'); unawaited(LinuxConfiguration.instance.event?.call('Web page recovered','info') ?? Future.value()); }
         _failed = false;
         _retry.recovered();
       }

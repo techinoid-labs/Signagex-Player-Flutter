@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../widgets/linux_configured_surface.dart';
 import 'package:flutter/services.dart'; // Import for keyboard events
 import 'package:provider/provider.dart';
 
@@ -33,7 +34,7 @@ class _NoContentViewState extends State<NoContentView> {
     final urlLauncherViewModel =
         Provider.of<MqttViewModel>(context, listen: false);
 
-    return RawKeyboardListener(
+    return ConfiguredEmptyState(child: RawKeyboardListener(
       focusNode: _focusNode,
       onKey: _onKey,
       child: Scaffold(
@@ -72,7 +73,7 @@ class _NoContentViewState extends State<NoContentView> {
               ),
         ),
       ),
-    );
+    ));
   }
 
   // Handle key events
