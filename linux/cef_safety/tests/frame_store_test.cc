@@ -8,7 +8,15 @@ int main() {
   signagex::FrameStore frames;
   const uint8_t* pixels = nullptr;
   uint32_t width = 0, height = 0;
-  assert(!frames.Snapshot(&pixels, &width, &height));
+  assert(frames.Snapshot(&pixels, &width, &height));
+  assert(pixels != nullptr && width == 1 && height == 1);
+  for (int i = 0; i < 4; ++i) assert(pixels[i] == 0);
+  // Repeated requests before OnPaint must remain valid, including after a
+  // rejected paint. Flutter 3.27 dereferences a missing GError on failure.
+  const auto* initial = pixels;
+  assert(!frames.PublishBgra(nullptr, 1, 1));
+  assert(frames.Snapshot(&pixels, &width, &height));
+  assert(pixels == initial && width == 1 && height == 1);
   uint8_t bgra[] = {1, 2, 3, 255, 4, 5, 6, 128};
   assert(!frames.PublishBgra(nullptr, 1, 1));
   assert(!frames.PublishBgra(bgra, 0, 1));
