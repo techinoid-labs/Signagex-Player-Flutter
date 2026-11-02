@@ -119,6 +119,8 @@ set_target_properties(${BINARY_NAME}
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
+# Native load events and paint gating are generated together below. Do not
+# mutate the shared pub cache before verifying its pinned source hashes.
 include(flutter/generated_plugins.cmake)
 
 # Keep the upstream pub cache intact. Generate reviewed Linux-only overrides

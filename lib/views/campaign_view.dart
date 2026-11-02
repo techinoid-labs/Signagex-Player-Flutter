@@ -8,6 +8,7 @@ import 'dart:io';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show kDebugMode;
 
 import 'package:flutter_html/flutter_html.dart';
 import 'package:flutter_svg/flutter_svg.dart';
@@ -322,13 +323,13 @@ class _CampaignViewState extends State<CampaignView> {
     const String blue = '\x1B[34m';
     const String cyan = '\x1B[36m';
 
-    print(
+    if (kDebugMode) print(
         '$cyan═══════════════════════════════════════════════════════════$reset');
-    print('$cyan🎬 CAMPAIGN RESTRICTION CHECK$reset');
-    print(
+    if (kDebugMode) print('$cyan🎬 CAMPAIGN RESTRICTION CHECK$reset');
+    if (kDebugMode) print(
         '$cyan═══════════════════════════════════════════════════════════$reset');
-    print('$blue📋 Campaign: ${campaign.campaignName ?? "N/A"}$reset');
-    print(
+    if (kDebugMode) print('$blue📋 Campaign: ${campaign.campaignName ?? "N/A"}$reset');
+    if (kDebugMode) print(
         '$blue🧩 Composition layout: ${campaign.isCompositionLayout}, '
         'zones: ${campaign.zones?.length ?? 0}$reset');
 
@@ -336,29 +337,29 @@ class _CampaignViewState extends State<CampaignView> {
 
     if (campaignSchedule?.alwaysPlay ?? false) {
       campaignCanPlay = true;
-      print('$green✅ CAMPAIGN: alwaysPlay = true → Campaign can play$reset');
+      if (kDebugMode) print('$green✅ CAMPAIGN: alwaysPlay = true → Campaign can play$reset');
     } else {
       final restrictions = campaignSchedule?.restrictions;
       if (restrictions != null && restrictions.isNotEmpty) {
-        print(
+        if (kDebugMode) print(
             '$yellow🔍 CAMPAIGN: Checking ${restrictions.length} restriction(s)...$reset');
         campaignCanPlay = mqttViewModel.checkRestrictions(restrictions);
         if (campaignCanPlay) {
-          print(
+          if (kDebugMode) print(
               '$green✅ CAMPAIGN: Restrictions PASSED → Campaign can play$reset');
         } else {
-          print(
+          if (kDebugMode) print(
               '$red❌ CAMPAIGN: Restrictions FAILED → Campaign cannot play$reset');
         }
       } else {
         // No restrictions configured means nothing blocks playback, so allow it.
         campaignCanPlay = true;
-        print(
+        if (kDebugMode) print(
             '$green✅ CAMPAIGN: No restrictions configured → Campaign can play$reset');
       }
     }
 
-    print(
+    if (kDebugMode) print(
         '$cyan═══════════════════════════════════════════════════════════$reset');
 
     if (campaignCanPlay) {
@@ -414,9 +415,9 @@ class _CampaignViewState extends State<CampaignView> {
     final scaleX = deviceWidth / campaignWidth;
     final scaleY = deviceHeight / campaignHeight;
 
-    print("Campaign resolution: ${campaignWidth}x${campaignHeight}");
-    print("Device resolution: ${deviceWidth}x${deviceHeight}");
-    print("Scale factors: X=$scaleX, Y=$scaleY");
+    if (kDebugMode) print("Campaign resolution: ${campaignWidth}x${campaignHeight}");
+    if (kDebugMode) print("Device resolution: ${deviceWidth}x${deviceHeight}");
+    if (kDebugMode) print("Scale factors: X=$scaleX, Y=$scaleY");
 
     return Scaffold(
       backgroundColor: Colors.white,
@@ -435,7 +436,7 @@ class _CampaignViewState extends State<CampaignView> {
             final scaledY = (zone.y ?? 0) * scaleY;
             final scaledWidth = (zone.width ?? 0) * scaleX;
             final scaledHeight = (zone.height ?? 0) * scaleY;
-            print(
+            if (kDebugMode) print(
                 '[LOG] Zone ${zone.id} raw=(${zone.x}, ${zone.y}, ${zone.width}, ${zone.height}) '
                 'scaled=($scaledX, $scaledY, $scaledWidth, $scaledHeight)');
 
@@ -747,13 +748,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         final scaleX = constraints.maxWidth / nestedCoordinateBaseWidth;
         final scaleY = constraints.maxHeight / nestedCoordinateBaseHeight;
 
-        print("═══════════════════════════════════════════════════════════");
+        if (kDebugMode) print("═══════════════════════════════════════════════════════════");
         print("Nested zones in zone ${widget.zoneId}:");
         print(
             "  Parent zone size: ${constraints.maxWidth}x${constraints.maxHeight}");
         print(
             "  Nested coordinate base: ${nestedCoordinateBaseWidth}x$nestedCoordinateBaseHeight");
-        print("  Scale factors: X=$scaleX, Y=$scaleY");
+        if (kDebugMode) print("  Scale factors: X=$scaleX, Y=$scaleY");
         print("  Number of nested zones: ${zones.length}");
 
         return ClipRect(
@@ -836,12 +837,12 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
           '$cyan📢 AD: ${currentMedia.adCreativeName} (${currentMedia.adCreativeMediaType})$reset');
     }
 
-    print(
+    if (kDebugMode) print(
         '$magenta═══════════════════════════════════════════════════════════$reset');
-    print('$magenta🎥 MEDIA RESTRICTION CHECK$reset');
-    print(
+    if (kDebugMode) print('$magenta🎥 MEDIA RESTRICTION CHECK$reset');
+    if (kDebugMode) print(
         '$magenta═══════════════════════════════════════════════════════════$reset');
-    print('$blue📍 Zone: ${widget.zoneId}$reset');
+    if (kDebugMode) print('$blue📍 Zone: ${widget.zoneId}$reset');
     print('$blue🎬 Media ID: ${currentMedia.id ?? "N/A"}$reset');
     print(
         '$blue📁 Media URL: ${formatForLog(currentMedia.mediaUrl ?? "N/A")}$reset');
@@ -852,7 +853,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       print(
           '$red❌ MEDIA: Campaign restrictions FAILED → Media cannot play$reset');
       print('$red⏭️  MEDIA: Skipping media (campaign not allowed)$reset');
-      print(
+      if (kDebugMode) print(
           '$magenta═══════════════════════════════════════════════════════════$reset');
       _sendAdProofOfPlay(
         currentMedia,
@@ -908,7 +909,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
       }
     }
 
-    print(
+    if (kDebugMode) print(
         '$magenta═══════════════════════════════════════════════════════════$reset');
 
     if (shouldPlay) {
@@ -1701,7 +1702,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final stickerHtml = media.settings?.html?.trim() ?? '';
     final mediaUrl = media.mediaUrl ?? '';
     final effectiveStickerUrl = remoteSrc.isNotEmpty ? remoteSrc : mediaUrl;
-    print(
+    if (kDebugMode) print(
         '[LOG] _buildMediaWidget - Sticker zone=${widget.zoneId} '
         'remoteSrc=${formatForLog(remoteSrc)} '
         'mediaUrl=${formatForLog(mediaUrl)} '
@@ -1773,15 +1774,15 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final mediaUrl = media.mediaUrl ?? '';
     final adSource = sourceMedia ?? media;
 
-    print(
+    if (kDebugMode) print(
         '[LOG] _buildMediaWidget - Media ID: ${adSource.id}, '
         "Type: '$mediaType', URL: ${formatForLog(mediaUrl)}");
     if (isAdMediaType(adSource.mediaType)) {
-      print(
+      if (kDebugMode) print(
           '[LOG] _buildMediaWidget - Ad slot '
           '(ad_campaign_id=${adSource.settings?.adCampaignId ?? "missing"})');
     }
-    print(
+    if (kDebugMode) print(
         '[LOG] _buildMediaWidget - Settings HTML: '
         '${formatForLog(media.settings?.html, maxLen: 60)}');
 
@@ -1808,7 +1809,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         }
       }
       final zoneCount = nestedMedia.zones?.length ?? 0;
-      print(
+      if (kDebugMode) print(
           "[LOG] _buildMediaWidget - Building nested layout "
           '(${nestedMedia.mediaType}, $zoneCount zone(s))');
       if (zoneCount == 0) {
@@ -1823,7 +1824,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     }
 
     if (mediaType == 'text/html') {
-      print("[LOG] _buildMediaWidget - Building WBViewWidget for text/html");
+      if (kDebugMode) print("[LOG] _buildMediaWidget - Building WBViewWidget for text/html");
       final cacheKey = _mediaWidgetCacheKey('html', media, mediaUrl);
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
@@ -1842,7 +1843,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType == 'web_app_instance') {
       final webAppUrl = mediaItemWebAppInstanceUrl(media);
-      print(
+      if (kDebugMode) print(
           "[LOG] _buildMediaWidget - Building WBViewWidget for web_app_instance: "
           '${formatForLog(webAppUrl)}');
       if (webAppUrl.isEmpty) {
@@ -1881,7 +1882,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     }
 
     if (mediaType == 'text') {
-      print("[LOG] _buildMediaWidget - Building TextWidget");
+      if (kDebugMode) print("[LOG] _buildMediaWidget - Building TextWidget");
       final cacheKey = _mediaWidgetCacheKey('text', media, mediaUrl);
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
@@ -1916,7 +1917,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         });
         if (built != null) svgContent = built;
       }
-      print(
+      if (kDebugMode) print(
           '[LOG] _buildMediaWidget - Shape zone=${widget.zoneId} svgLen=${svgContent.length}');
       final cacheKey = '${widget.zoneId}_shape_${media.id ?? ''}';
       if (!_webViewWidgetBuilders.containsKey(cacheKey)) {
@@ -1940,7 +1941,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     }
 
     if (mediaType.startsWith('image')) {
-      print(
+      if (kDebugMode) print(
           "[LOG] _buildMediaWidget - Building ImageWidget for image type: $mediaType");
       return ImageWidget(
         key: ValueKey(media.id ?? ''),
@@ -1953,7 +1954,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     }
 
     if (mediaType.startsWith('video')) {
-      print(
+      if (kDebugMode) print(
           "[LOG] _buildMediaWidget - Building VideoPlayerWidget for video type: $mediaType");
       return VideoPlayerWidget(
         key: ValueKey('${media.id ?? ''}_${_currentMediaIndex}'),
@@ -1971,7 +1972,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
     if (mediaType == 'content' && mediaItemIsWebAppIframe(media)) {
       final iframeUrl = mediaItemWebAppIframeUrl(media);
-      print(
+      if (kDebugMode) print(
           '[LOG] _buildMediaWidget - Building WBViewWidget for web-app iframe: '
           '$iframeUrl');
       final cacheKey = _mediaWidgetCacheKey('iframe', media, iframeUrl);

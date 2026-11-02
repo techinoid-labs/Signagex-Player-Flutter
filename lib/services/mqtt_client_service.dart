@@ -63,7 +63,6 @@ class MqttClientService {
     _client.websocketProtocols = ['mqtt'];
 
     _client.keepAlivePeriod = 60;
-    // Wire dumps include encrypted frames and credentials; never log them.
     _client.logging(on: false);
 
     _client.autoReconnect = true;
@@ -390,8 +389,6 @@ class MqttClientService {
     }
 
     receivedMessageNotifier.value = payload;
-    // Payloads may contain credentials or large encrypted remote frames.
-    print('MQTT_LOGS:: Message received (${payload.length} characters)');
 
     try {
       jsonDecode(payload);
@@ -412,7 +409,7 @@ class MqttClientService {
         retain: false,
       );
 
-      print('Message published to topic: $topic');
+
     } else {
       print('Cannot publish: MQTT client not connected.');
     }
@@ -439,10 +436,7 @@ class MqttClientService {
         buffer,
         retain: retain,
       );
-      // Remote frames are frequent; omit both their content and per-frame logs.
-      if (!topic.endsWith('/remote')) {
-        print('MQTT_LOGS:: Message published (${message.length} characters)');
-      }
+
     } else {
       print('MQTT_LOGS:: Cannot publish - client not connected');
     }
