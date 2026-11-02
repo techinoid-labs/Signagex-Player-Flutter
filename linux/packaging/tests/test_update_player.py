@@ -13,4 +13,12 @@ class UpdatePolicyTests(unittest.TestCase):
         with self.assertRaises(ValueError): handler.redirect_request(None,None,302,'',{},'https://evil.com/release')
     def test_no_arbitrary_command_arguments(self):
         with patch('os.geteuid',return_value=0), patch('sys.argv',['update-player','/tmp/untrusted.deb']), self.assertRaises(ValueError): updater['main']()
+    def test_transaction_runs_outside_player_control_group(self):
+        with patch('os.geteuid',return_value=0), patch('sys.argv',['update-player']), patch.dict('os.environ',{'PKEXEC_UID':'1000','SIGNAGEX_UPDATE_SERVICE':''}), patch('subprocess.check_call') as command:
+            updater['main']()
+            arguments = command.call_args.args[0]
+            self.assertEqual(arguments[-1], '/usr/lib/signagex-player/update-player')
+            self.assertIn('--unit=signagex-managed-update', arguments)
+            self.assertIn('--setenv=PKEXEC_UID=1000', arguments)
+            self.assertIn('--wait', arguments)
 if __name__ == '__main__': unittest.main()

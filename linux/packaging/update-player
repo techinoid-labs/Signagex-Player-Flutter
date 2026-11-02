@@ -62,6 +62,15 @@ def main():
         raise ValueError('Updater requires its installed policy and accepts no arguments')
     uid = int(os.environ.get('PKEXEC_UID', '0'))
     if uid < 1000: raise ValueError('No graphical player user')
+    # An updater launched by the player shares its systemd control group.
+    # Run the transaction as a system service so restarting the player cannot
+    # kill the installer or its rollback/health check halfway through.
+    if os.environ.get('SIGNAGEX_UPDATE_SERVICE') != '1':
+        subprocess.check_call(['systemd-run', '--unit=signagex-managed-update',
+            '--collect', '--wait', '--property=Type=exec',
+            '--setenv=PKEXEC_UID='+str(uid), '--setenv=SIGNAGEX_UPDATE_SERVICE=1',
+            '/usr/lib/signagex-player/update-player'])
+        return
     user = pwd.getpwuid(uid).pw_name
     config = json.loads(CONFIG.read_text())
     api = trusted_url(config['manifest'], {'api.signagex.ai','signagexai.com','stage.signagexai.com'})
