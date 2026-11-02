@@ -2718,7 +2718,7 @@ class MqttViewModel extends ChangeNotifier {
             (interactivity) => interactivity.keyPress
                 .any((key) => key.toUpperCase() == _key!.toUpperCase())) ??
         false;
-    print("this is key data $keydata");
+    print('MQTT_LOGS:: Key event received');
     if (keyFound) {
       print("I am in interactivity by key");
     } else {
@@ -2727,9 +2727,9 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> _handleIncomingMessage(String message) async {
-    print('Received message in ViewModel: $message');
+    print('MQTT_LOGS:: Management message received');
 
-    print('Received message in store state: $storeState');
+    print('MQTT_LOGS:: Management state updated');
     print('i am in recive msgss:');
 // await restartApp();
     final jsonObj = jsonDecode(message);
@@ -2803,7 +2803,7 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> _applyIncomingMessage(dynamic jsonObj) async {
-    print('Saving JSON Object: $jsonObj');
+    print('MQTT_LOGS:: Processing management message');
 
     // Check if message has an action field
     if (jsonObj["action"] == null) {
