@@ -13,6 +13,7 @@ output.mkdir(parents=True, exist_ok=True)
 expected = {
     "webview_cef_plugin.cc": "278ed9ee69226255b00a78e513b329e4d8351786e22cdf56391ab1d2569bf3b9",
     "../common/webview_plugin.cc": "07015082a3d3f014dafae41c84eecf7bd103a62192b416e9a1ba30cc1eb4ecbf",
+    "../common/webview_app.cc": "5dae0b4ef6399b9f8f70fc399a7b4719e4a2f0af2a1c33ce99fcef9342bff960",
 }
 texts = {}
 for name, digest in expected.items():
@@ -75,6 +76,18 @@ common = replace_once(common, '\t\t\t\tm_renderers[browserId].reset();',
                       '\t\t\t\tm_renderers.erase(browserId);')
 (output / "webview_cef_plugin.cc").write_text(bridge)
 (output / "webview_plugin.cc").write_text(common)
+app = texts["../common/webview_app.cc"]
+app = replace_once(app, '#include <string>', '#include <string>\n#include <cstdlib>')
+app = replace_once(app, '\tif (process_type.empty())\n\t{', '''\tif (process_type.empty())
+\t{
+        // An unattended kiosk has no interactive login to unlock libsecret.
+        // Keep desktop launches on their usual OS keyring. Kiosk browser
+        // profile data relies on the player account's filesystem permissions.
+        const char* kiosk = std::getenv("SIGNAGEX_KIOSK");
+        if (kiosk && std::string(kiosk) == "1") {
+            command_line->AppendSwitchWithValue("password-store", "basic");
+        }''')
+(output / "webview_app.cc").write_text(app)
 for name in ("frame_store.h", "webview_cef_texture.h"):
     shutil.copyfile(Path(__file__).parent / name, output / name)
 print("Prepared thread-owned CEF loop and lifetime-safe texture sources")

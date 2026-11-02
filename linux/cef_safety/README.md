@@ -24,6 +24,14 @@ hlwhl/webview_cef under the accompanying Apache 2.0 license.
   sufficient for 8K). The renderer releases its texture and registrar refs;
   the GObject finalizer releases both frame buffers.
 - Release method-response values and erase closed renderer entries.
+- Supply a transparent 1x1 frame before CEF's first paint. Flutter 3.27.4
+  requests newly registered textures immediately; returning failure without a
+  GError crashes its external-texture callback. Failure paths also set GError.
+- In explicit `SIGNAGEX_KIOSK=1` sessions, select Chromium's `basic` password
+  store so startup cannot block on GNOME keyring creation/unlock. This browser
+  profile has no OS-keyring encryption; do not save personal browser passwords
+  in it. Desktop launches retain the normal OS keyring. The supervised service
+  uses `UMask=0077` to keep newly created profile files private to the account.
 
 `tests/frame_store_test.cc` checks channel conversion, invalid sizes, retained
 buffer lifetime across 10,000 producer updates, concurrent snapshot updates,

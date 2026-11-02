@@ -5,6 +5,7 @@ StartLimitIntervalSec=0
 
 [Service]
 Type=simple
+UMask=0077
 ExecStart=/usr/bin/signagex-player
 Environment=GDK_BACKEND=x11
 Environment=SIGNAGEX_KIOSK=1
