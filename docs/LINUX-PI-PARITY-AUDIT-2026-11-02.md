@@ -73,8 +73,39 @@ Player implementation commits: `f01fee8` (native main-frame recovery, no duplica
 
 CMS branch `fix/linux-uptime-units`: `91a5dc3e`, `4e4c1594`. The summary now converts seconds to hours; the chart converts seconds to its labelled minutes. Missing uptime samples remain unavailable. TypeScript passed; 25 focused resource tests passed. Backend `32469db` real GraphQL decimal/large-counter serialization regression rerun: 1 test passed. No backend change required.
 
-Local native frame-store ASan/UBSan test passed. Python packaging/protocol/updater suite: 14 passed, 1 skipped because this Mac lacks Linux dpkg-deb. Native CI must cover the skipped contract. Latest player CI: amd64 `41531661040`, ARM64 `41531664939`, source `33594cc` (results pending when recorded).
+Local native frame-store ASan/UBSan test passed. Python packaging/protocol/updater suite: 14 passed, 1 skipped because this Mac lacks Linux dpkg-deb. Native CI must cover the skipped contract. Latest player CI: amd64 `41531661040` and ARM64 `41531664939` both succeeded, source `33594cc`. Both ran 51 Flutter tests; ARM64 ran all 15 Python tests successfully. Both architectures built production/staging Debian and AppImage artifacts; package installation checks passed.
 
 Byte read-only check on 2026-11-02: SSH reachable, running v40 process 19488, service active, NRestarts=0, uptime ~2h29m, root filesystem 39GB available. wpctl exists. CPU x86_pkg_temp=84°C, TCPU=83°C, ACPI zone0=83°C; these demonstrate why zone0 alone is not a portable CPU metric. Current v40 has no new shared health.json; it is not the combined parity build. This is not a 24-hour acceptance result.
 
-Remaining: native build completion, installation of the combined artifact, all target-specific acceptance rows (including cold offline boot, full secure-session ownership/control, configuration inventory, audio, upgrades/rollback), video visual acceptance and a 24-hour soak. Pi historical test counts above are reference evidence and have not been represented as current reruns.
+Remaining: all target-specific acceptance rows not covered below (including cold offline boot, full secure-session ownership/control, configuration inventory, audio, upgrades/rollback), video visual acceptance and a 24-hour soak. Pi historical test counts above are reference evidence and have not been represented as current reruns.
+
+
+## Byte v43 lab deployment and bounded acceptance
+
+- Native AMD64 run: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/41531661040
+- Native ARM64 run: https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/41531664939
+- Source `33594cc`; AMD64 filename `signagex-player_v43_amd64.deb`, Debian version `43`, ~137 MiB. SHA256 `2289421219a4b68d58d62fbd588bd9a14284829d42707507b1c396d7fb7aa196`, independently matched on Mac and Byte.
+- ARM64 test package `signagex-player_arm64-v19_arm64.deb`, Debian `0.arm64-v19`; CI records SHA256SUMS in its artifact. It has not been installed on a Pi by this task; production Pi v12 is unchanged.
+- v43 was extracted into `/home/techinoid/.local/opt/signagex-v43`. This is a supervised user-bundle lab deployment, not a root Debian upgrade; system dpkg still holds the older package.
+- User service updated to the packaged watchdog unit; existing Intel driver/display/render-limit overrides retained. Existing v40 bundle retained. Private pre-upgrade unit/drop-in/preferences backup: `/home/techinoid/signagex-diagnostics/pre-v43`, created with restrictive permissions.
+- Service MainPID 23161, watchdog 75 seconds, NRestarts=0 across the inspected startup window. Fresh health.json reports v43 and PID23161. Secure protocol Python adapter runs from the v43 bundle (not the old system package).
+- Pairing player_code retained; all five existing preference fields retained. Cached `flutter.jsonObj` exists and is byte-for-byte unchanged. Screenshots confirm the existing image and clock render. This does not establish offline cold-start acceptance.
+- Forced browser proxy failure: native failure detected, retry logged, proxy restored exactly to its prior settings, page recovered. Old JavaScript probe timeout count=0 in the inspected v43 window. No native crash markers observed there. Browser recovery test is narrower than full Internet/MQTT outage testing.
+- A sampled web-load frame was white; a subsequent screenshot rendered the clock. Visual loading/transitions remain an open acceptance issue. Neither screenshot sampling nor previous frame counters establishes smooth 1080p video.
+- Configuration revision remains 0 with no per-setting hardware acknowledgement yet. Automatic-update setting is not true; the updater gate therefore remains disabled. No update helper provisioning or production feed promotion was performed.
+- Connected SignageX MCP lookup returned no player for the known Byte ID; this task has not established CMS live-view/controller handover or settings acceptance for the combined build.
+
+### Exact lab rollback
+
+On the Byte, restore the previous service and path override; leave current application state in place:
+
+```sh
+systemctl --user stop signagex-player
+cp ~/signagex-diagnostics/pre-v43/signagex-player.service ~/.config/systemd/user/signagex-player.service
+cp ~/signagex-diagnostics/pre-v43/validated-build.conf ~/.config/systemd/user/signagex-player.service.d/validated-build.conf
+systemctl --user daemon-reload
+systemctl --user start signagex-player
+systemctl --user show signagex-player -p MainPID -p NRestarts
+```
+
+This returns execution to the retained v40 bundle. Preference backup is private recovery material, not something to publish or restore routinely over newer state. Root-installed upgrades, destructive updater rollback, boot after power loss, cold offline startup, full CMS controls, audio listening and 24-hour soak remain unvalidated. Draft reviews: player PR51 and CMS PR535; neither is merged by this task.
