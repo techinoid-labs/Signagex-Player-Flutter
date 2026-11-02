@@ -64,4 +64,17 @@ Record commit, CI run, architecture, Debian version and SHA256 before deployment
 
 Back up player identity, credentials, cached assets and configuration privately before upgrading. Install only the matching architecture artifact; verify reported build, health PID/timestamp, service status, settings revision and CMS identity after restart. Keep automatic updates disabled. Retain the previous known-good package and service configuration; on failure restore that package/configuration without deleting application state, restart and verify health/identity/cache again. A successful up-to-date check is not a rollback test.
 
-No new production promotion is authorized by this audit. No full Linux parity or overnight stability claim is made. Hardware acceptance of the combined build remains open.
+This work does not change production release feeds. No full Linux parity or overnight stability claim is made. Hardware acceptance of the combined build remains open.
+
+
+## Implementation and current validation update
+
+Player implementation commits: `f01fee8` (native main-frame recovery, no duplicate hidden Linux video decoder, optional per-device render limits, MQTT wire/payload logging disabled), `4d4affb` (bundle-relative secure adapter with missing-adapter diagnostic, CPU sensor selection and regression tests), `33594cc` (management-message payload logging removed). Recovery diagnostics remain attached to CMS events. Safe-video decoder selection remains effective; no global 720p limit is imposed.
+
+CMS branch `fix/linux-uptime-units`: `91a5dc3e`, `4e4c1594`. The summary now converts seconds to hours; the chart converts seconds to its labelled minutes. Missing uptime samples remain unavailable. TypeScript passed; 25 focused resource tests passed. Backend `32469db` real GraphQL decimal/large-counter serialization regression rerun: 1 test passed. No backend change required.
+
+Local native frame-store ASan/UBSan test passed. Python packaging/protocol/updater suite: 14 passed, 1 skipped because this Mac lacks Linux dpkg-deb. Native CI must cover the skipped contract. Latest player CI: amd64 `41531661040`, ARM64 `41531664939`, source `33594cc` (results pending when recorded).
+
+Byte read-only check on 2026-11-02: SSH reachable, running v40 process 19488, service active, NRestarts=0, uptime ~2h29m, root filesystem 39GB available. wpctl exists. CPU x86_pkg_temp=84°C, TCPU=83°C, ACPI zone0=83°C; these demonstrate why zone0 alone is not a portable CPU metric. Current v40 has no new shared health.json; it is not the combined parity build. This is not a 24-hour acceptance result.
+
+Remaining: native build completion, installation of the combined artifact, all target-specific acceptance rows (including cold offline boot, full secure-session ownership/control, configuration inventory, audio, upgrades/rollback), video visual acceptance and a 24-hour soak. Pi historical test counts above are reference evidence and have not been represented as current reruns.
