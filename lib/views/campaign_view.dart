@@ -1229,6 +1229,12 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   }
 
   void _initializeNextVideo(MediaItem nextMedia) {
+    if (Platform.isLinux) {
+      // Visible VideoPlayerWidget owns decoding and playback gating.
+      // The playlist timer controls duration; avoid a second invisible decoder.
+      setState(() {});
+      return;
+    }
     final mediaUrl = nextMedia.mediaUrl ?? '';
     if (mediaUrl.isEmpty) {
       print("[LOG] Video URL is empty, skipping");

@@ -22,9 +22,10 @@ class LinuxRemoteView {
         DateTime.now().difference(_lastAttempt!).inSeconds < 30) return;
     close();
     _lastAttempt = DateTime.now();
-    final installed = File('/opt/signagex-player/kiosk/remote_view_agent.py');
+    // Match the running artifact, including staging and relocated test bundles.
+    final bundled = File('${File(Platform.resolvedExecutable).parent.path}/kiosk/remote_view_agent.py');
     final development = File('linux/packaging/kiosk/remote_view_agent.py');
-    final script = installed.existsSync() ? installed : development;
+    final script = bundled.existsSync() ? bundled : development;
     if (!script.existsSync()) return;
     try {
       _code = code;
