@@ -71,3 +71,23 @@ The player user must sign out and back in to acquire the new group before enabli
 6. Complete sustained playback and power-loss tests on a reliable power supply before fleet rollout.
 
 Implementation verification includes Dart policy/device-adapter/trigger/cache tests, backend ownership/revision/validation tests, frontend confirmation tests, updater policy tests and production/staging package metadata fixtures. Those checks do not replace physical acceptance. The live Pi remains on the previously tested recovery build until the complete rollout is performed.
+
+## Secure remote view (CMS protocol 2)
+
+Linux publishes a persisted RSA device public identity on `<code>/remote/v2/hello`.
+The unprivileged Python X11 adapter verifies the packaged production signing
+public key, decrypts server commands, fences persisted revisions and leases,
+and encrypts/signs frames and receipts using the existing CMS protocol. Identity
+and revision files are private and never sent to the CMS. Retained, unsigned,
+expired and stale-frame input is rejected; legacy unsigned remote commands are
+ignored on Linux. A server signing-key rotation requires updating the packaged
+public key. Staging must use its own matching signing identity before remote
+view can be advertised there.
+
+Supported controls are normalized taps, drags, long press, literal text typing,
+Back, focus/resume, quality selection and confirmed supervised app restart.
+Device reboot is advertised as unavailable in the secure session; the existing
+CMS management reboot is separate. Frames include actual geometry, foreground
+state and capture time. They stop at lease expiry, unpair/stop or disconnection.
+The adapter requires X11, scrot, xdotool, Python cryptography and Pillow; Debian
+packaging installs these dependencies. This does not provide Wayland capture.

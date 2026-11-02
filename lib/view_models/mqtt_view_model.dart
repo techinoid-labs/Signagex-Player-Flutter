@@ -1,3 +1,4 @@
+import '../services/linux_remote_view.dart';
 import 'dart:async';
 import '../services/linux_configuration.dart';
 import '../services/linux_telemetry.dart';
@@ -91,6 +92,7 @@ class MqttViewModel extends ChangeNotifier {
       debug.debugLog('MqttViewModel', message);
 
   final MqttClientService _mqttClientService;
+  final LinuxRemoteView _secureRemote = LinuxRemoteView();
   DateTime? _lastLinuxUpdateCheck;
   Timer? _linuxManagementTimer;
   bool _linuxManagementBusy = false;
@@ -103,6 +105,13 @@ class MqttViewModel extends ChangeNotifier {
     final config = LinuxConfiguration.instance;
     config.event = (message,type) => LinuxDiagnostics.instance.record(message,type);
     await config.start();
+    _secureRemote.allowed = () => storeState == true && _storedApiResponse?['paired'] == true && _state != MqttState.playerStopped && _mqttClientService.isConnected;
+    _secureRemote.publish = (topic,payload,retained) {
+      if (topic.endsWith('/events')) { _mqttClientService.publishMessage(topic,utf8.encode(payload)); }
+      else { _mqttClientService.publish(topic,payload,retain:retained); }
+    };
+    _secureRemote.event = config.event;
+    _mqttClientService.onRemoteMessageReceived = _secureRemote.receive;
     final triggers = LinuxInteractivity.instance;
     triggers.event = config.event;
     triggers.allowed = (item) {
@@ -137,6 +146,7 @@ class MqttViewModel extends ChangeNotifier {
     _linuxManagementBusy = true;
     try {
       final config = LinuxConfiguration.instance;
+      if (_topic.isNotEmpty) await _secureRemote.start(_topic);
       final managed = storeState == true && _storedApiResponse?['paired'] == true;
       devicesinfo['capabilities'] = config.capabilities;
       await _refreshLinuxNetworkInfo();
@@ -2632,6 +2642,10 @@ class MqttViewModel extends ChangeNotifier {
     // from the CMS arrive here too — without this the player would stream
     // screenshots out but never receive any input back.
     _mqttClientService.subscribe('$topic/remote');
+    if (Platform.isLinux) {
+      _mqttClientService.subscribe('$topic/remote/v2/command',reliable:true);
+      unawaited(_secureRemote.start(topic));
+    }
   }
 
   void publishMessage(String topic, String message) {
@@ -3806,6 +3820,7 @@ class MqttViewModel extends ChangeNotifier {
 // Clean up timer
   @override
   void dispose() {
+    _secureRemote.close();
     _linuxManagementTimer?.cancel();
     _timerOfCampaign?.cancel();
     _timer?.cancel();

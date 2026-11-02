@@ -86,7 +86,7 @@ fi
 
 # Optional kiosk provisioning; activation requires an explicit administrator action.
 mkdir -p "$ROOT$INSTALL_DIR/kiosk" "$ROOT/usr/share/polkit-1/rules.d"
-cp linux/packaging/kiosk/* "$ROOT$INSTALL_DIR/kiosk/"
+find linux/packaging/kiosk -maxdepth 1 -type f -exec cp {} "$ROOT$INSTALL_DIR/kiosk/" \;
 cp linux/packaging/49-signagex-reboot.rules "$ROOT/usr/share/polkit-1/rules.d/49-$PKG-reboot.rules"
 
 # Managed Linux configuration helpers. Update permission remains administrator opt-in.
@@ -129,7 +129,7 @@ Architecture: $DEB_ARCH
 Maintainer: SignageX <support@signagex.ai>
 Installed-Size: $INSTALLED_KB
 Conflicts: $CONFLICTING_PACKAGE
-Depends: xdotool, scrot, polkitd | policykit-1, pkexec, wireplumber, x11-xserver-utils, python3, curl, libva2, libva-drm2, libva-x11-2, libvdpau1,
+Depends: xdotool, scrot, polkitd | policykit-1, pkexec, wireplumber, x11-xserver-utils, python3, python3-cryptography, python3-pil, curl, libva2, libva-drm2, libva-x11-2, libvdpau1,
  libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,
  libxkbcommon0, libgbm1, libdrm2, libxcomposite1, libxdamage1, libxrandr2,
  libatk1.0-0, libatk-bridge2.0-0, libpango-1.0-0, libcairo2,

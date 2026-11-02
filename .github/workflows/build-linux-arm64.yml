@@ -36,7 +36,7 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            clang cmake ninja-build pkg-config \
+            clang cmake ninja-build pkg-config python3-cryptography python3-pil \
             libgtk-3-dev liblzma-dev libstdc++-12-dev \
             desktop-file-utils file xdotool scrot libva2 libva-drm2 libva-x11-2 libvdpau1
           sudo apt-get install -y \
@@ -96,6 +96,7 @@ jobs:
         run: |
           flutter analyze --no-fatal-warnings --no-fatal-infos
           flutter test
+          python3 -m unittest discover -s linux/packaging/tests -v
 
       - name: Build production
         run: flutter build linux --release --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}

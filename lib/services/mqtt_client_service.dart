@@ -1,3 +1,4 @@
+import 'dart:io';
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
@@ -20,6 +21,7 @@ class MqttClientService {
       ValueNotifier<String>('');
 
   Function(String)? onMessageReceived;
+  void Function(String, String, bool)? onRemoteMessageReceived;
 
   /// Guards against overlapping connect() calls racing each other and
   /// opening two live connections with two different client IDs — every
@@ -340,13 +342,13 @@ class MqttClientService {
     }
   }
 
-  void subscribe(String topic) {
+  void subscribe(String topic, {bool reliable = false}) {
     if (topic.isEmpty || topic.trim().isEmpty) {
       print('MQTT_LOGS:: Cannot subscribe - topic is empty');
       return;
     }
     print('MQTT_LOGS:: Subscribing to the topic: $topic');
-    _client.subscribe(topic, MqttQos.atMostOnce);
+    _client.subscribe(topic, reliable ? MqttQos.atLeastOnce : MqttQos.atMostOnce);
     // Message handling is wired up once per successful connect() (see
     // _connectInternal) — no listener registration here, so repeated
     // subscribe() calls don't pile up duplicate handlers for the same
@@ -356,12 +358,31 @@ class MqttClientService {
   void _handleReceivedMessage(
       List<MqttReceivedMessage<MqttMessage?>>? messages) {
     if (messages == null || messages.isEmpty) return;
+    if (messages.length > 1) {
+      for (final message in messages) { _handleReceivedMessage([message]); }
+      return;
+    }
 
     final recMess = messages[0].payload as MqttPublishMessage;
 
     final payloadBytes = recMess.payload.message;
     if (payloadBytes == null) return;
     final payload = utf8.decode(payloadBytes.toList());
+
+    // Signed remote commands have their own retained/replay-aware dispatcher.
+    // Do not feed them into the legacy handler or general diagnostic logging.
+    final receivedTopic = messages[0].topic ?? '';
+    if (receivedTopic.endsWith('/remote/v2/command')) {
+      onRemoteMessageReceived?.call(receivedTopic, payload, recMess.header?.retain == true);
+      return;
+    }
+
+    if (Platform.isLinux) {
+      try {
+        final action = (jsonDecode(payload) as Map)['action'];
+        if (['start_remote_view','stop_remote_view','high_res','low_res','click','scroll','long_press','send_text','press_back','press_home','remote_v2'].contains(action)) return;
+      } catch (_) {}
+    }
 
     if (onMessageReceived != null) {
       onMessageReceived!(payload);
