@@ -78,7 +78,7 @@ class LinuxNetwork {
 
   static String _clip(String value, [int length = 64]) => value.length > length ? value.substring(0, length) : value;
 
-  static String _state(String value) {
+  static String _deviceState(String value) {
     if (value.startsWith('connected')) return 'connected';
     if (value.startsWith('connecting')) return 'connecting';
     if (value == 'unavailable' || value == 'unmanaged') return 'unavailable';
@@ -117,7 +117,7 @@ class LinuxNetwork {
       final entry = <String, dynamic>{
         'name': _clip(values[0]),
         'type': values[1],
-        'state': _state(values[2]),
+        'state': _deviceState(values[2]),
         'mac': _clip((details['GENERAL.HWADDR'] ?? '').toLowerCase()),
         'ip': _clip((details['IP4.ADDRESS'] ?? '').split('/').first),
         'ssid': '',
