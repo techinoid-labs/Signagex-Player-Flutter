@@ -59,6 +59,26 @@ mkdir -p "$ROOT$INSTALL_DIR" "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$RO
 cp -R "$BUNDLE/." "$ROOT$INSTALL_DIR/"
 # Work on the package copy, never the original CI bundle.
 python3 linux/packaging/trim_browser.py "$ROOT$INSTALL_DIR"
+
+# --- bundled library search paths ------------------------------------------
+# Bundled libraries find each other through their own RUNPATH ($ORIGIN = lib/),
+# not the player's: RUNPATH is not inherited. The mdk video SDK fetched at build
+# time once shipped "$:$/lib:..." with ORIGIN stripped, so libmdk could not find
+# lib/libc++.so.1 and the player exited 127 on a clean system (build v51).
+# Any RUNPATH entry using "$" without ORIGIN is unusable; point it at lib/.
+for library in "$ROOT$INSTALL_DIR"/lib/*.so*; do
+  [ -f "$library" ] && [ ! -L "$library" ] || continue
+  runpath="$(readelf -d "$library" 2>/dev/null | sed -n 's/.*(\(RUN\)\{0,1\}PATH).*\[\(.*\)\]$/\2/p' | head -n 1)"
+  case "$runpath" in
+    *'$'*) ;;
+    *) continue ;;
+  esac
+  if printf '%s' "$runpath" | tr ':' '\n' | grep '\$' | grep -qvE '^(\$ORIGIN|\$\{ORIGIN\})(/|$)'; then
+    command -v patchelf >/dev/null || { echo "patchelf is required to repair the RUNPATH of $(basename "$library") ($runpath)" >&2; exit 1; }
+    patchelf --set-rpath '$ORIGIN' "$library"
+    echo "Repaired RUNPATH of $(basename "$library"): $runpath -> \$ORIGIN"
+  fi
+done
 ln -s "$INSTALL_DIR/$BIN" "$ROOT/usr/bin/$PKG"
 
 # --- launcher entry ------------------------------------------------------
