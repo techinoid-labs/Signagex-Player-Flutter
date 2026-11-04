@@ -49,6 +49,35 @@ class RemoteProtocolTests(unittest.TestCase):
         restarted.enabled=True
         self.assertEqual(restarted.private.private_numbers(),previous)
         self.assertFalse(restarted.receive(self.command()))
+    def ota(self, signer=None, **changes):
+        value={'protocol':'linux_ota_v1','player':'0607c6','key':self.remote.public_key,'issued':1000000,
+            'job':'job-1','version':'51','platform':'linux','sha256':'a'*64}
+        value.update(changes); data=json.dumps(value)
+        return {'data':data,'signature':agent.b64((signer or self.signer).sign(data.encode(),padding.PKCS1v15(),hashes.SHA256()))}
+    def test_signed_update_command_is_verified_once(self):
+        job,reason=self.remote.verify_ota(self.ota())
+        self.assertIsNone(reason)
+        self.assertEqual(job,{'job':'job-1','version':'51','platform':'linux','sha256':'a'*64,'issued':1000000})
+        # The same command, or an older one, never runs again -- also after a restart.
+        self.assertEqual(self.remote.verify_ota(self.ota())[1],'replayed')
+        restarted=agent.Remote('0607c6',self.temporary.name,self.output.append,self.signer.public_key(),clock=lambda:1000,monotonic=lambda:100)
+        self.assertEqual(restarted.verify_ota(self.ota(issued=999999))[1],'replayed')
+        self.assertIsNone(restarted.verify_ota(self.ota(issued=1000001))[1])
+    def test_forged_misaddressed_and_stale_update_commands_are_rejected(self):
+        other=rsa.generate_private_key(public_exponent=65537,key_size=2048)
+        tampered=self.ota(); tampered['data']=tampered['data'].replace('"51"','"99"')
+        cases=[(self.ota(signer=other),'bad_signature'),(tampered,'bad_signature'),({'data':'x'},'bad_signature'),
+               (self.ota(player='other'),'wrong_player'),(self.ota(protocol='android_ota_v1'),'wrong_player'),
+               (self.ota(key='someone-else'),'wrong_key'),(self.ota(issued=939999),'stale'),(self.ota(issued=1005001),'stale'),
+               (self.ota(issued='1000000'),'stale')]
+        for envelope,reason in cases:
+            with self.subTest(reason=reason): self.assertEqual(self.remote.verify_ota(envelope),(None,reason))
+        self.assertIsNone(self.remote.verify_ota(self.ota())[1])
+    def test_update_reports_are_signed_by_the_device_identity(self):
+        signed=self.remote.sign_ota('{"phase":"installing"}')
+        self.assertEqual(signed['key'],self.remote.public_key)
+        self.remote.private.public_key().verify(agent.un64(signed['signature']),signed['data'].encode(),padding.PKCS1v15(),hashes.SHA256())
+        self.assertIsNone(self.remote.sign_ota('x'*4097))
     def test_input_requires_controller_and_recent_frame_geometry(self):
         with patch.object(self.remote,'geometry',return_value=(1024,600,'geometry')),patch.object(agent,'run') as run:
             self.remote.receive(self.command(input={'action':'click','x':0.5,'y':0.5,'frame_id':'missing'}))

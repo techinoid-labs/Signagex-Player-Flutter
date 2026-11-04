@@ -1,4 +1,5 @@
 import '../services/linux_remote_view.dart';
+import '../services/linux_ota.dart';
 import 'dart:async';
 import '../services/linux_configuration.dart';
 import '../services/linux_telemetry.dart';
@@ -93,6 +94,8 @@ class MqttViewModel extends ChangeNotifier {
 
   final MqttClientService _mqttClientService;
   final LinuxRemoteView _secureRemote = LinuxRemoteView();
+  String? _lastOtaReport;
+  Map? _signedOtaReport;
   DateTime? _lastLinuxUpdateCheck;
   Timer? _linuxManagementTimer;
   bool _linuxManagementBusy = false;
@@ -111,6 +114,9 @@ class MqttViewModel extends ChangeNotifier {
       else { _mqttClientService.publish(topic,payload,retain:retained); }
     };
     _secureRemote.event = config.event;
+    LinuxOta.instance.event = config.event;
+    LinuxOta.instance.onChange = () => unawaited(_publishLinuxOtaReport(force: true));
+    unawaited(LinuxOta.instance.load());
     _mqttClientService.onRemoteMessageReceived = _secureRemote.receive;
     final triggers = LinuxInteractivity.instance;
     triggers.event = config.event;
@@ -149,6 +155,8 @@ class MqttViewModel extends ChangeNotifier {
       if (_topic.isNotEmpty) await _secureRemote.start(_topic);
       final managed = storeState == true && _storedApiResponse?['paired'] == true;
       devicesinfo['capabilities'] = config.capabilities;
+      if (_signedOtaReport != null) (devicesinfo['capabilities'] as Map)['linux_ota'] = _signedOtaReport;
+      if (managed) await _publishLinuxOtaReport();
       await _refreshLinuxNetworkInfo();
       if (managed && _topic.isNotEmpty && _mqttClientService.isConnected) await LinuxDiagnostics.instance.flush((message)=>_mqttClientService.publishSyncAck(_topic,message));
       final updateStatus = File('/var/lib/signagex-player/update-status.json');
@@ -173,7 +181,7 @@ class MqttViewModel extends ChangeNotifier {
           (_lastLinuxUpdateCheck == null || DateTime.now().difference(_lastLinuxUpdateCheck!).inHours >= 1) && await config.allowsDownload()) {
         _lastLinuxUpdateCheck = DateTime.now();
         try {
-          final update = await Process.run('pkexec', ['/usr/lib/signagex-player/update-player']).timeout(const Duration(minutes: 30));
+          final update = await LinuxOta.instance.exclusiveUpdate().timeout(const Duration(minutes: 30));
           if (update.exitCode != 0) throw StateError(update.stderr.toString().substring(0, update.stderr.toString().length.clamp(0,300)));
           final outcome = update.stdout.toString().trim();
           await config.event?.call('Player update: $outcome', 'info');
@@ -2384,6 +2392,40 @@ class MqttViewModel extends ChangeNotifier {
     devicesinfo['last_seen'] = DateTime.now().toUtc().toIso8601String();
     devicesinfo['player_version'] = 'Version: ${const String.fromEnvironment('APP_BUILD_ID', defaultValue: 'linux-config-dev')}';
     devicesinfo['capabilities'] = LinuxConfiguration.instance.capabilities;
+    if (_signedOtaReport != null) (devicesinfo['capabilities'] as Map)['linux_ota'] = _signedOtaReport;
+  }
+
+  /// Publish the device-signed update report when it changes (or on demand),
+  /// not on every tick: thousands of screens should not add MQTT chatter.
+  Future<void> _publishLinuxOtaReport({bool force = false}) async {
+    if (!Platform.isLinux || _topic.isEmpty) return;
+    try {
+      final config = LinuxConfiguration.instance;
+      final report = await LinuxOta.instance.report(_topic, supported: config.managedUpdates);
+      final key = jsonEncode(report);
+      if (!force && key == _lastOtaReport && _signedOtaReport != null) return;
+      final signed = await _secureRemote.signOta(jsonEncode({...report, 'reported': DateTime.now().millisecondsSinceEpoch}));
+      if (signed == null) return;
+      _lastOtaReport = key;
+      _signedOtaReport = signed;
+      _updateLinuxDisplayInfo();
+      // Set directly: the display refresh above returns early before a window exists.
+      devicesinfo['action'] = 'player_details';
+      devicesinfo['capabilities'] = {...config.capabilities, 'linux_ota': signed};
+      if (storeState == true && _storedApiResponse?['paired'] == true && _mqttClientService.isConnected) {
+        _mqttClientService.publish(_topic, jsonEncode(devicesinfo), retain: false);
+      }
+    } catch (error) { _debugLog('Linux update report: $error'); }
+  }
+
+  /// CMS "Update player": verified by the adapter, then run immediately.
+  Future<void> _handleLinuxOtaCommand(Map command) async {
+    final verified = await _secureRemote.verifyOta(command);
+    if (verified == null) {
+      await LinuxConfiguration.instance.event?.call('Player update request rejected (signature, device or freshness check)', 'warning');
+      return;
+    }
+    await LinuxOta.instance.run(verified, supported: LinuxConfiguration.instance.managedUpdates);
   }
 
   Future<void> _checkPairingStatus({bool refresh = false}) async {
@@ -2806,6 +2848,10 @@ class MqttViewModel extends ChangeNotifier {
       return;
     }
 
+    if (Platform.isLinux && jsonObj['action'] == LinuxOta.protocol) {
+      if (jsonObj['data'] is String && jsonObj['signature'] is String) unawaited(_handleLinuxOtaCommand(jsonObj as Map));
+      return;
+    }
     if (Platform.isLinux && ['publish_playlist','publish_campaign'].contains(jsonObj['action'])) {
       final config = LinuxConfiguration.instance;
       if (!await config.allowsDownload()) {

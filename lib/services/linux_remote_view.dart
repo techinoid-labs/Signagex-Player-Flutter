@@ -12,6 +12,8 @@ class LinuxRemoteView {
   void Function(String topic, String payload, bool retained)? publish;
   Future<void> Function(String, String)? event;
   DateTime? _lastAttempt;
+  Completer<Map?>? _otaReply;
+  Future<void> _otaLock = Future.value();
 
   Future<void> start(String code) async {
     if (_process != null && code == _code) {
@@ -40,7 +42,13 @@ class LinuxRemoteView {
         if (line.length > 3 * 1024 * 1024 || _process != process) return;
         try {
           final value = jsonDecode(line) as Map;
-          if (value['ready'] == true) {
+          if (value.containsKey('ota_signed') || value.containsKey('ota_verified') || value.containsKey('ota_rejected')) {
+            final reply = _otaReply;
+            _otaReply = null;
+            if (reply != null && !reply.isCompleted) {
+              reply.complete(value['ota_signed'] as Map? ?? value['ota_verified'] as Map?);
+            }
+          } else if (value['ready'] == true) {
             _publicKey = value['device_key'] as String;
             _enabled();
             announce();
@@ -76,6 +84,32 @@ class LinuxRemoteView {
       _process?.stdin.writeln(jsonEncode(value));
     } catch (_) {}
   }
+
+  /// One adapter request at a time: its replies are not correlated by id.
+  Future<Map?> _otaRequest(Map<String, dynamic> message) {
+    final result = _otaLock.then((_) async {
+      if (_process == null || _publicKey == null) return null;
+      final reply = Completer<Map?>();
+      _otaReply = reply;
+      _write(message);
+      try {
+        return await reply.future.timeout(const Duration(seconds: 5));
+      } catch (_) {
+        _otaReply = null;
+        return null;
+      }
+    });
+    _otaLock = result.then((_) {}, onError: (_) {});
+    return result;
+  }
+
+  /// Device-signed update report for the CMS, or null if the adapter is down.
+  Future<Map?> signOta(String data) => _otaRequest({'ota_sign': data});
+
+  /// The verified job of a server-signed CMS update command, or null.
+  Future<Map?> verifyOta(Map envelope) => _otaRequest({
+        'ota_command': {'data': envelope['data'], 'signature': envelope['signature']}
+      });
 
   void _enabled() => _write({'enabled': allowed?.call() == true});
   void receive(String topic, String payload, bool retained) {

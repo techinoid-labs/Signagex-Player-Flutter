@@ -185,6 +185,33 @@ class Remote:
         except subprocess.TimeoutExpired: self.ack(command,'timeout')
         except Exception: self.ack(command,'unsupported_or_invalid')
 
+    def sign_ota(self, data):
+        """Sign a CMS update-status report with the persistent device key."""
+        if not isinstance(data, str) or len(data) > 4096: return None
+        signature = self.private.sign(data.encode(), padding.PKCS1v15(), hashes.SHA256())
+        return {'data':data, 'key':self.public_key, 'signature':b64(signature)}
+
+    def verify_ota(self, envelope):
+        """Check a CMS 'update now' command; returns (job, None) or (None, reason).
+        Verification only -- the player runs the root updater, which still trusts
+        nothing but its packaged release channel."""
+        try:
+            data = envelope['data']
+            if not isinstance(data, str) or len(data) > 4096: return None, 'invalid'
+            self.signing_key.verify(un64(envelope['signature']), data.encode(), padding.PKCS1v15(), hashes.SHA256())
+            command = json.loads(data)
+        except Exception: return None, 'bad_signature'
+        if command.get('protocol') != 'linux_ota_v1' or command.get('player') != self.code: return None, 'wrong_player'
+        if command.get('key') != self.public_key: return None, 'wrong_key'
+        issued, now = command.get('issued'), self.clock()*1000
+        if type(issued) is not int or not (now-60000 <= issued <= now+5000): return None, 'stale'
+        fence = self.directory/'ota-issued'
+        try: last = int(fence.read_text())
+        except (OSError, ValueError): last = 0
+        if issued <= last: return None, 'replayed'
+        self.atomic(fence, str(issued).encode())
+        return {name: command.get(name) for name in ('job','version','platform','sha256','issued')}, None
+
     def capture(self):
         if not self.enabled or not self.active: return
         if self.monotonic() >= self.deadline: self.stop('expired'); return
@@ -235,6 +262,13 @@ def main():
                 remote.enabled=message['enabled'] is True
                 if not remote.enabled: remote.stop('unavailable')
             elif 'envelope' in message: remote.receive(message['envelope'],message.get('retained') is True)
+            # CMS app updates use the device identity whether or not remote view is enabled.
+            elif 'ota_sign' in message:
+                signed=remote.sign_ota(message['ota_sign'])
+                emit({'ota_signed':signed} if signed else {'ota_rejected':'invalid'})
+            elif 'ota_command' in message:
+                job,reason=remote.verify_ota(message['ota_command'])
+                emit({'ota_verified':job} if job else {'ota_rejected':reason})
         except queue.Empty: pass
         if time.monotonic() >= next_capture:
             next_capture=time.monotonic()+1

@@ -101,7 +101,10 @@ def main():
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             recover_interrupted_update()
         return
-    if os.geteuid() != 0 or len(__import__('sys').argv) != 1:
+    arguments = __import__('sys').argv[1:]
+    # '--now' is the only argument: an operator asked from the CMS, so a release
+    # that failed earlier is retried immediately instead of waiting out its backoff.
+    if os.geteuid() != 0 or arguments not in ([], ['--now']):
         raise ValueError('Updater requires its installed policy and accepts no arguments')
     uid = int(os.environ.get('PKEXEC_UID', '0'))
     if uid < 1000: raise ValueError('No graphical player user')
@@ -111,8 +114,9 @@ def main():
     if os.environ.get('SIGNAGEX_UPDATE_SERVICE') != '1':
         subprocess.check_call(['systemd-run', '--unit=signagex-managed-update',
             '--collect', '--wait', '--property=Type=exec',
-            '--setenv=PKEXEC_UID='+str(uid), '--setenv=SIGNAGEX_UPDATE_SERVICE=1',
-            '/usr/lib/signagex-player/update-player'])
+            '--setenv=PKEXEC_UID='+str(uid), '--setenv=SIGNAGEX_UPDATE_SERVICE=1']
+            + (['--setenv=SIGNAGEX_UPDATE_NOW=1'] if arguments else [])
+            + ['/usr/lib/signagex-player/update-player'])
         return
     user = pwd.getpwuid(uid).pw_name
     config = json.loads(CONFIG.read_text())
@@ -139,9 +143,12 @@ def main():
                 print('up-to-date'); return
             # A release that already failed on this device is retried on a backoff
             # schedule instead of being re-downloaded on every hourly check.
-            if time.time() < failure_state(version)[1]:
+            operator = os.environ.get('SIGNAGEX_UPDATE_NOW') == '1'
+            if not operator and time.time() < failure_state(version)[1]:
                 print('deferred'); return
             try:
+                installing = False
+                update_status('downloading',version)
                 candidate = temporary/'candidate.deb'
                 actual = download(release['downloadUrl'], candidate, {'norwin.sfo3.digitaloceanspaces.com'})
                 if actual != digest: raise ValueError('Update checksum mismatch')
@@ -170,6 +177,7 @@ def main():
                 rollback = CACHE/'rollback.deb'
                 run('dpkg-deb','--build','--root-owner-group',str(previous),str(rollback))
                 restart = ['runuser','-u',user,'--','env',f'XDG_RUNTIME_DIR=/run/user/{uid}','systemctl','--user']
+                installing = True
                 update_status('installing',version)
                 try:
                     run('apt-get','install','-y',str(candidate))
@@ -198,6 +206,7 @@ def main():
                 except BrokenPipeError: pass
             except Exception:
                 record_failure(version, time.time())
+                if not installing: update_status('failed',version)
                 raise
 
 if __name__ == '__main__':

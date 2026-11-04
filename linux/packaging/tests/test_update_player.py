@@ -43,22 +43,23 @@ class UpdatePolicyTests(unittest.TestCase):
             self.assertEqual(calls,[('dpkg','-i',str(rollback))])
             self.assertEqual(statuses,[('rolled_back',)])
 
-    def check_once(self, root, installed, feed_version='v15'):
+    def check_once(self, root, installed, feed_version='v15', now=False):
         """Run one service-mode check against a fake feed; returns (printed, fetched).
         A package download is simulated as a failure, as a broken release would be."""
         import json, types
         namespace=updater['main'].__globals__
         channel=root/'channel.json'
         channel.write_text(json.dumps({'manifest':'https://api.signagex.ai/v1/player-releases/latest?platform=linux','package':'signagex-player','architecture':'amd64','platform':'linux'}))
-        fetched=[]
+        fetched=[]; self.statuses=[]
         def download(url, destination, hosts):
             if pathlib.Path(destination).name == 'manifest.json':
                 pathlib.Path(destination).write_text(json.dumps({'platform':'linux','version':feed_version,'sha256':'a'*64,'downloadUrl':'https://norwin.sfo3.digitaloceanspaces.com/release.deb'}))
                 return ''
             fetched.append(url); raise RuntimeError('download failed')
-        with patch.dict(namespace,{'CONFIG':channel,'CACHE':root/'cache','ATTEMPTS':root/'attempts.json','download':download,'run':lambda *args: installed}), \
+        with patch.dict(namespace,{'CONFIG':channel,'CACHE':root/'cache','ATTEMPTS':root/'attempts.json','download':download,'run':lambda *args: installed,
+                                   'update_status':lambda *args: self.statuses.append(args)}), \
              patch('os.geteuid',return_value=0), patch('sys.argv',['update-player']), \
-             patch.dict('os.environ',{'PKEXEC_UID':'1000','SIGNAGEX_UPDATE_SERVICE':'1'}), \
+             patch.dict('os.environ',{'PKEXEC_UID':'1000','SIGNAGEX_UPDATE_SERVICE':'1','SIGNAGEX_UPDATE_NOW':'1' if now else ''}), \
              patch('pwd.getpwuid',return_value=types.SimpleNamespace(pw_name='player')), patch('builtins.print') as output:
             try: updater['main']()
             except RuntimeError: pass
@@ -86,6 +87,29 @@ class UpdatePolicyTests(unittest.TestCase):
             # A newer release is not held back by the old release's failures.
             self.assertEqual(len(self.check_once(root,'14',feed_version='v16')[1]),1)
             self.assertEqual(json.loads((root/'attempts.json').read_text())['failures'],1)
+
+    def test_operator_request_retries_a_deferred_release_and_reports_phases(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            root=pathlib.Path(temporary)
+            self.check_once(root,'14')
+            self.assertEqual(self.statuses,[('downloading','15'),('failed','15')])
+            self.assertEqual(self.check_once(root,'14'),(['deferred'],[]))
+            # "Update now" from the CMS skips only the backoff, nothing else.
+            self.assertEqual(len(self.check_once(root,'14',now=True)[1]),1)
+            self.assertEqual(self.check_once(root,'50',now=True),(['up-to-date'],[]))
+
+    def test_now_is_the_only_argument_and_is_forwarded_to_the_service(self):
+        for argv in (['update-player','--now','x'],['update-player','--recover-now'],['update-player','--NOW']):
+            with self.subTest(argv=argv), patch('os.geteuid',return_value=0), patch('sys.argv',argv), self.assertRaises(ValueError): updater['main']()
+        with patch('os.geteuid',return_value=0), patch('sys.argv',['update-player','--now']), patch.dict('os.environ',{'PKEXEC_UID':'1000','SIGNAGEX_UPDATE_SERVICE':''}), patch('subprocess.check_call') as command:
+            updater['main']()
+            arguments=command.call_args.args[0]
+            self.assertIn('--setenv=SIGNAGEX_UPDATE_NOW=1',arguments)
+            self.assertEqual(arguments[-1],'/usr/lib/signagex-player/update-player')
+        with patch('os.geteuid',return_value=0), patch('sys.argv',['update-player']), patch.dict('os.environ',{'PKEXEC_UID':'1000','SIGNAGEX_UPDATE_SERVICE':''}), patch('subprocess.check_call') as command:
+            updater['main']()
+            self.assertNotIn('--setenv=SIGNAGEX_UPDATE_NOW=1',command.call_args.args[0])
 
     def test_backoff_doubles_with_jitter_and_caps_at_a_day(self):
         import json, tempfile
