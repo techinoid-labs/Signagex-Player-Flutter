@@ -138,6 +138,29 @@ would produce a package that fails to start on every 22.04 screen in the
 field with a `GLIBC_2.39 not found` error and no other clue. Raise the pin
 only when no 22.04 screens remain.
 
+## CMS network status and Wi-Fi management
+
+Players report their network to the CMS (connection type, Wi-Fi name and signal,
+addresses, MACs, saved Wi-Fi networks; never passwords) as a device-signed
+`capabilities.linux_network` report (`linux_network_v1`). Reading it needs only
+NetworkManager (`nmcli`); without it the CMS still gets interfaces and addresses.
+
+Adding or removing Wi-Fi networks from the CMS is administrator opt-in, like
+managed updates:
+
+```sh
+sudo /opt/signagex-player/kiosk/enable-managed-network.sh <graphical-player-user>
+```
+
+The CMS signs each command, and encrypts the Wi-Fi password to this device's key,
+so neither MQTT nor logs carry it. The remote-view adapter verifies the command
+(player, key, 60 s freshness, replay fence) and decrypts the password; the root
+`/usr/lib/signagex-player/network-helper` (polkit group `signagex-network`) writes a
+root-only NetworkManager profile and never puts the password on a command line.
+"Connect now" switches to the network and must reach the SignageX API within 45 s,
+otherwise it restores the previous connection and deletes the new profile. Removing
+the network that carries the player's only connection is refused.
+
 ## Optional dedicated kiosk session
 
 On Ubuntu/Debian, after installing the .deb, run:

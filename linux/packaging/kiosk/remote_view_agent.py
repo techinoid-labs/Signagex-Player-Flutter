@@ -12,6 +12,8 @@ from PIL import Image
 
 SERVER_KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsEJfK9Jr9KvAj7656FpxrwGDC3LckOE/pxML3CXazXslmGRRbf9gHJM0SMRw8NlGTdkTWL/NGGNTIUPkF1XiBW7S8FlVkYHGjQtQuiB5u7pX0aUx5F41liax27RGu/xF3WOmOJXhPgDMzv/J1SEgNEFpqCVYFkS6W17AhNa66brQW+3Kk13Obc7zUxO+Q7iLLgV4/SdDInn32ohWRe15+Cqxmv1sbCpVc4fRoI6Y5ggupq9TgtO+gE0iJLp4iZJuf0GaGc8zirTMH+0wAtvbzE1j41lHTjaA3Esga5LPEtS/D0SF8wQKyJm+gRh/O/c+c4r4eM4znoMdYSXGDmNihQIDAQAB'
 OAEP = padding.OAEP(mgf=padding.MGF1(hashes.SHA1()), algorithm=hashes.SHA1(), label=None)
+# linux_network_v1 Wi-Fi passwords are encrypted to this device's key by the backend.
+NETWORK_OAEP = padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None)
 
 def b64(value): return base64.b64encode(value).decode('ascii')
 def un64(value): return base64.b64decode(value, validate=True)
@@ -186,8 +188,8 @@ class Remote:
         except Exception: self.ack(command,'unsupported_or_invalid')
 
     def sign_ota(self, data):
-        """Sign a CMS update-status report with the persistent device key."""
-        if not isinstance(data, str) or len(data) > 4096: return None
+        """Sign a CMS report (update or network status) with the persistent device key."""
+        if not isinstance(data, str) or len(data) > 8192: return None
         signature = self.private.sign(data.encode(), padding.PKCS1v15(), hashes.SHA256())
         return {'data':data, 'key':self.public_key, 'signature':b64(signature)}
 
@@ -211,6 +213,36 @@ class Remote:
         if issued <= last: return None, 'replayed'
         self.atomic(fence, str(issued).encode())
         return {name: command.get(name) for name in ('job','version','platform','sha256','issued')}, None
+
+    def verify_network(self, envelope):
+        """Check a CMS Wi-Fi command; returns (job, None) or (None, reason). The
+        password arrives encrypted to this device's key and is only decrypted here,
+        after the server signature, player, key and freshness checks pass."""
+        try:
+            data = envelope['data']
+            if not isinstance(data, str) or len(data) > 4096: return None, 'invalid'
+            self.signing_key.verify(un64(envelope['signature']), data.encode(), padding.PKCS1v15(), hashes.SHA256())
+            command = json.loads(data)
+        except Exception: return None, 'bad_signature'
+        if command.get('protocol') != 'linux_network_v1' or command.get('player') != self.code: return None, 'wrong_player'
+        if command.get('key') != self.public_key: return None, 'wrong_key'
+        issued, now = command.get('issued'), self.clock()*1000
+        if type(issued) is not int or not (now-60000 <= issued <= now+5000): return None, 'stale'
+        op, ssid, job = command.get('op'), command.get('ssid'), command.get('job')
+        if op not in ('wifi_add','wifi_remove') or not isinstance(ssid, str) or not isinstance(job, str) \
+                or not 0 < len(ssid.encode()) <= 32 or not 0 < len(job) <= 64:
+            return None, 'invalid'
+        password = ''
+        if op == 'wifi_add' and command.get('secret') is not None:
+            try: password = self.private.decrypt(un64(command['secret']), NETWORK_OAEP).decode()
+            except Exception: return None, 'bad_secret'
+        fence = self.directory/'network-issued'
+        try: last = int(fence.read_text())
+        except (OSError, ValueError): last = 0
+        if issued <= last: return None, 'replayed'
+        self.atomic(fence, str(issued).encode())
+        return {'job':job, 'op':op, 'ssid':ssid, 'password':password, 'issued':issued,
+                'hidden':command.get('hidden') is True, 'connect':command.get('connect') is True}, None
 
     def capture(self):
         if not self.enabled or not self.active: return
@@ -248,6 +280,9 @@ def ota_reply(remote, message):
     if 'ota_sign' in message:
         signed = remote.sign_ota(message['ota_sign'])
         reply = {'ota_signed':signed} if signed else {'ota_rejected':'invalid'}
+    elif 'network_command' in message:
+        job, reason = remote.verify_network(message['network_command'])
+        reply = {'network_verified':job} if job else {'ota_rejected':reason}
     else:
         job, reason = remote.verify_ota(message['ota_command'])
         reply = {'ota_verified':job} if job else {'ota_rejected':reason}
@@ -277,7 +312,7 @@ def main():
                 if not remote.enabled: remote.stop('unavailable')
             elif 'envelope' in message: remote.receive(message['envelope'],message.get('retained') is True)
             # CMS app updates use the device identity whether or not remote view is enabled.
-            elif 'ota_sign' in message or 'ota_command' in message:
+            elif 'ota_sign' in message or 'ota_command' in message or 'network_command' in message:
                 emit(ota_reply(remote,message))
         except queue.Empty: pass
         if time.monotonic() >= next_capture:
