@@ -115,6 +115,9 @@ install -m 755 linux/packaging/update-player "$ROOT/usr/lib/signagex-player/upda
 mkdir -p "$ROOT/usr/lib/systemd/system"
 install -m 644 linux/packaging/signagex-update-recover.service "$ROOT/usr/lib/systemd/system/signagex-update-recover.service"
 install -m 644 linux/packaging/50-signagex-update.rules "$ROOT/usr/share/polkit-1/rules.d/50-signagex-update.rules"
+# CMS Wi-Fi management (linux_network_v1); also administrator opt-in (signagex-network group).
+install -m 755 linux/packaging/network-helper "$ROOT/usr/lib/signagex-player/network-helper"
+install -m 644 linux/packaging/51-signagex-network.rules "$ROOT/usr/share/polkit-1/rules.d/51-signagex-network.rules"
 install -m 755 linux/packaging/kiosk/start-supervised.sh "$ROOT/usr/bin/signagex-player-start-supervised"
 channel_api=https://api.signagex.ai
 if [ "$SUFFIX" = staging ]; then channel_api=https://stage.signagexai.com; fi
@@ -167,6 +170,7 @@ cat > "$ROOT/DEBIAN/postinst" <<'POSTINST'
 #!/bin/sh
 set -e
 getent group signagex-updates >/dev/null || groupadd --system signagex-updates
+getent group signagex-network >/dev/null || groupadd --system signagex-network
 if command -v systemctl >/dev/null; then
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable signagex-update-recover.service 2>/dev/null || true

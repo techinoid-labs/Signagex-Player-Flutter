@@ -12,6 +12,16 @@ either form. A release that fails on a device is retried with per-release backof
 (1 h doubling to 24 h, ±20 % jitter), so a bad release does not make the fleet
 re-download it every hour.
 
+The bundled mdk video SDK is pinned (`linux/packaging/pin_mdk_sdk.sh`, currently
+v0.39.0, checksummed). fvp otherwise downloads SourceForge's nightly SDK on every
+build, which is how v51 shipped an unloadable `libmdk`. Raise the pin deliberately
+and soak-test the new SDK on real hardware before releasing.
+
+Release gate for every build: on the lab Azulle and Pi, the player idling on its
+pairing or content screen must not hold a core (`top -H`: the main thread well
+under 10 %). Before v58 the GTK loop spun at 100 % of one core because Chromium's
+GLib work source was attached but never run; CEF now runs the loop itself.
+
 ## v15 — 2026-10-23 — staging
 
 - Added xdotool dependency to Debian packaging and bundled it in AppImage.

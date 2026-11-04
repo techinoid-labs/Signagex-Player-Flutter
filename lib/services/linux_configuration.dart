@@ -55,6 +55,10 @@ class LinuxConfiguration extends ChangeNotifier {
     return result.stdout.toString().trim();
   }
 
+  /// The managed updater is installed and this user may run it (polkit group).
+  bool get managedUpdates =>
+      File('/usr/lib/signagex-player/update-player').existsSync() && _updatePermission;
+
   Map<String, dynamic> get capabilities => {
         'protocol': 1,
         'platform': 'linux',

@@ -55,19 +55,49 @@ bridge = replace_once(bridge, """    if (ret > 0){
 
 common = texts["../common/webview_plugin.cc"]
 common = replace_once(common, '#include "webview_plugin.h"',
-    '#include "webview_plugin.h"\n#include <glib.h>\nstatic guint signagex_cef_pump = 0;')
-common = replace_once(common, '#ifdef OS_MAC\n\t\t//cef message loop handle by MainApplication on mac',
-    '#if defined(OS_MAC) || defined(OS_LINUX)\n\t\t// Linux CEF callbacks must share GTK/Flutter platform-thread ownership.')
-common = replace_once(common, '\t\tCefInitialize(mainArgs, cefs, app.get(), nullptr);', """        isCefInitialized = CefInitialize(mainArgs, cefs, app.get(), nullptr);
-        if (isCefInitialized && signagex_cef_pump == 0) {
-            signagex_cef_pump = g_timeout_add(10, [](gpointer) -> gboolean {
-                CefDoMessageLoopWork();
-                return G_SOURCE_CONTINUE;
+    '#include "webview_plugin.h"\n#include <glib.h>\n#include <gtk/gtk.h>\n'
+    'static bool signagex_loop_running = false;\nstatic bool signagex_shutdown_pending = false;')
+# CEF runs the GTK main loop itself (CefRunMessageLoop). Driving it from a
+# timer with external_message_pump left Chromium's own GLib work source
+# attached to the default context but never run; its prepare step then
+# returns a 0 ms timeout forever, so the GTK loop polled ~5000 times a second
+# and held one core at 100% even on an idle screen. CefRunMessageLoop
+# iterates the same default context, so GTK, Flutter and every CEF callback
+# still run on the platform thread.
+common = replace_once(common, '\t\tCefInitialize(mainArgs, cefs, app.get(), nullptr);', """#ifdef OS_LINUX
+        cefs.external_message_pump = false;
+        cefs.multi_threaded_message_loop = false;
+#endif
+        isCefInitialized = CefInitialize(mainArgs, cefs, app.get(), nullptr);
+        if (isCefInitialized && !signagex_loop_running) {
+            // Entered from an idle callback so the "init" call returns first;
+            // the outer GTK loop waits until CEF's loop quits.
+            g_idle_add([](gpointer) -> gboolean {
+                signagex_loop_running = true;
+                // A desktop window closing must still end the app.
+                guint watch = g_timeout_add(500, [](gpointer) -> gboolean {
+                    GApplication* application = g_application_get_default();
+                    if (application && GTK_IS_APPLICATION(application) &&
+                        gtk_application_get_windows(GTK_APPLICATION(application)) == nullptr) {
+                        CefQuitMessageLoop();
+                    }
+                    return G_SOURCE_CONTINUE;
+                }, nullptr);
+                CefRunMessageLoop();
+                g_source_remove(watch);
+                signagex_loop_running = false;
+                if (signagex_shutdown_pending && isCefInitialized) {
+                    CefShutdown();
+                    isCefInitialized = false;
+                }
+                return G_SOURCE_REMOVE;
             }, nullptr);
         }""")
-common = replace_once(common, '\t\tCefShutdown();', """        if (signagex_cef_pump != 0) {
-            g_source_remove(signagex_cef_pump);
-            signagex_cef_pump = 0;
+common = replace_once(common, '\t\tCefShutdown();', """        if (signagex_loop_running) {
+            // CefShutdown may only run once CefRunMessageLoop has returned.
+            signagex_shutdown_pending = true;
+            CefQuitMessageLoop();
+            return;
         }
         if (isCefInitialized) {
             CefShutdown();
@@ -127,4 +157,4 @@ handler = replace_once(handler, '''    if(onLoadEnd){
 (output / "webview_handler.cc").write_text(handler)
 for name in ("frame_store.h", "webview_cef_texture.h", "page_frame_gate.h"):
     shutil.copyfile(Path(__file__).parent / name, output / name)
-print("Prepared thread-owned CEF loop and lifetime-safe texture sources")
+print("Prepared CEF-run platform-thread loop and lifetime-safe texture sources")

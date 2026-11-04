@@ -4,6 +4,10 @@ import 'dart:io';
 
 /// MQTT remains in the player; the unprivileged adapter owns X11 and crypto.
 class LinuxRemoteView {
+  LinuxRemoteView({this.writeOverride});
+
+  /// Tests replace the adapter's stdin.
+  final void Function(Map<String, dynamic> message)? writeOverride;
   Process? _process;
   Timer? _timer;
   String? _code;
@@ -12,6 +16,8 @@ class LinuxRemoteView {
   void Function(String topic, String payload, bool retained)? publish;
   Future<void> Function(String, String)? event;
   DateTime? _lastAttempt;
+  final Map<int, (String, Completer<OtaReply>)> _otaPending = {};
+  int _otaRequestId = 0;
 
   Future<void> start(String code) async {
     if (_process != null && code == _code) {
@@ -40,7 +46,9 @@ class LinuxRemoteView {
         if (line.length > 3 * 1024 * 1024 || _process != process) return;
         try {
           final value = jsonDecode(line) as Map;
-          if (value['ready'] == true) {
+          if (value.containsKey('ota_signed') || value.containsKey('ota_verified') || value.containsKey('network_verified') || value.containsKey('ota_rejected')) {
+            handleOtaReply(value);
+          } else if (value['ready'] == true) {
             _publicKey = value['device_key'] as String;
             _enabled();
             announce();
@@ -72,10 +80,54 @@ class LinuxRemoteView {
   }
 
   void _write(Map<String, dynamic> value) {
+    if (writeOverride != null) return writeOverride!(value);
     try {
       _process?.stdin.writeln(jsonEncode(value));
     } catch (_) {}
   }
+
+  /// Match an adapter reply to the request with the same id and expected type.
+  void handleOtaReply(Map value) {
+    final id = value['id'];
+    if (id is! int) return;
+    final pending = _otaPending[id];
+    if (pending == null) return;
+    final (expected, completer) = pending;
+    if (value.containsKey('ota_rejected')) {
+      _otaPending.remove(id);
+      completer.complete(OtaReply(null, value['ota_rejected']?.toString() ?? 'rejected'));
+    } else if (value[expected] is Map) {
+      _otaPending.remove(id);
+      completer.complete(OtaReply(Map.from(value[expected] as Map), null));
+    }
+  }
+
+  Future<OtaReply> _otaRequest(String expected, Map<String, dynamic> message) async {
+    if (writeOverride == null && (_process == null || _publicKey == null)) return const OtaReply(null, 'adapter_unavailable');
+    final id = ++_otaRequestId;
+    final completer = Completer<OtaReply>();
+    _otaPending[id] = (expected, completer);
+    _write({...message, 'id': id});
+    try {
+      return await completer.future.timeout(const Duration(seconds: 5));
+    } on TimeoutException {
+      _otaPending.remove(id);
+      return const OtaReply(null, 'adapter_timeout');
+    }
+  }
+
+  /// Device-signed update report for the CMS.
+  Future<OtaReply> signOta(String data) => _otaRequest('ota_signed', {'ota_sign': data});
+
+  /// The verified job of a server-signed CMS update command, or why it was refused.
+  Future<OtaReply> verifyOta(Map envelope) => _otaRequest('ota_verified', {
+        'ota_command': {'data': envelope['data'], 'signature': envelope['signature']}
+      });
+
+  /// The verified (and password-decrypted) job of a server-signed CMS Wi-Fi command.
+  Future<OtaReply> verifyNetwork(Map envelope) => _otaRequest('network_verified', {
+        'network_command': {'data': envelope['data'], 'signature': envelope['signature']}
+      });
 
   void _enabled() => _write({'enabled': allowed?.call() == true});
   void receive(String topic, String payload, bool retained) {
@@ -109,6 +161,13 @@ class LinuxRemoteView {
     _process = null;
     _publicKey = null;
   }
+}
+
+/// An adapter answer: [value] on success, otherwise [reason] (e.g. 'stale').
+class OtaReply {
+  const OtaReply(this.value, this.reason);
+  final Map? value;
+  final String? reason;
 }
 
 /// Select the running bundle's adapter; never borrow one from another release.

@@ -1,0 +1,195 @@
+#!/usr/bin/python3
+"""Root-owned Wi-Fi helper for CMS network management (linux_network_v1).
+
+The player runs it through pkexec (polkit group signagex-network) with one JSON
+request on stdin, after its remote-view adapter verified the server signature.
+It only adds or removes NetworkManager Wi-Fi profiles. The change itself runs in
+a transient systemd unit, so a rollback still happens if the player exits.
+"""
+import fcntl, json, os, pathlib, re, string, subprocess, sys, time, urllib.parse, uuid
+
+STATE = pathlib.Path('/var/lib/signagex-player')
+STATUS = STATE/'network-status.json'
+REQUEST = pathlib.Path('/run/signagex-network/request.json')
+PROFILES = pathlib.Path('/etc/NetworkManager/system-connections')
+CHANNEL = pathlib.Path('/usr/lib/signagex-player/update-channel.json')
+CONNECT_TIMEOUT = 45
+
+def nmcli(*args, timeout=60):
+    return subprocess.run(['nmcli', *args], capture_output=True, text=True, timeout=timeout)
+
+def fields(line):
+    """Split one `nmcli -t` line; ':' and '\\' inside values arrive escaped."""
+    values, current, escaped = [], '', False
+    for character in line:
+        if escaped: current += character; escaped = False
+        elif character == '\\': escaped = True
+        elif character == ':': values.append(current); current = ''
+        else: current += character
+    values.append(current)
+    return values
+
+def valid_ssid(ssid):
+    return isinstance(ssid, str) and 0 < len(ssid.encode()) <= 32 and not any(ord(c) < 32 or ord(c) == 127 for c in ssid)
+
+def valid_password(password):
+    if password == '': return True
+    if not isinstance(password, str): return False
+    if len(password) == 64: return all(c in string.hexdigits for c in password)
+    return 8 <= len(password) <= 63 and all(32 <= ord(c) < 127 for c in password)
+
+def validate(request):
+    if not isinstance(request, dict): raise ValueError('Invalid request')
+    job, op, ssid = request.get('job'), request.get('op'), request.get('ssid')
+    if not isinstance(job, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,64}', job): raise ValueError('Invalid job')
+    if op not in ('wifi_add', 'wifi_remove'): raise ValueError('Invalid operation')
+    if not valid_ssid(ssid): raise ValueError('Invalid network name')
+    password = request.get('password', '')
+    if op == 'wifi_add' and not valid_password(password): raise ValueError('Invalid Wi-Fi password')
+    return {'job': job, 'op': op, 'ssid': ssid, 'password': password if op == 'wifi_add' else '',
+            'hidden': request.get('hidden') is True, 'connect': request.get('connect') is True}
+
+def keyfile_value(value):
+    """GKeyFile string escaping (backslash, leading space)."""
+    value = value.replace('\\', '\\\\')
+    return '\\s' + value[1:] if value.startswith(' ') else value
+
+def keyfile(ssid, password, hidden, identifier):
+    # The SSID is written as a byte list so any character is stored verbatim.
+    lines = ['[connection]', 'id=' + keyfile_value('SignageX Wi-Fi ' + ssid), 'uuid=' + identifier, 'type=wifi',
+             'autoconnect=true', 'autoconnect-priority=10', '',
+             '[wifi]', 'mode=infrastructure', 'ssid=' + ';'.join(str(b) for b in ssid.encode()) + ';',
+             'hidden=' + ('true' if hidden else 'false'), '']
+    if password:
+        lines += ['[wifi-security]', 'key-mgmt=wpa-psk', 'psk=' + keyfile_value(password), '']
+    lines += ['[ipv4]', 'method=auto', '', '[ipv6]', 'method=auto', '']
+    return '\n'.join(lines)
+
+def update_status(job, phase, detail=''):
+    STATE.mkdir(parents=True, exist_ok=True)
+    temporary = STATUS.with_name(STATUS.name + '.tmp')
+    temporary.write_text(json.dumps({'job': job, 'phase': phase, 'detail': detail[:200], 'timestamp': time.time()}))
+    temporary.replace(STATUS)
+
+def wifi_profiles():
+    """[(uuid, ssid, active)] for every saved Wi-Fi profile, whoever created it."""
+    result = nmcli('-t', '-f', 'UUID,TYPE,ACTIVE', 'connection', 'show')
+    profiles = []
+    for line in result.stdout.splitlines():
+        identifier, kind, active = (fields(line) + ['', '', ''])[:3]
+        if kind != '802-11-wireless': continue
+        ssid = nmcli('-g', '802-11-wireless.ssid', 'connection', 'show', identifier).stdout.strip()
+        profiles.append((identifier, ssid.replace('\\:', ':').replace('\\\\', '\\'), active == 'yes'))
+    return profiles
+
+def wifi_device():
+    for line in nmcli('-t', '-f', 'DEVICE,TYPE', 'device').stdout.splitlines():
+        device, kind = (fields(line) + [''])[:2]
+        if kind == 'wifi': return device
+    return None
+
+def active_on(device):
+    for line in nmcli('-t', '-f', 'DEVICE,UUID', 'connection', 'show', '--active').stdout.splitlines():
+        name, identifier = (fields(line) + [''])[:2]
+        if name == device: return identifier
+    return None
+
+def other_connection(device):
+    """Another connected device with a default route (so removing Wi-Fi keeps the player online)."""
+    for line in nmcli('-t', '-f', 'DEVICE,TYPE,STATE', 'device').stdout.splitlines():
+        name, kind, state = (fields(line) + ['', ''])[:3]
+        if name == device or kind not in ('ethernet', 'wifi') or not state.startswith('connected'): continue
+        gateway = nmcli('-g', 'IP4.GATEWAY', 'device', 'show', name).stdout.strip()
+        if gateway: return True
+    return False
+
+def api_host():
+    try:
+        return urllib.parse.urlsplit(json.loads(CHANNEL.read_text())['manifest']).hostname or 'api.signagex.ai'
+    except Exception:
+        return 'api.signagex.ai'
+
+def reaches_api(device):
+    """Any HTTPS answer from the SignageX API through this interface counts."""
+    return subprocess.run(['curl', '-sS', '-o', '/dev/null', '--max-time', '10', '--interface', device,
+                           'https://' + api_host() + '/'], capture_output=True).returncode == 0
+
+def add(request):
+    device = wifi_device()
+    if device is None: raise RuntimeError('This player has no Wi-Fi hardware')
+    ssid = request['ssid']
+    replaced = [p for p in wifi_profiles() if p[1] == ssid]
+    previous = active_on(device)
+    identifier = str(uuid.uuid4())
+    PROFILES.mkdir(mode=0o700, parents=True, exist_ok=True)
+    path = PROFILES/('signagex-wifi-' + identifier + '.nmconnection')
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(descriptor, 'w') as output: output.write(keyfile(ssid, request['password'], request['hidden'], identifier))
+    if nmcli('connection', 'load', str(path)).returncode != 0:
+        path.unlink(missing_ok=True)
+        raise RuntimeError('NetworkManager rejected the Wi-Fi settings')
+    if not request['connect']:
+        for old in replaced: nmcli('connection', 'delete', old[0])
+        return "Saved '%s'. It is used when no cable is connected." % ssid
+    up = nmcli('-w', str(CONNECT_TIMEOUT), 'connection', 'up', identifier, 'ifname', device, timeout=CONNECT_TIMEOUT + 15)
+    deadline = time.monotonic() + CONNECT_TIMEOUT
+    while up.returncode == 0 and time.monotonic() < deadline:
+        if reaches_api(device):
+            for old in replaced: nmcli('connection', 'delete', old[0])
+            return "Connected to '%s'." % ssid
+        time.sleep(3)
+    # Roll back: drop the new profile and restore whatever the radio used before.
+    nmcli('connection', 'delete', identifier)
+    path.unlink(missing_ok=True)
+    if previous: nmcli('-w', '30', 'connection', 'up', previous, timeout=45)
+    raise RuntimeError("Could not connect to '%s' (wrong password or no internet). Restored previous connection." % ssid)
+
+def remove(request):
+    device = wifi_device()
+    matches = [p for p in wifi_profiles() if p[1] == request['ssid']]
+    if not matches: raise RuntimeError("'%s' is not saved on this player" % request['ssid'])
+    if any(active for _, _, active in matches) and not other_connection(device):
+        raise RuntimeError("Refused: this is the player's only connection")
+    for identifier, _, _ in matches:
+        if nmcli('connection', 'delete', identifier).returncode != 0:
+            raise RuntimeError('NetworkManager could not remove the network')
+    return "Removed '%s'." % request['ssid']
+
+def apply():
+    """Runs as root inside the transient unit; reads and immediately deletes the request."""
+    try:
+        request = validate(json.loads(REQUEST.read_text()))
+    finally:
+        REQUEST.unlink(missing_ok=True)
+    update_status(request['job'], 'applying')
+    try:
+        detail = add(request) if request['op'] == 'wifi_add' else remove(request)
+        update_status(request['job'], 'applied', detail)
+        print(json.dumps({'phase': 'applied', 'detail': detail}))
+    except Exception as error:
+        update_status(request['job'], 'failed', str(error))
+        print(json.dumps({'phase': 'failed', 'detail': str(error)[:200]}))
+
+def main():
+    if os.geteuid() != 0: raise SystemExit('Network helper requires its installed policy')
+    if sys.argv[1:] == ['--apply'] and os.environ.get('SIGNAGEX_NETWORK_SERVICE') == '1':
+        return apply()
+    if sys.argv[1:]: raise SystemExit('Network helper accepts no arguments')
+    if int(os.environ.get('PKEXEC_UID', '0')) < 1000: raise SystemExit('No graphical player user')
+    request = validate(json.loads(sys.stdin.read(8192)))
+    STATE.mkdir(parents=True, exist_ok=True)
+    with open(STATE/'network.lock', 'a') as lock:
+        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError: raise SystemExit('Another network change is running')
+        REQUEST.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        descriptor = os.open(REQUEST, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, 'w') as output: json.dump(request, output)
+        subprocess.check_call(['systemd-run', '--unit=signagex-network-change', '--collect', '--wait', '--quiet',
+            '--property=Type=exec', '--property=StandardOutput=journal', '--setenv=SIGNAGEX_NETWORK_SERVICE=1',
+            '/usr/lib/signagex-player/network-helper', '--apply'])
+    status = json.loads(STATUS.read_text())
+    if status.get('job') != request['job']: raise SystemExit('Network change did not run')
+    print(json.dumps({'phase': status['phase'], 'detail': status.get('detail', '')}))
+
+if __name__ == '__main__':
+    main()
