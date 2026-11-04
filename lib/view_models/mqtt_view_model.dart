@@ -2404,7 +2404,7 @@ class MqttViewModel extends ChangeNotifier {
       final report = await LinuxOta.instance.report(_topic, supported: config.managedUpdates);
       final key = jsonEncode(report);
       if (!force && key == _lastOtaReport && _signedOtaReport != null) return;
-      final signed = await _secureRemote.signOta(jsonEncode({...report, 'reported': DateTime.now().millisecondsSinceEpoch}));
+      final signed = (await _secureRemote.signOta(jsonEncode({...report, 'reported': DateTime.now().millisecondsSinceEpoch}))).value;
       if (signed == null) return;
       _lastOtaReport = key;
       _signedOtaReport = signed;
@@ -2420,9 +2420,12 @@ class MqttViewModel extends ChangeNotifier {
 
   /// CMS "Update player": verified by the adapter, then run immediately.
   Future<void> _handleLinuxOtaCommand(Map command) async {
-    final verified = await _secureRemote.verifyOta(command);
+    final reply = await _secureRemote.verifyOta(command);
+    final verified = reply.value;
     if (verified == null) {
-      await LinuxConfiguration.instance.event?.call('Player update request rejected (signature, device or freshness check)', 'warning');
+      // 'stale' usually means the device clock is wrong; 'wrong_key' that the
+      // CMS offer predates an adapter identity change.
+      await LinuxConfiguration.instance.event?.call('Player update request rejected: ${reply.reason}', 'warning');
       return;
     }
     await LinuxOta.instance.run(verified, supported: LinuxConfiguration.instance.managedUpdates);

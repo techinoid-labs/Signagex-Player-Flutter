@@ -240,6 +240,20 @@ class Remote:
             'download_bps':int(self.download/max(1,self.monotonic()-self.started)),
             'duration_ms':int((self.monotonic()-self.started)*1000),'dropped_frames':self.dropped})
 
+def ota_reply(remote, message):
+    """Answer one CMS-update request; replies echo the caller's id so the player
+    can match them to the request that asked."""
+    request = message.get('id')
+    if type(request) is not int: request = None
+    if 'ota_sign' in message:
+        signed = remote.sign_ota(message['ota_sign'])
+        reply = {'ota_signed':signed} if signed else {'ota_rejected':'invalid'}
+    else:
+        job, reason = remote.verify_ota(message['ota_command'])
+        reply = {'ota_verified':job} if job else {'ota_rejected':reason}
+    reply['id'] = request
+    return reply
+
 def main():
     if len(sys.argv)!=2 or not sys.argv[1].isalnum(): raise ValueError('Player code required')
     def emit(value): print(json.dumps(value,separators=(',',':')),flush=True)
@@ -263,12 +277,8 @@ def main():
                 if not remote.enabled: remote.stop('unavailable')
             elif 'envelope' in message: remote.receive(message['envelope'],message.get('retained') is True)
             # CMS app updates use the device identity whether or not remote view is enabled.
-            elif 'ota_sign' in message:
-                signed=remote.sign_ota(message['ota_sign'])
-                emit({'ota_signed':signed} if signed else {'ota_rejected':'invalid'})
-            elif 'ota_command' in message:
-                job,reason=remote.verify_ota(message['ota_command'])
-                emit({'ota_verified':job} if job else {'ota_rejected':reason})
+            elif 'ota_sign' in message or 'ota_command' in message:
+                emit(ota_reply(remote,message))
         except queue.Empty: pass
         if time.monotonic() >= next_capture:
             next_capture=time.monotonic()+1

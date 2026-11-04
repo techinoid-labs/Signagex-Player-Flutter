@@ -16,6 +16,7 @@ void main() {
         stateFile: '${root.path}/linux-ota.json',
         statusFile: '${root.path}/update-status.json',
         channelFile: '${root.path}/update-channel.json',
+        pollEvery: const Duration(milliseconds: 10),
         installedVersion: (_) async => installed,
         compareVersions: (a, op, b) async => op == 'ge' ? _compare(a, b) >= 0 : _compare(a, b) > 0,
         runUpdater: (arguments) async {
@@ -25,8 +26,11 @@ void main() {
         clock: () => now,
       );
 
-  void status(String value, double timestamp) =>
-      File('${root.path}/update-status.json').writeAsStringSync(jsonEncode({'status': value, 'version': '51', 'timestamp': timestamp}));
+  // Seconds, like update-player; the job under test starts at 1000000.
+  void status(String value, {String version = '51', double timestamp = 1000005}) =>
+      File('${root.path}/update-status.json').writeAsStringSync(jsonEncode({'status': value, 'version': version, 'timestamp': timestamp}));
+  void persisted(String phase) => File('${root.path}/linux-ota.json').writeAsStringSync(
+      jsonEncode({'job': 'job-1', 'target': '51', 'phase': phase, 'detail': '', 'started': 1000000.0}));
 
   setUp(() {
     root = Directory.systemTemp.createTempSync('signagex-ota ');
@@ -39,12 +43,22 @@ void main() {
   });
   tearDown(() => root.deleteSync(recursive: true));
 
-  test('a verified CMS request runs the updater now and reports updated', () async {
+  test('a player without any job reports strings so the CMS can list it', () async {
+    final report = await ota().report('0607c6', supported: true);
+    expect(report['job'], '');
+    expect(report['phase'], '');
+    expect(report['detail'], '');
+    expect(report['version'], '50');
+    expect(report['protocol'], 'linux_ota_v1');
+  });
+
+  test('a verified CMS request runs the updater now; updated only once the updater says so', () async {
     final updater = ota();
     final phases = <String?>[];
     updater.onChange = () => phases.add(updater.job?['phase'] as String?);
     result = () {
       installed = '51';
+      status('updated');
       return ProcessResult(1, 0, 'updated', '');
     };
     await updater.run({'job': 'job-1', 'version': '51', 'issued': 5}, supported: true);
@@ -56,13 +70,40 @@ void main() {
     expect(report['job'], 'job-1');
     expect(report['phase'], 'updated');
     expect(report['version'], '51');
-    expect(report['platform'], 'linux');
-    expect(report['protocol'], 'linux_ota_v1');
+  });
+
+  test('installed at the target but rolled back by the health check is a failure', () async {
+    final updater = ota();
+    result = () {
+      installed = '51'; // the new package was installed...
+      status('rolled_back', version: '50'); // ...then failed its health check
+      return ProcessResult(1, 1, '', 'Updated player did not pass its event-loop health check');
+    };
+    await updater.run({'job': 'job-1', 'version': '51'}, supported: true);
+    expect(updater.job?['phase'], 'failed');
+
+    persisted('updated');
+    installed = '50';
+    status('rolled_back', version: '50');
+    final reloaded = ota();
+    await reloaded.load();
+    expect(reloaded.job?['phase'], 'failed');
+  });
+
+  test('an already current player settles as updated without a transaction', () async {
+    final updater = ota();
+    installed = '51';
+    result = () => ProcessResult(1, 0, 'up-to-date', '');
+    await updater.run({'job': 'job-1', 'version': '51'}, supported: true);
+    expect(updater.job?['phase'], 'updated');
   });
 
   test('failures, unsupported devices and repeated deliveries are reported once', () async {
     final updater = ota();
-    result = () => ProcessResult(1, 1, '', 'Update checksum mismatch');
+    result = () {
+      status('failed');
+      return ProcessResult(1, 1, '', 'Update checksum mismatch');
+    };
     await updater.run({'job': 'job-1', 'version': '51'}, supported: true);
     expect(updater.job?['phase'], 'failed');
     expect(updater.job?['detail'], 'Update checksum mismatch');
@@ -75,28 +116,58 @@ void main() {
     expect(updater.job?['detail'], 'Managed updates are not enabled on this device');
   });
 
-  test('a job interrupted by the player restart is settled from the device state', () async {
-    File('${root.path}/linux-ota.json').writeAsStringSync(jsonEncode(
-        {'job': 'job-1', 'target': '51', 'phase': 'installing', 'detail': '', 'started': 999990.0}));
+  test('after the update restarts the player, the job keeps being followed to the end', () async {
+    persisted('installing');
     installed = '51';
-    final upgraded = ota();
-    await upgraded.load();
-    expect(upgraded.job?['phase'], 'updated');
+    status('installing');
+    final restarted = ota();
+    await restarted.load();
+    expect(restarted.job?['phase'], 'installing'); // installed, health check still running
+    status('updated', timestamp: 1000090);
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+    expect(restarted.job?['phase'], 'updated');
+  });
 
-    File('${root.path}/linux-ota.json').writeAsStringSync(jsonEncode(
-        {'job': 'job-1', 'target': '51', 'phase': 'installing', 'detail': '', 'started': 999990.0}));
-    installed = '50';
-    status('rolled_back', 999995);
-    final rolledBack = ota();
-    await rolledBack.load();
-    expect(rolledBack.job?['phase'], 'failed');
+  test('a finished job left over from a restart does not block a new request', () async {
+    persisted('installing');
+    status('installing');
+    final updater = LinuxOta(
+      stateFile: '${root.path}/linux-ota.json',
+      statusFile: '${root.path}/update-status.json',
+      channelFile: '${root.path}/update-channel.json',
+      pollEvery: const Duration(hours: 1), // the watcher has not looked again yet
+      installedVersion: (_) async => installed,
+      compareVersions: (a, op, b) async => op == 'ge' ? _compare(a, b) >= 0 : _compare(a, b) > 0,
+      runUpdater: (arguments) async {
+        runs.add(arguments);
+        return result();
+      },
+      clock: () => now,
+    );
+    await updater.load();
+    expect(updater.job?['phase'], 'installing');
+    status('rolled_back', version: '50'); // ...and then it finished
+    result = () {
+      installed = '52';
+      status('updated', version: '52', timestamp: 1000100);
+      return ProcessResult(1, 0, 'updated', '');
+    };
+    await updater.run({'job': 'job-2', 'version': '52'}, supported: true);
+    expect(runs.length, 1);
+    expect(updater.job?['job'], 'job-2');
+    expect(updater.job?['phase'], 'updated');
+  });
 
-    File('${root.path}/linux-ota.json').writeAsStringSync(jsonEncode(
-        {'job': 'job-1', 'target': '51', 'phase': 'downloading', 'detail': '', 'started': 999990.0}));
-    status('installing', 999995);
-    final stillRunning = ota();
-    await stillRunning.load();
-    expect(stillRunning.job?['phase'], 'installing');
+  test('reports wait for the persisted job to load', () async {
+    persisted('updated');
+    installed = '51';
+    final updater = ota();
+    final reports = await Future.wait([
+      updater.report('0607c6', supported: true),
+      updater.report('0607c6', supported: true),
+    ]);
+    expect(reports.map((r) => r['job']).toList(), ['job-1', 'job-1']);
+    expect(reports.first['phase'], 'updated');
   });
 
   test('the CMS request and the hourly check never run the updater at the same time', () async {
@@ -105,9 +176,7 @@ void main() {
       stateFile: '${root.path}/linux-ota.json',
       runUpdater: (arguments) async {
         order.add('start ${arguments.length}');
-        if (arguments.length == 1) {
-          await Future<void>.delayed(const Duration(milliseconds: 50));
-        }
+        if (arguments.length == 1) await Future<void>.delayed(const Duration(milliseconds: 50));
         order.add('end ${arguments.length}');
         return ProcessResult(1, 0, 'up-to-date', '');
       },

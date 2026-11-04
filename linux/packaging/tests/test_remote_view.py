@@ -78,6 +78,13 @@ class RemoteProtocolTests(unittest.TestCase):
         self.assertEqual(signed['key'],self.remote.public_key)
         self.remote.private.public_key().verify(agent.un64(signed['signature']),signed['data'].encode(),padding.PKCS1v15(),hashes.SHA256())
         self.assertIsNone(self.remote.sign_ota('x'*4097))
+    def test_update_replies_echo_the_request_id_and_say_why_they_failed(self):
+        self.assertEqual(agent.ota_reply(self.remote,{'id':7,'ota_command':self.ota()})['id'],7)
+        self.assertEqual(agent.ota_reply(self.remote,{'id':8,'ota_command':self.ota()}),{'ota_rejected':'replayed','id':8})
+        self.assertEqual(agent.ota_reply(self.remote,{'id':9,'ota_command':self.ota(issued=1,job='old')}),{'ota_rejected':'stale','id':9})
+        signed=agent.ota_reply(self.remote,{'id':10,'ota_sign':'{}'})
+        self.assertEqual((signed['id'],signed['ota_signed']['data']),(10,'{}'))
+        self.assertEqual(agent.ota_reply(self.remote,{'id':'x','ota_sign':'x'*5000}),{'ota_rejected':'invalid','id':None})
     def test_input_requires_controller_and_recent_frame_geometry(self):
         with patch.object(self.remote,'geometry',return_value=(1024,600,'geometry')),patch.object(agent,'run') as run:
             self.remote.receive(self.command(input={'action':'click','x':0.5,'y':0.5,'frame_id':'missing'}))
