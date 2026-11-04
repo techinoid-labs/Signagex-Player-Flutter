@@ -134,6 +134,13 @@ jobs:
       - name: Install the package to prove it is well formed
         run: |
           sudo apt-get install -y "./dist/signagex-player_${{ steps.build_id.outputs.id }}_arm64.deb"
+          # Prove the installed player can resolve every shared library on a
+          # clean system: a bad bundled RUNPATH (build v51) installs fine and
+          # then exits 127 on every screen.
+          missing="$(ldd /opt/signagex-player/signagex-player | grep 'not found' || true)"
+          if [ -n "$missing" ]; then
+            echo "::error::The installed player cannot load these libraries:"; echo "$missing"; exit 1
+          fi
           test -x /usr/bin/signagex-player
           sudo apt-get remove -y signagex-player
 
