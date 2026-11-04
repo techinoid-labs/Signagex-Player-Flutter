@@ -2693,6 +2693,14 @@ class MqttViewModel extends ChangeNotifier {
         debugPrint(
             "Max retries ($_maxPairingRetries) reached for pairing check. Restarting app...");
         _pairingRetryCount = 0; // Reset counter
+        if (Platform.isLinux) {
+          // No app-restart channel on Linux, and relaunching the browser during
+          // a network outage only burns CPU: wait and check again instead.
+          _state = MqttState.connectionScreen;
+          notifyListeners();
+          Future.delayed(const Duration(seconds: 30), _checkPairingStatus);
+          return;
+        }
         // Restart the app to reset the flow
         await Future.delayed(const Duration(seconds: 2));
         await restartApp();
@@ -2751,6 +2759,8 @@ class MqttViewModel extends ChangeNotifier {
       await _channel.invokeMethod('com.example/restartApp');
     } on PlatformException catch (e) {
       print("Failed to restart app: ${e.message}");
+    } on MissingPluginException {
+      print("Failed to restart app: not supported on this platform");
     }
   }
 
