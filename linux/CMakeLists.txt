@@ -119,16 +119,8 @@ set_target_properties(${BINARY_NAME}
 
 # Generated plugin build rules, which manage building the plugins and adding
 # them to the application.
-# Patch the pinned CEF dependency before its sources are compiled. Fail closed
-# if upstream changes the load handlers so recovery is never silently disabled.
-find_package(Python3 REQUIRED COMPONENTS Interpreter)
-execute_process(
-  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/packaging/patch_cef_load_events.py"
-    "${CMAKE_CURRENT_SOURCE_DIR}/flutter/ephemeral/.plugin_symlinks/webview_cef/common/webview_handler.cc"
-  RESULT_VARIABLE CEF_LOAD_PATCH_RESULT)
-if(NOT CEF_LOAD_PATCH_RESULT EQUAL 0)
-  message(FATAL_ERROR "Unable to install CEF native load events")
-endif()
+# Native load events and paint gating are generated together below. Do not
+# mutate the shared pub cache before verifying its pinned source hashes.
 include(flutter/generated_plugins.cmake)
 
 # Keep the upstream pub cache intact. Generate reviewed Linux-only overrides
@@ -150,7 +142,8 @@ foreach(CEF_SOURCE IN LISTS CEF_PLUGIN_SOURCES)
   get_filename_component(CEF_SOURCE_NAME "${CEF_SOURCE}" NAME)
   if(CEF_SOURCE_NAME STREQUAL "webview_cef_plugin.cc" OR
      CEF_SOURCE_NAME STREQUAL "webview_plugin.cc" OR
-     CEF_SOURCE_NAME STREQUAL "webview_app.cc")
+     CEF_SOURCE_NAME STREQUAL "webview_app.cc" OR
+     CEF_SOURCE_NAME STREQUAL "webview_handler.cc")
     list(APPEND CEF_SAFE_SOURCES "${CEF_SAFE_DIR}/${CEF_SOURCE_NAME}")
   else()
     get_filename_component(CEF_SOURCE_ABS "${CEF_SOURCE}" ABSOLUTE

@@ -6,7 +6,8 @@ import 'package:webview_cef/webview_cef.dart' as cef;
 
 import '../utils/web_page_retry.dart';
 
-/// Native main-frame load events recover failures without probing live pages.
+/// Linux native overrides report main-frame load failures through onLoadEnd.
+/// Retry only confirmed failures; healthy live widgets are never polled/reloaded.
 class LinuxWebView extends StatefulWidget {
   final String url;
   const LinuxWebView({super.key, required this.url});
@@ -21,7 +22,6 @@ class _LinuxWebViewState extends State<LinuxWebView> {
   Timer? _timer;
   bool _checking = false;
   bool _failed = false;
-
   @override
   void initState() {
     super.initState();
@@ -40,9 +40,9 @@ class _LinuxWebViewState extends State<LinuxWebView> {
       if (!mounted) return;
       print('[WEB_RECOVERY] browser ready');
       _timer = Timer.periodic(const Duration(seconds: 5), (_) {
-        unawaited(_checkPage());
+        unawaited(_retryFailedPage());
       });
-
+      await _retryFailedPage();
     } catch (error) {
       print('[WEB_RECOVERY] browser initialization failed: $error');
     }
@@ -52,35 +52,33 @@ class _LinuxWebViewState extends State<LinuxWebView> {
     if (!mounted) return;
     if (url.startsWith('signagex-load-failed:')) {
       if (!_failed) {
-        print('[WEB_RECOVERY] main page failed; retry enabled');
-        unawaited(LinuxConfiguration.instance.event?.call(
-            'Web page connection failed; automatic retry active', 'warning') ?? Future.value());
+        print('[WEB_RECOVERY] failed page detected');
+        unawaited(LinuxConfiguration.instance.event?.call('Web page connection failed; automatic retry active', 'warning') ?? Future.value());
       }
-      _failed = true;
-    } else if (url == widget.url || url.startsWith('https://') ||
-        url.startsWith('http://') || url.startsWith('file:')) {
+      setState(() => _failed = true);
+      unawaited(_retryFailedPage());
+    } else {
       if (_failed) {
         print('[WEB_RECOVERY] page recovered');
-        unawaited(LinuxConfiguration.instance.event?.call(
-            'Web page recovered', 'info') ?? Future.value());
+        unawaited(LinuxConfiguration.instance.event?.call('Web page recovered', 'info') ?? Future.value());
       }
-      _failed = false;
+      if (_failed) setState(() => _failed = false);
       _retry.recovered();
     }
   }
 
-  Future<void> _checkPage() async {
-    // Native main-frame events drive recovery. Healthy pages need no JS probes
-    // or reloads; CEF's Chrome runtime does not guarantee evaluation callbacks.
+  Future<void> _retryFailedPage() async {
     if (!mounted || !_controller.value || _checking || !_failed) return;
     final now = DateTime.now();
     if (!_retry.shouldRetry(now)) return;
     _retry.attempted(now);
     _checking = true;
     try {
-      await _controller.loadUrl(widget.url).timeout(const Duration(seconds: 4));
-    } catch (_) {
-      // Failure remains active; the existing bounded backoff schedules retry.
+      print('[WEB_RECOVERY] retrying failed page');
+      await _controller.loadUrl(widget.url)
+          .timeout(const Duration(seconds: 4));
+    } catch (error) {
+      print('[WEB_RECOVERY] retry unavailable: $error');
     } finally {
       _checking = false;
     }
@@ -115,7 +113,26 @@ class _LinuxWebViewState extends State<LinuxWebView> {
   @override
   Widget build(BuildContext context) => ValueListenableBuilder<bool>(
     valueListenable: _controller,
-    builder: (_, ready, __) =>
+    builder: (_, ready, __) => ColoredBox(
+      color: Colors.black,
+      child: Stack(fit: StackFit.expand, children: [
         ready ? _controller.webviewWidget : _controller.loadingWidget,
+        if (_failed)
+          const Align(
+            alignment: Alignment.bottomRight,
+            child: Padding(
+              padding: EdgeInsets.all(8),
+              child: Material(
+                color: Colors.black87,
+                child: Padding(
+                  padding: EdgeInsets.all(8),
+                  child: Text('Web content unavailable · retrying',
+                    style: TextStyle(color: Colors.white, fontSize: 12)),
+                ),
+              ),
+            ),
+          ),
+      ]),
+    ),
   );
 }

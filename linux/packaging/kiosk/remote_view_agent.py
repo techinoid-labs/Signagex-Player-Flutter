@@ -107,6 +107,8 @@ class Remote:
                 if command.get('stream_id') == self.stream and command.get('command_id') in self.results:
                     self.ack(command, self.results[command['command_id']])
                 return False
+            # A delayed command may not restore an earlier controller lease.
+            if command['stream_id'] == self.stream and command['controller_epoch'] < self.epoch: return False
             next_key = self.unwrap(command['wrapped_key'])
             self.atomic(self.revision_file, str(int(command['revision'])).encode())
             self.revision = command['revision']
@@ -116,6 +118,8 @@ class Remote:
                 self.started, self.sequence, self.upload, self.download, self.dropped = self.monotonic(), 0, 0, 0, 0
             self.key = next_key
             self.download += len(compact(envelope))
+            if command['controller_epoch'] != self.epoch or command.get('controller') != self.controller:
+                self.frames.clear()
             self.epoch, self.controller = command['controller_epoch'], command.get('controller')
             self.deadline = self.monotonic()+max(0,min(30,(command['lease_until']-now)/1000))
             self.high = command.get('quality') == 'high'

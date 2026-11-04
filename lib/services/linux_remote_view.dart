@@ -22,10 +22,11 @@ class LinuxRemoteView {
         DateTime.now().difference(_lastAttempt!).inSeconds < 30) return;
     close();
     _lastAttempt = DateTime.now();
-    final installed = File('/opt/signagex-player/kiosk/remote_view_agent.py');
-    final development = File('linux/packaging/kiosk/remote_view_agent.py');
-    final script = installed.existsSync() ? installed : development;
-    if (!script.existsSync()) return;
+    final script = resolveRemoteViewAgent(Platform.resolvedExecutable);
+    if (script == null) {
+      await event?.call('Secure remote-view adapter missing from running bundle', 'warning');
+      return;
+    }
     try {
       _code = code;
       final process = await Process.start('python3', [script.path, code]);
@@ -108,4 +109,12 @@ class LinuxRemoteView {
     _process = null;
     _publicKey = null;
   }
+}
+
+/// Select the running bundle's adapter; never borrow one from another release.
+File? resolveRemoteViewAgent(String executable, {String developmentRoot = '.'}) {
+  final bundled = File('${File(executable).parent.path}/kiosk/remote_view_agent.py');
+  if (bundled.existsSync()) return bundled;
+  final development = File('$developmentRoot/linux/packaging/kiosk/remote_view_agent.py');
+  return development.existsSync() ? development : null;
 }

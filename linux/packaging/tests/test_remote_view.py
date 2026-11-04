@@ -100,6 +100,55 @@ class RemoteProtocolTests(unittest.TestCase):
         self.remote.receive(self.command())
         for name in ('identity.pem','revision'):
             self.assertEqual((pathlib.Path(self.temporary.name)/name).stat().st_mode & 0o777,0o600)
+    def test_viewer_handover_fences_old_controller_and_old_frame(self):
+        self.remote.receive(self.command())
+        self.remote.frames['before-handover']=(100,'g')
+        self.assertTrue(self.remote.receive(self.command(revision=2,controller_epoch=2,controller='second',session_id='second',command_id='handover')))
+        self.assertEqual(self.remote.frames,{})
+        self.assertFalse(self.remote.receive(self.command(revision=3,controller_epoch=1,command_id='old-owner',input={'action':'press_back'})))
+        with patch.object(self.remote,'geometry',return_value=(1024,600,'g')),patch.object(agent,'run') as run:
+            self.remote.receive(self.command(revision=4,controller_epoch=2,controller='second',session_id='viewer',command_id='observer',input={'action':'press_back'}))
+            run.assert_not_called()
+            self.remote.receive(self.command(revision=5,controller_epoch=2,controller='second',session_id='second',command_id='owner',input={'action':'press_back'}))
+            run.assert_called_once_with('xdotool','key','--clearmodifiers','alt+Left')
+    def test_last_viewer_leaving_stops_frames_and_reconnect_gets_new_stream(self):
+        self.remote.receive(self.command(viewers=2))
+        self.remote.frames['old']=(100,'g')
+        self.remote.receive(self.command(revision=2,viewers=0,command_id='leave'))
+        self.assertFalse(self.remote.active)
+        self.assertEqual(self.remote.frames,{})
+        self.assertTrue(self.remote.receive(self.command(revision=3,stream_id='reconnected',command_id='reconnect')))
+        self.assertTrue(self.remote.active)
+        self.assertEqual(self.remote.stream,'reconnected')
+    def test_rotation_invalidates_coordinates_and_normalized_edges_are_bounded(self):
+        self.remote.receive(self.command())
+        self.remote.frames['frame']=(100,'old-geometry')
+        with patch.object(self.remote,'geometry',return_value=(600,1024,'rotated')),patch.object(agent,'run') as run:
+            self.remote.receive(self.command(revision=2,command_id='rotated',input={'action':'click','x':1,'y':1,'frame_id':'frame'}))
+            run.assert_not_called()
+            self.assertEqual(self.open(self.output[-1]['payload'])['result'],'stale_frame')
+            self.remote.frames['new']=(100,'rotated')
+            self.remote.receive(self.command(revision=3,command_id='edges',input={'action':'click','x':1,'y':1,'frame_id':'new'}))
+            run.assert_called_once_with('xdotool','mousemove','--sync','599','1023','click','1')
+    def test_drag_and_long_press_release_the_mouse(self):
+        self.remote.receive(self.command())
+        self.remote.frames['frame']=(100,'g')
+        with patch.object(self.remote,'geometry',return_value=(1024,600,'g')),patch.object(agent,'run') as run,patch.object(agent.time,'sleep'):
+            self.remote.receive(self.command(revision=2,command_id='drag',input={'action':'scroll','hold':{'x':0,'y':0},'release':{'x':1,'y':1},'frame_id':'frame'}))
+            self.assertEqual(run.call_args.args,('xdotool','mouseup','1'))
+            self.assertEqual(self.open(self.output[-1]['payload'])['result'],'executed')
+            self.remote.receive(self.command(revision=3,command_id='hold',input={'action':'long_press','x':0.5,'y':0.5,'frame_id':'frame'}))
+            self.assertEqual(run.call_args.args,('xdotool','mouseup','1'))
+    def test_restart_requires_confirmation_and_home_uses_existing_window(self):
+        self.remote.receive(self.command())
+        with patch.object(self.remote,'geometry',return_value=(1024,600,'g')),patch.object(agent,'run',return_value='123') as run:
+            self.remote.receive(self.command(revision=2,command_id='no-confirm',input={'action':'restart_player'}))
+            run.assert_not_called()
+            self.remote.receive(self.command(revision=3,command_id='home',input={'action':'press_home'}))
+            self.assertEqual(run.call_args.args,('xdotool','windowactivate','--sync','123'))
+            self.remote.receive(self.command(revision=4,command_id='restart',input={'action':'restart_player','confirmed':True}))
+            self.assertIn('--on-active=1s',run.call_args.args)
+
     def test_reboot_is_honestly_reported_as_permission_required(self):
         with patch.object(self.remote,'geometry',return_value=(1024,600,'g')),patch.object(agent,'run') as run:
             self.remote.receive(self.command(input={'action':'reboot_device','confirmed':True}))

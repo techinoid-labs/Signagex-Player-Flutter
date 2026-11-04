@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'services/linux_configuration.dart';
+import 'utils/linux_video_options.dart';
 import 'services/linux_diagnostics.dart';
 // Prefixed: dart:ui re-declares several names (Color, Offset, Size, Rect,
 // TextDirection...) that flutter/material.dart also exports with its own
@@ -63,7 +64,7 @@ void main() async {
   if (Platform.isLinux) {
     LinuxDiagnostics.instance.start();
     await LinuxConfiguration.instance.start();
-    fvp.registerWith(options: {'platforms': ['linux'], if (LinuxConfiguration.instance.safeVideo) 'video.decoders': ['FFmpeg']});
+    fvp.registerWith(options: {...linuxVideoOptions(Platform.environment), if (LinuxConfiguration.instance.safeVideo) 'video.decoders': ['FFmpeg']});
     await cef.WebviewManager().initialize();
   }
 

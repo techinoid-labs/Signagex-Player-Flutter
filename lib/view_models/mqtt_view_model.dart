@@ -2715,7 +2715,7 @@ class MqttViewModel extends ChangeNotifier {
             (interactivity) => interactivity.keyPress
                 .any((key) => key.toUpperCase() == _key!.toUpperCase())) ??
         false;
-    print("this is key data $keydata");
+    print('MQTT_LOGS:: Key event received');
     if (keyFound) {
       print("I am in interactivity by key");
     } else {
