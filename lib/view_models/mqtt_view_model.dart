@@ -1,5 +1,7 @@
 import '../services/linux_remote_view.dart';
 import '../services/linux_ota.dart';
+import '../services/linux_network.dart';
+import '../services/linux_hardware.dart';
 import 'dart:async';
 import '../services/linux_configuration.dart';
 import '../services/linux_telemetry.dart';
@@ -96,6 +98,9 @@ class MqttViewModel extends ChangeNotifier {
   final LinuxRemoteView _secureRemote = LinuxRemoteView();
   String? _lastOtaReport;
   Map? _signedOtaReport;
+  String? _lastNetworkReport;
+  Map? _signedNetworkReport;
+  DateTime? _networkReportSigned;
   DateTime? _lastLinuxUpdateCheck;
   Timer? _linuxManagementTimer;
   bool _linuxManagementBusy = false;
@@ -117,6 +122,8 @@ class MqttViewModel extends ChangeNotifier {
     LinuxOta.instance.event = config.event;
     LinuxOta.instance.onChange = () => unawaited(_publishLinuxOtaReport(force: true));
     unawaited(LinuxOta.instance.load());
+    LinuxNetwork.instance.event = config.event;
+    LinuxNetwork.instance.onChange = () => unawaited(_publishLinuxNetworkReport(force: true));
     _mqttClientService.onRemoteMessageReceived = _secureRemote.receive;
     final triggers = LinuxInteractivity.instance;
     triggers.event = config.event;
@@ -154,9 +161,9 @@ class MqttViewModel extends ChangeNotifier {
       final config = LinuxConfiguration.instance;
       if (_topic.isNotEmpty) await _secureRemote.start(_topic);
       final managed = storeState == true && _storedApiResponse?['paired'] == true;
-      devicesinfo['capabilities'] = config.capabilities;
-      if (_signedOtaReport != null) (devicesinfo['capabilities'] as Map)['linux_ota'] = _signedOtaReport;
+      devicesinfo['capabilities'] = _linuxCapabilities();
       if (managed) await _publishLinuxOtaReport();
+      if (managed) await _publishLinuxNetworkReport();
       await _refreshLinuxNetworkInfo();
       if (managed && _topic.isNotEmpty && _mqttClientService.isConnected) await LinuxDiagnostics.instance.flush((message)=>_mqttClientService.publishSyncAck(_topic,message));
       final updateStatus = File('/var/lib/signagex-player/update-status.json');
@@ -1273,7 +1280,9 @@ class MqttViewModel extends ChangeNotifier {
       if (device == null) return;
       final addresses = jsonDecode(await LinuxConfiguration.runCommand('ip',['-j','address','show'])) as List;
       devicesinfo['mac_address']['macAddress'] = addresses.where((entry)=>entry['link_type']=='ether').map((entry)=>{'interface':entry['ifname'],'mac':entry['address']}).toList();
-      devicesinfo['network_name'] = await LinuxConfiguration.runCommand('nmcli',['-g','GENERAL.CONNECTION','device','show',device]);
+      // The Wi-Fi name, or "Ethernet": NetworkManager profile names mean nothing in the CMS.
+      final primary = (await LinuxNetwork.instance.status())['primary'] as Map;
+      devicesinfo['network_name'] = primary['type'] == 'wifi' ? primary['ssid'] : primary['type'] == 'ethernet' ? 'Ethernet' : '';
       devicesinfo['last_ip_address'] = route.first['prefsrc']?.toString() ?? '';
     } catch (error) { _debugLog('Linux network telemetry: $error'); }
   }
@@ -1360,8 +1369,13 @@ class MqttViewModel extends ChangeNotifier {
     devicesinfo['mac_address']['macAddress'][0]['mac'] =
         macAddress.isNotEmpty ? macAddress : machineId;
     devicesinfo['ram_info'] = systemInfo['InstalledRAM'] ?? '';
+    // The hardware's own make and model (e.g. "Azulle" / "Access4"); the
+    // hostname only when the firmware does not say.
+    final (manufacturer, model) = LinuxHardware.current();
+    devicesinfo['hardware_details']['manufacturer'] = manufacturer;
+    devicesinfo['hardware_details']['brand'] = manufacturer;
     devicesinfo['hardware_details']['model'] =
-        systemInfo['DeviceName'] ?? 'Linux';
+        model.isNotEmpty ? model : systemInfo['DeviceName'] ?? 'Linux';
     devicesinfo['hardware_details']['device_id'] =
         machineId.isNotEmpty ? machineId : macAddress;
     devicesinfo['storage_info']['total_storage'] =
@@ -2391,9 +2405,15 @@ class MqttViewModel extends ChangeNotifier {
     devicesinfo['action'] = 'player_details';
     devicesinfo['last_seen'] = DateTime.now().toUtc().toIso8601String();
     devicesinfo['player_version'] = 'Version: ${const String.fromEnvironment('APP_BUILD_ID', defaultValue: 'linux-config-dev')}';
-    devicesinfo['capabilities'] = LinuxConfiguration.instance.capabilities;
-    if (_signedOtaReport != null) (devicesinfo['capabilities'] as Map)['linux_ota'] = _signedOtaReport;
+    devicesinfo['capabilities'] = _linuxCapabilities();
   }
+
+  /// Capabilities plus the latest device-signed CMS reports (update, network).
+  Map<String, dynamic> _linuxCapabilities() => {
+        ...LinuxConfiguration.instance.capabilities,
+        if (_signedOtaReport != null) 'linux_ota': _signedOtaReport,
+        if (_signedNetworkReport != null) 'linux_network': _signedNetworkReport,
+      };
 
   /// Publish the device-signed update report when it changes (or on demand),
   /// not on every tick: thousands of screens should not add MQTT chatter.
@@ -2411,11 +2431,45 @@ class MqttViewModel extends ChangeNotifier {
       _updateLinuxDisplayInfo();
       // Set directly: the display refresh above returns early before a window exists.
       devicesinfo['action'] = 'player_details';
-      devicesinfo['capabilities'] = {...config.capabilities, 'linux_ota': signed};
+      devicesinfo['capabilities'] = _linuxCapabilities();
       if (storeState == true && _storedApiResponse?['paired'] == true && _mqttClientService.isConnected) {
         _mqttClientService.publish(_topic, jsonEncode(devicesinfo), retain: false);
       }
     } catch (error) { _debugLog('Linux update report: $error'); }
+  }
+
+  /// Publish the device-signed network report when it changes (signal in
+  /// 10-point steps) and at least every 15 minutes, never on every tick.
+  Future<void> _publishLinuxNetworkReport({bool force = false}) async {
+    if (!Platform.isLinux || _topic.isEmpty) return;
+    try {
+      final report = await LinuxNetwork.instance.report(_topic);
+      final key = LinuxNetwork.fingerprint(report);
+      final fresh = _networkReportSigned != null && DateTime.now().difference(_networkReportSigned!) < const Duration(minutes: 15);
+      if (!force && key == _lastNetworkReport && _signedNetworkReport != null && fresh) return;
+      final signed = (await _secureRemote.signOta(jsonEncode({...report, 'reported': DateTime.now().millisecondsSinceEpoch}))).value;
+      if (signed == null) return;
+      _lastNetworkReport = key;
+      _signedNetworkReport = signed;
+      _networkReportSigned = DateTime.now();
+      _updateLinuxDisplayInfo();
+      devicesinfo['action'] = 'player_details';
+      devicesinfo['capabilities'] = _linuxCapabilities();
+      if (storeState == true && _storedApiResponse?['paired'] == true && _mqttClientService.isConnected) {
+        _mqttClientService.publish(_topic, jsonEncode(devicesinfo), retain: false);
+      }
+    } catch (error) { _debugLog('Linux network report: $error'); }
+  }
+
+  /// CMS Wi-Fi change: verified (and its password decrypted) by the adapter.
+  Future<void> _handleLinuxNetworkCommand(Map command) async {
+    final reply = await _secureRemote.verifyNetwork(command);
+    final verified = reply.value;
+    if (verified == null) {
+      await LinuxConfiguration.instance.event?.call('Network change request rejected: ${reply.reason}', 'warning');
+      return;
+    }
+    await LinuxNetwork.instance.run(verified);
   }
 
   /// CMS "Update player": verified by the adapter, then run immediately.
@@ -2645,6 +2699,14 @@ class MqttViewModel extends ChangeNotifier {
         debugPrint(
             "Max retries ($_maxPairingRetries) reached for pairing check. Restarting app...");
         _pairingRetryCount = 0; // Reset counter
+        if (Platform.isLinux) {
+          // No app-restart channel on Linux, and relaunching the browser during
+          // a network outage only burns CPU: wait and check again instead.
+          _state = MqttState.connectionScreen;
+          notifyListeners();
+          Future.delayed(const Duration(seconds: 30), _checkPairingStatus);
+          return;
+        }
         // Restart the app to reset the flow
         await Future.delayed(const Duration(seconds: 2));
         await restartApp();
@@ -2703,6 +2765,8 @@ class MqttViewModel extends ChangeNotifier {
       await _channel.invokeMethod('com.example/restartApp');
     } on PlatformException catch (e) {
       print("Failed to restart app: ${e.message}");
+    } on MissingPluginException {
+      print("Failed to restart app: not supported on this platform");
     }
   }
 
@@ -2851,6 +2915,10 @@ class MqttViewModel extends ChangeNotifier {
       return;
     }
 
+    if (Platform.isLinux && jsonObj['action'] == LinuxNetwork.protocol) {
+      if (jsonObj['data'] is String && jsonObj['signature'] is String) unawaited(_handleLinuxNetworkCommand(jsonObj as Map));
+      return;
+    }
     if (Platform.isLinux && jsonObj['action'] == LinuxOta.protocol) {
       if (jsonObj['data'] is String && jsonObj['signature'] is String) unawaited(_handleLinuxOtaCommand(jsonObj as Map));
       return;

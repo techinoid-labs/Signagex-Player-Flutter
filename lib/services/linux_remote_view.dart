@@ -46,7 +46,7 @@ class LinuxRemoteView {
         if (line.length > 3 * 1024 * 1024 || _process != process) return;
         try {
           final value = jsonDecode(line) as Map;
-          if (value.containsKey('ota_signed') || value.containsKey('ota_verified') || value.containsKey('ota_rejected')) {
+          if (value.containsKey('ota_signed') || value.containsKey('ota_verified') || value.containsKey('network_verified') || value.containsKey('ota_rejected')) {
             handleOtaReply(value);
           } else if (value['ready'] == true) {
             _publicKey = value['device_key'] as String;
@@ -122,6 +122,11 @@ class LinuxRemoteView {
   /// The verified job of a server-signed CMS update command, or why it was refused.
   Future<OtaReply> verifyOta(Map envelope) => _otaRequest('ota_verified', {
         'ota_command': {'data': envelope['data'], 'signature': envelope['signature']}
+      });
+
+  /// The verified (and password-decrypted) job of a server-signed CMS Wi-Fi command.
+  Future<OtaReply> verifyNetwork(Map envelope) => _otaRequest('network_verified', {
+        'network_command': {'data': envelope['data'], 'signature': envelope['signature']}
       });
 
   void _enabled() => _write({'enabled': allowed?.call() == true});

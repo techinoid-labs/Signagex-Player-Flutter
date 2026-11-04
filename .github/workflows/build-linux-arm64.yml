@@ -69,6 +69,8 @@ jobs:
           cp linux/packaging/pubspec.lock pubspec.lock
           cp linux/packaging/pubspec_overrides.yaml pubspec_overrides.yaml
           flutter pub get --enforce-lockfile
+          # Pin the bundled mdk video SDK (fvp otherwise ships SourceForge nightly).
+          linux/packaging/pin_mdk_sdk.sh arm64
 
       - name: Compute build id
         id: build_id
