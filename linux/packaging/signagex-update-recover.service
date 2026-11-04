@@ -1,0 +1,12 @@
+[Unit]
+Description=Recover an interrupted SignageX player update
+After=local-fs.target
+Before=display-manager.service
+ConditionPathExists=/var/lib/signagex-player/update-status.json
+
+[Service]
+Type=oneshot
+ExecStart=/usr/lib/signagex-player/update-player --recover
+
+[Install]
+WantedBy=multi-user.target

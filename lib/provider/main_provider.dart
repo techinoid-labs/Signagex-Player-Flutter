@@ -1,4 +1,8 @@
 import 'package:flutter/material.dart';
+import '../widgets/linux_configured_surface.dart';
+import '../widgets/linux_trigger_surface.dart';
+import '../services/linux_interactivity.dart';
+import 'dart:io';
 import 'package:flutter/services.dart';
 
 import 'package:provider/provider.dart';
@@ -61,12 +65,12 @@ class _MqttProviderState extends State<MqttProvider> {
       ],
       child: Consumer<MqttViewModel>(
         builder: (context, viewModel, child) {
-          return RawKeyboardListener(
+          return Focus(
             focusNode: _focusNode,
-            onKey: _onKey,
+            onKeyEvent: (_,event) => Platform.isLinux && event is KeyDownEvent && LinuxInteractivity.instance.key(event.logicalKey.keyLabel,consumeOnly:true) ? KeyEventResult.handled : KeyEventResult.ignored,
             child: GestureDetector(
               onTapUp: _onTap,
-              child: _getScreenForState(viewModel.state),
+              child: LinuxConfiguredSurface(applySchedule: [MqttState.campaignScreen,MqttState.playlistScreen,MqttState.noContent].contains(viewModel.state),child: Platform.isLinux ? LinuxTriggerSurface(child: _getScreenForState(viewModel.state)) : _getScreenForState(viewModel.state)),
             ),
           );
         },
@@ -76,6 +80,7 @@ class _MqttProviderState extends State<MqttProvider> {
 
   void _onKey(RawKeyEvent event) {
     if (event is RawKeyDownEvent) {
+      if (Platform.isLinux) LinuxInteractivity.instance.key(event.logicalKey.keyLabel);
       print("Key pressed: ${event.logicalKey.debugName}");
     }
   }

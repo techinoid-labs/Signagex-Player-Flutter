@@ -24,7 +24,10 @@
 /// Lives in its own file rather than beside one of the switches so both can
 /// use it without importing each other's widget tree, and so it can be
 /// tested without pulling in the webview and video plugins.
+bool disableConfiguredTransitions = false;
+
 String normalizeTransitionName(String? raw) {
+  if (disableConfiguredTransitions) return 'none';
   final key = (raw ?? '')
       .trim()
       .toLowerCase()

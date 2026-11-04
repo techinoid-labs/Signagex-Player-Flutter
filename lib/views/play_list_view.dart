@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math';
+import '../widgets/linux_web_view.dart';
+import '../services/linux_playback_gate.dart';
 
 import 'package:flutter/material.dart';
 
@@ -329,7 +331,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
   void _initializeNextVideo(Media nextMedia) {
     print("[LOG] Initializing video: ${nextMedia.mediaUrl}");
-    _nextController = VideoPlayerController.file(File(nextMedia.mediaUrl))
+    _nextController = _gatePlaylistVideo(VideoPlayerController.file(File(nextMedia.mediaUrl)))
       ..initialize().then((_) {
         if (_nextController!.value.isInitialized) {
           int videoDuration = int.tryParse(nextMedia.settings.duration) ??
@@ -380,6 +382,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   void dispose() {
     _timer.cancel();
     _isDisposed = true;
+    LinuxPlaybackGate.instance.remove(_nextController);
     _nextController?.dispose();
     super.dispose();
   }
@@ -654,12 +657,13 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     // Dispose any previous controller before re-initializing
     if (_controller != null) {
       try {
+        LinuxPlaybackGate.instance.remove(_controller);
         _controller!.dispose();
       } catch (_) {}
       _controller = null;
     }
 
-    _controller = VideoPlayerController.file(file)
+    _controller = _gatePlaylistVideo(VideoPlayerController.file(file))
       ..initialize().then(
         (_) {
           if (!mounted || _controller == null) return;
@@ -743,6 +747,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
     if (oldWidget.filePath != widget.filePath) {
       if (_controller != null) {
         _controller!.removeListener(_checkVideoEnd);
+        LinuxPlaybackGate.instance.remove(_controller);
         _controller!.dispose();
         _controller = null;
       }
@@ -776,7 +781,8 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   void dispose() {
     if (_controller != null) {
       _controller!.removeListener(_checkVideoEnd);
-      _controller!.dispose();
+      LinuxPlaybackGate.instance.remove(_controller);
+        _controller!.dispose();
     }
     super.dispose();
   }
@@ -861,6 +867,8 @@ class _WBViewWidgetState extends State<WBViewWidget> {
       targetUrl = 'file://${widget.media}';
     }
 
+    if (Platform.isLinux) return LinuxWebView(url: targetUrl);
+
     return SizedBox.expand(
       child: Column(
         key: ValueKey(widget.media),
@@ -891,4 +899,9 @@ class _WBViewWidgetState extends State<WBViewWidget> {
       ),
     );
   }
+}
+
+VideoPlayerController _gatePlaylistVideo(VideoPlayerController controller) {
+  LinuxPlaybackGate.instance.register(controller);
+  return controller;
 }

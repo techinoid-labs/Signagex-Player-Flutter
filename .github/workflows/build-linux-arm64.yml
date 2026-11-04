@@ -4,7 +4,7 @@ name: Build Linux ARM64
 on:
   workflow_dispatch:
   push:
-    branches: [linux]
+    branches: [linux, perf/linux-browser-size]
     paths:
       - 'lib/**'
       - 'linux/**'
@@ -36,9 +36,9 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y \
-            clang cmake ninja-build pkg-config \
+            clang cmake ninja-build pkg-config python3-cryptography python3-pil \
             libgtk-3-dev liblzma-dev libstdc++-12-dev \
-            desktop-file-utils file xdotool
+            desktop-file-utils file xdotool scrot libva2 libva-drm2 libva-x11-2 libvdpau1
           sudo apt-get install -y \
             libpulse0 libasound2 \
             libnss3 libnspr4 \
@@ -65,7 +65,12 @@ jobs:
         run: flutter config --enable-linux-desktop
 
       - name: Install dependencies
-        run: flutter pub get
+        run: |
+          cp linux/packaging/pubspec.lock pubspec.lock
+          cp linux/packaging/pubspec_overrides.yaml pubspec_overrides.yaml
+          flutter pub get --enforce-lockfile
+          # Pin the bundled mdk video SDK (fvp otherwise ships SourceForge nightly).
+          linux/packaging/pin_mdk_sdk.sh arm64
 
       - name: Compute build id
         id: build_id
@@ -93,6 +98,10 @@ jobs:
         run: |
           flutter analyze --no-fatal-warnings --no-fatal-infos
           flutter test
+          python3 -m unittest discover -s linux/packaging/tests -v
+          clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
+            linux/cef_safety/tests/page_frame_gate_test.cc -o /tmp/cef-page-gate-test
+          /tmp/cef-page-gate-test
 
       - name: Build production
         run: flutter build linux --release --dart-define=APP_BUILD_ID=${{ steps.build_id.outputs.id }}
@@ -127,6 +136,13 @@ jobs:
       - name: Install the package to prove it is well formed
         run: |
           sudo apt-get install -y "./dist/signagex-player_${{ steps.build_id.outputs.id }}_arm64.deb"
+          # Prove the installed player can resolve every shared library on a
+          # clean system: a bad bundled RUNPATH (build v51) installs fine and
+          # then exits 127 on every screen.
+          missing="$(ldd /opt/signagex-player/signagex-player | grep 'not found' || true)"
+          if [ -n "$missing" ]; then
+            echo "::error::The installed player cannot load these libraries:"; echo "$missing"; exit 1
+          fi
           test -x /usr/bin/signagex-player
           sudo apt-get remove -y signagex-player
 

@@ -1,0 +1,216 @@
+#!/usr/bin/python3
+"""Root-owned, argument-free updater. Only the packaged release channel is trusted."""
+import hashlib, json, os, pathlib, pwd, random, shutil, subprocess, tempfile, time, urllib.parse, urllib.request
+
+CONFIG = pathlib.Path('/usr/lib/signagex-player/update-channel.json')
+CACHE = pathlib.Path('/var/cache/signagex-player')
+MAX_BYTES = 3 * 1024 ** 3
+ATTEMPTS = pathlib.Path('/var/lib/signagex-player/update-attempts.json')
+
+def run(*args):
+    return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
+
+def trusted_url(url, hosts):
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme != 'https' or parsed.hostname not in hosts or parsed.username or parsed.password or parsed.port not in (None,443):
+        raise ValueError('Untrusted update URL')
+    return url
+
+class RestrictedRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        trusted_url(newurl, self.hosts)
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+def download(url, destination, hosts):
+    handler = RestrictedRedirect(); handler.hosts = hosts
+    opener = urllib.request.build_opener(handler)
+    digest = hashlib.sha256(); size = 0
+    with opener.open(trusted_url(url, hosts), timeout=30) as response, open(destination,'wb') as output:
+        while True:
+            block = response.read(1024*1024)
+            if not block: break
+            size += len(block)
+            if size > MAX_BYTES: raise ValueError('Update exceeds size limit')
+            digest.update(block); output.write(block)
+    return digest.hexdigest()
+
+def debian_version(build):
+    """The same normalization used by make_deb.sh, for both architectures."""
+    if not isinstance(build, str) or not build:
+        return None
+    value = build[1:] if build.startswith('v') else build
+    if not value:
+        return None
+    return value if value[0].isdigit() else '0.' + value
+
+def healthy_release(health, current_pid, version, now):
+    import math
+    if not isinstance(health, dict) or current_pid <= 0:
+        return False
+    timestamp = health.get('timestamp')
+    if isinstance(timestamp, bool) or not isinstance(timestamp, (int, float)) or not math.isfinite(timestamp):
+        return False
+    return (type(health.get('pid')) is int and health['pid'] == current_pid
+        and 0 <= now - timestamp < 20
+        and debian_version(health.get('build')) == version)
+
+def update_status(status, version=''):
+    directory = pathlib.Path('/var/lib/signagex-player')
+    directory.mkdir(parents=True,exist_ok=True)
+    temporary = directory/'update-status.json.tmp'
+    temporary.write_text(json.dumps({'version':version,'status':status,'timestamp':time.time()}))
+    temporary.replace(directory/'update-status.json')
+
+def failure_state(version):
+    try: state = json.loads(ATTEMPTS.read_text()[:4096])
+    except (OSError, ValueError): return 0, 0.0
+    if not isinstance(state, dict) or state.get('version') != version: return 0, 0.0
+    failures, retry = state.get('failures'), state.get('next')
+    if type(failures) is not int or isinstance(retry, bool) or not isinstance(retry, (int, float)): return 0, 0.0
+    return failures, float(retry)
+
+def record_failure(version, now):
+    """Back off per release: 1h, 2h, 4h ... capped at 24h, with +/-20% jitter so a
+    fleet that failed together does not retry (and re-download) in lockstep."""
+    failures = failure_state(version)[0] + 1
+    delay = min(3600 * 2 ** min(failures - 1, 5), 86400) * random.uniform(0.8, 1.2)
+    ATTEMPTS.parent.mkdir(parents=True, exist_ok=True)
+    temporary = ATTEMPTS.with_name(ATTEMPTS.name + '.tmp')
+    temporary.write_text(json.dumps({'version':version,'failures':failures,'next':now+delay}))
+    temporary.replace(ATTEMPTS)
+
+def clear_failures():
+    try: ATTEMPTS.unlink()
+    except FileNotFoundError: pass
+
+def recover_interrupted_update():
+    status = pathlib.Path('/var/lib/signagex-player/update-status.json')
+    if status.exists() and json.loads(status.read_text()).get('status') == 'installing':
+        rollback = CACHE/'rollback.deb'
+        if not rollback.exists(): raise ValueError('Rollback installer missing')
+        config = json.loads(CONFIG.read_text())
+        if run('dpkg-deb','-f',str(rollback),'Package') != config['package']: raise ValueError('Wrong rollback package')
+        run('dpkg','-i',str(rollback))
+        update_status('rolled_back')
+
+def main():
+    if os.geteuid() == 0 and __import__('sys').argv[1:] == ['--recover']:
+        import fcntl
+        CACHE.mkdir(mode=0o700,parents=True,exist_ok=True)
+        with open(CACHE/'update.lock','a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            recover_interrupted_update()
+        return
+    arguments = __import__('sys').argv[1:]
+    # '--now' is the only argument: an operator asked from the CMS, so a release
+    # that failed earlier is retried immediately instead of waiting out its backoff.
+    if os.geteuid() != 0 or arguments not in ([], ['--now']):
+        raise ValueError('Updater requires its installed policy and accepts no arguments')
+    uid = int(os.environ.get('PKEXEC_UID', '0'))
+    if uid < 1000: raise ValueError('No graphical player user')
+    # An updater launched by the player shares its systemd control group.
+    # Run the transaction as a system service so restarting the player cannot
+    # kill the installer or its rollback/health check halfway through.
+    if os.environ.get('SIGNAGEX_UPDATE_SERVICE') != '1':
+        subprocess.check_call(['systemd-run', '--unit=signagex-managed-update',
+            '--collect', '--wait', '--property=Type=exec',
+            '--setenv=PKEXEC_UID='+str(uid), '--setenv=SIGNAGEX_UPDATE_SERVICE=1']
+            + (['--setenv=SIGNAGEX_UPDATE_NOW=1'] if arguments else [])
+            + ['/usr/lib/signagex-player/update-player'])
+        return
+    user = pwd.getpwuid(uid).pw_name
+    config = json.loads(CONFIG.read_text())
+    api = trusted_url(config['manifest'], {'api.signagex.ai','signagexai.com','stage.signagexai.com'})
+    CACHE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    import fcntl
+    with open(CACHE/'update.lock','w') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        with tempfile.TemporaryDirectory(prefix='download-', dir=CACHE) as temporary:
+            temporary = pathlib.Path(temporary)
+            metadata = temporary/'manifest.json'
+            download(api, metadata, {urllib.parse.urlsplit(api).hostname})
+            release = json.loads(metadata.read_text())
+            if release.get('platform') != config['platform']: raise ValueError('Wrong release architecture')
+            digest = release.get('sha256','')
+            if len(digest) != 64 or any(c not in '0123456789abcdef' for c in digest): raise ValueError('Missing release checksum')
+            # The feed may carry the CI build id ("v15") rather than the package
+            # Version ("15"); compare and verify in Debian form or "v15" sorts above every number.
+            version = debian_version(release.get('version'))
+            if version is None: raise ValueError('Missing release version')
+            package = config['package']
+            installed = run('dpkg-query','-W','-f=${Version}',package)
+            if subprocess.call(['dpkg','--compare-versions',version,'gt',installed]) != 0:
+                print('up-to-date'); return
+            # A release that already failed on this device is retried on a backoff
+            # schedule instead of being re-downloaded on every hourly check.
+            operator = os.environ.get('SIGNAGEX_UPDATE_NOW') == '1'
+            if not operator and time.time() < failure_state(version)[1]:
+                print('deferred'); return
+            try:
+                installing = False
+                update_status('downloading',version)
+                candidate = temporary/'candidate.deb'
+                actual = download(release['downloadUrl'], candidate, {'norwin.sfo3.digitaloceanspaces.com'})
+                if actual != digest: raise ValueError('Update checksum mismatch')
+                if run('dpkg-deb','-f',str(candidate),'Architecture') != config['architecture'] or run('dpkg-deb','-f',str(candidate),'Package') != package:
+                    raise ValueError('Wrong update package')
+                if run('dpkg-deb','-f',str(candidate),'Version') != version:
+                    raise ValueError('Manifest/package version mismatch')
+                # Build an exact rollback installer from the currently installed files.
+                if shutil.disk_usage(CACHE).free < candidate.stat().st_size*3 + 512*1024*1024: raise ValueError('Insufficient space for safe update and rollback')
+                previous = temporary/'previous'; previous.mkdir()
+                for entry in run('dpkg-query','-L',package).splitlines():
+                    path = pathlib.Path(entry)
+                    if not path.is_absolute() or str(path) == '/.': continue
+                    target = previous/str(path).lstrip('/')
+                    if path.is_symlink():
+                        target.parent.mkdir(parents=True,exist_ok=True); target.symlink_to(os.readlink(path))
+                    elif path.is_file():
+                        target.parent.mkdir(parents=True,exist_ok=True); shutil.copy2(path,target)
+                    elif path.is_dir(): target.mkdir(parents=True,exist_ok=True)
+                control = previous/'DEBIAN'; control.mkdir(exist_ok=True)
+                status = run('dpkg-query','-s',package)
+                control.joinpath('control').write_text('\n'.join(line for line in status.splitlines() if not line.startswith(('Status:','Config-Version:','Conffiles:')) and not line.startswith(' /'))+'\n')
+                for name in ('preinst','postinst','prerm','postrm','conffiles'):
+                    original = pathlib.Path('/var/lib/dpkg/info')/(package+'.'+name)
+                    if original.exists(): shutil.copy2(original,control/name)
+                rollback = CACHE/'rollback.deb'
+                run('dpkg-deb','--build','--root-owner-group',str(previous),str(rollback))
+                restart = ['runuser','-u',user,'--','env',f'XDG_RUNTIME_DIR=/run/user/{uid}','systemctl','--user']
+                installing = True
+                update_status('installing',version)
+                try:
+                    run('apt-get','install','-y',str(candidate))
+                    installer = '/opt/'+package+'/kiosk/install-user-service.sh'
+                    run('runuser','-u',user,'--','env',f'XDG_RUNTIME_DIR=/run/user/{uid}',installer)
+                    run(*restart,'restart','signagex-player.service')
+                    healthy = False
+                    health_file = pathlib.Path(pwd.getpwuid(uid).pw_dir)/'.local/share/signagex-player/health.json'
+                    for attempt in range(18):
+                        time.sleep(5)
+                        try:
+                            health = json.loads(health_file.read_text()[:4096])
+                            current_pid = int(run(*restart,'show','signagex-player.service','-p','MainPID','--value'))
+                            if healthy_release(health, current_pid, version, time.time()):
+                                run(*restart,'is-active','signagex-player.service'); healthy = True; break
+                        except (OSError, ValueError, subprocess.CalledProcessError): pass
+                    if not healthy: raise ValueError('Updated player did not pass its event-loop health check')
+                except Exception:
+                    run('apt-get','install','-y','--allow-downgrades',str(rollback))
+                    run(*restart,'restart','signagex-player.service')
+                    update_status('rolled_back',installed)
+                    raise
+                clear_failures()
+                update_status('updated',version)
+                try: print('updated')
+                except BrokenPipeError: pass
+            except Exception:
+                record_failure(version, time.time())
+                if not installing: update_status('failed',version)
+                raise
+
+if __name__ == '__main__':
+    try: main()
+    except Exception as error:
+        print(str(error)[:300], file=__import__('sys').stderr)
+        raise SystemExit(1)

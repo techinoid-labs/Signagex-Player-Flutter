@@ -1,3 +1,4 @@
+import '../widgets/linux_configured_surface.dart';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
@@ -71,7 +72,7 @@ class PlayerPairingScreen extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Image.asset(
+        ConfiguredPlayerLogo(fallback: Image.asset(
           'assets/images/Logo.png',
           width: 160,
           height: 48,
@@ -79,7 +80,7 @@ class PlayerPairingScreen extends StatelessWidget {
           color: Colors.white,
           fit: BoxFit.contain,
           semanticLabel: 'SignageX',
-        ),
+        )),
         SizedBox(height: compact ? 20 : 36),
         const Text(
           'Let’s connect\nyour screen.',

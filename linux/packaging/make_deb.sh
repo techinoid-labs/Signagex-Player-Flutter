@@ -57,6 +57,28 @@ trap 'rm -rf "$ROOT"' EXIT
 
 mkdir -p "$ROOT$INSTALL_DIR" "$ROOT/usr/bin" "$ROOT/usr/share/applications" "$ROOT/DEBIAN"
 cp -R "$BUNDLE/." "$ROOT$INSTALL_DIR/"
+# Work on the package copy, never the original CI bundle.
+python3 linux/packaging/trim_browser.py "$ROOT$INSTALL_DIR"
+
+# --- bundled library search paths ------------------------------------------
+# Bundled libraries find each other through their own RUNPATH ($ORIGIN = lib/),
+# not the player's: RUNPATH is not inherited. The mdk video SDK fetched at build
+# time once shipped "$:$/lib:..." with ORIGIN stripped, so libmdk could not find
+# lib/libc++.so.1 and the player exited 127 on a clean system (build v51).
+# Any RUNPATH entry using "$" without ORIGIN is unusable; point it at lib/.
+for library in "$ROOT$INSTALL_DIR"/lib/*.so*; do
+  [ -f "$library" ] && [ ! -L "$library" ] || continue
+  runpath="$(readelf -d "$library" 2>/dev/null | sed -n 's/.*(\(RUN\)\{0,1\}PATH).*\[\(.*\)\]$/\2/p' | head -n 1)"
+  case "$runpath" in
+    *'$'*) ;;
+    *) continue ;;
+  esac
+  if printf '%s' "$runpath" | tr ':' '\n' | grep '\$' | grep -qvE '^(\$ORIGIN|\$\{ORIGIN\})(/|$)'; then
+    command -v patchelf >/dev/null || { echo "patchelf is required to repair the RUNPATH of $(basename "$library") ($runpath)" >&2; exit 1; }
+    patchelf --set-rpath '$ORIGIN' "$library"
+    echo "Repaired RUNPATH of $(basename "$library"): $runpath -> \$ORIGIN"
+  fi
+done
 ln -s "$INSTALL_DIR/$BIN" "$ROOT/usr/bin/$PKG"
 
 # --- launcher entry ------------------------------------------------------
@@ -84,8 +106,26 @@ fi
 
 # Optional kiosk provisioning; activation requires an explicit administrator action.
 mkdir -p "$ROOT$INSTALL_DIR/kiosk" "$ROOT/usr/share/polkit-1/rules.d"
-cp linux/packaging/kiosk/* "$ROOT$INSTALL_DIR/kiosk/"
+find linux/packaging/kiosk -maxdepth 1 -type f -exec cp {} "$ROOT$INSTALL_DIR/kiosk/" \;
 cp linux/packaging/49-signagex-reboot.rules "$ROOT/usr/share/polkit-1/rules.d/49-$PKG-reboot.rules"
+
+# Managed Linux configuration helpers. Update permission remains administrator opt-in.
+mkdir -p "$ROOT/usr/lib/signagex-player" "$ROOT/usr/bin"
+install -m 755 linux/packaging/update-player "$ROOT/usr/lib/signagex-player/update-player"
+mkdir -p "$ROOT/usr/lib/systemd/system"
+install -m 644 linux/packaging/signagex-update-recover.service "$ROOT/usr/lib/systemd/system/signagex-update-recover.service"
+install -m 644 linux/packaging/50-signagex-update.rules "$ROOT/usr/share/polkit-1/rules.d/50-signagex-update.rules"
+# CMS Wi-Fi management (linux_network_v1); also administrator opt-in (signagex-network group).
+install -m 755 linux/packaging/network-helper "$ROOT/usr/lib/signagex-player/network-helper"
+install -m 644 linux/packaging/51-signagex-network.rules "$ROOT/usr/share/polkit-1/rules.d/51-signagex-network.rules"
+install -m 755 linux/packaging/kiosk/start-supervised.sh "$ROOT/usr/bin/signagex-player-start-supervised"
+channel_api=https://api.signagex.ai
+if [ "$SUFFIX" = staging ]; then channel_api=https://stage.signagexai.com; fi
+release_platform=linux
+if [ "$DEB_ARCH" = arm64 ]; then release_platform=linux-arm64; fi
+printf '{"manifest":"%s/v1/player-releases/latest?platform=%s","package":"%s","architecture":"%s","platform":"%s"}\n' "$channel_api" "$release_platform" "$PKG" "$DEB_ARCH" "$release_platform" > "$ROOT/usr/lib/signagex-player/update-channel.json"
+sed -i "s|^ExecStart=/usr/bin/signagex-player$|ExecStart=/usr/bin/$PKG|" "$ROOT$INSTALL_DIR/kiosk/signagex-player.service"
+
 
 # --- icons ---------------------------------------------------------------
 for png in linux/packaging/icons/signagex-player-*.png; do
@@ -100,6 +140,8 @@ done
 # needs beyond a bare desktop install. Alternatives are spelled out for both
 # sides of Ubuntu's 64-bit time_t transition, so the same .deb installs on
 # 22.04 and 24.04 rather than failing dependency resolution on one of them.
+CONFLICTING_PACKAGE=signagex-player-staging
+if [ -n "$SUFFIX" ]; then CONFLICTING_PACKAGE=signagex-player; fi
 INSTALLED_KB="$(du -sk "$ROOT$INSTALL_DIR" | cut -f1)"
 cat > "$ROOT/DEBIAN/control" <<CONTROL
 Package: $PKG
@@ -109,7 +151,9 @@ Priority: optional
 Architecture: $DEB_ARCH
 Maintainer: SignageX <support@signagex.ai>
 Installed-Size: $INSTALLED_KB
-Depends: xdotool, policykit-1, libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,
+Conflicts: $CONFLICTING_PACKAGE
+Depends: xdotool, scrot, polkitd | policykit-1, pkexec, wireplumber, x11-xserver-utils, python3, python3-cryptography, python3-pil, curl, libva2, libva-drm2, libva-x11-2, libvdpau1,
+ libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,
  libxkbcommon0, libgbm1, libdrm2, libxcomposite1, libxdamage1, libxrandr2,
  libatk1.0-0, libatk-bridge2.0-0, libpango-1.0-0, libcairo2,
  libasound2t64 | libasound2, libcups2t64 | libcups2
@@ -125,6 +169,12 @@ CONTROL
 cat > "$ROOT/DEBIAN/postinst" <<'POSTINST'
 #!/bin/sh
 set -e
+getent group signagex-updates >/dev/null || groupadd --system signagex-updates
+getent group signagex-network >/dev/null || groupadd --system signagex-network
+if command -v systemctl >/dev/null; then
+  systemctl daemon-reload 2>/dev/null || true
+  systemctl enable signagex-update-recover.service 2>/dev/null || true
+fi
 # Refresh the caches the shell reads, so the icon and launcher entry appear
 # without a logout.
 if [ -x "$(command -v gtk-update-icon-cache)" ]; then

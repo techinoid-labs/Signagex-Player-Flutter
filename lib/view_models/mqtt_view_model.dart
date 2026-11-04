@@ -1,4 +1,12 @@
+import '../services/linux_remote_view.dart';
+import '../services/linux_ota.dart';
+import '../services/linux_network.dart';
+import '../services/linux_hardware.dart';
 import 'dart:async';
+import '../services/linux_configuration.dart';
+import '../services/linux_telemetry.dart';
+import '../services/linux_interactivity.dart';
+import '../services/linux_diagnostics.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
@@ -87,6 +95,120 @@ class MqttViewModel extends ChangeNotifier {
       debug.debugLog('MqttViewModel', message);
 
   final MqttClientService _mqttClientService;
+  final LinuxRemoteView _secureRemote = LinuxRemoteView();
+  String? _lastOtaReport;
+  Map? _signedOtaReport;
+  String? _lastNetworkReport;
+  Map? _signedNetworkReport;
+  DateTime? _networkReportSigned;
+  DateTime? _lastLinuxUpdateCheck;
+  Timer? _linuxManagementTimer;
+  bool _linuxManagementBusy = false;
+  final LinuxTelemetry _linuxTelemetry = LinuxTelemetry();
+  Map<String, dynamic>? _deferredLinuxContent;
+  Map<String,dynamic>? _pendingLinuxTriggers;
+  int _linuxTriggerGeneration = 0;
+
+  Future<void> _startLinuxManagement() async {
+    final config = LinuxConfiguration.instance;
+    config.event = (message,type) => LinuxDiagnostics.instance.record(message,type);
+    await config.start();
+    _secureRemote.allowed = () => storeState == true && _storedApiResponse?['paired'] == true && _state != MqttState.playerStopped && _mqttClientService.isConnected;
+    _secureRemote.publish = (topic,payload,retained) {
+      if (topic.endsWith('/events')) { _mqttClientService.publishMessage(topic,utf8.encode(payload)); }
+      else { _mqttClientService.publish(topic,payload,retain:retained); }
+    };
+    _secureRemote.event = config.event;
+    LinuxOta.instance.event = config.event;
+    LinuxOta.instance.onChange = () => unawaited(_publishLinuxOtaReport(force: true));
+    unawaited(LinuxOta.instance.load());
+    LinuxNetwork.instance.event = config.event;
+    LinuxNetwork.instance.onChange = () => unawaited(_publishLinuxNetworkReport(force: true));
+    _mqttClientService.onRemoteMessageReceived = _secureRemote.receive;
+    final triggers = LinuxInteractivity.instance;
+    triggers.event = config.event;
+    triggers.allowed = (item) {
+      if (!config.working || storeState != true || _topic.isEmpty || _state == MqttState.playerStopped || _storedApiResponse?['paired'] != true) return false;
+      try {
+        bool groupAllowed(Map group, int depth) {
+          if (depth > 10) return false;
+          final tests = <bool>[];
+          for (final raw in group['restrictions'] as List? ?? []) {
+            final operator = raw['operator']?.toString().replaceAll('_','-').toLowerCase();
+            if (['every-minute','every-hour','every-day','every-week'].contains(operator)) { tests.add(true); continue; }
+            tests.add(checkRestrictions([Restriction.fromJson(Map<String,dynamic>.from(raw))]));
+          }
+          for (final nested in group['groups'] as List? ?? []) { tests.add(groupAllowed(nested as Map,depth+1)); }
+          return tests.isEmpty || (group['logic_operator']?.toString().toUpperCase() == 'OR' ? tests.any((v)=>v) : tests.every((v)=>v));
+        }
+        if (!(item['restriction_groups'] as List? ?? []).every((group)=>groupAllowed(group as Map,0))) return false;
+        final schedule = item['schedule'] as Map?;
+        if (schedule?['always_play'] != true && (schedule?['restrictions'] as List? ?? []).isNotEmpty) return checkRestrictions((schedule!['restrictions'] as List).map((raw)=>Restriction.fromJson(Map<String,dynamic>.from(raw))).toList());
+        return true;
+      } catch (_) { return false; }
+    };
+    await triggers.start();
+    final prefs = await SharedPreferences.getInstance();
+    try { _pendingLinuxTriggers = jsonDecode(prefs.getString('linux_pending_triggers') ?? 'null') as Map<String,dynamic>?; } catch (_) {}
+    try { _deferredLinuxContent = jsonDecode(prefs.getString('linux_deferred_content') ?? 'null') as Map<String,dynamic>?; } catch (_) {}
+    _linuxManagementTimer ??= Timer.periodic(const Duration(seconds: 30), (_) => unawaited(_linuxManagementTick()));
+  }
+
+  Future<void> _linuxManagementTick() async {
+    if (_linuxManagementBusy) return;
+    _linuxManagementBusy = true;
+    try {
+      final config = LinuxConfiguration.instance;
+      if (_topic.isNotEmpty) await _secureRemote.start(_topic);
+      final managed = storeState == true && _storedApiResponse?['paired'] == true;
+      devicesinfo['capabilities'] = _linuxCapabilities();
+      if (managed) await _publishLinuxOtaReport();
+      if (managed) await _publishLinuxNetworkReport();
+      await _refreshLinuxNetworkInfo();
+      if (managed && _topic.isNotEmpty && _mqttClientService.isConnected) await LinuxDiagnostics.instance.flush((message)=>_mqttClientService.publishSyncAck(_topic,message));
+      final updateStatus = File('/var/lib/signagex-player/update-status.json');
+      if (await updateStatus.exists()) {
+        final text = await updateStatus.readAsString();
+        final prefs = await SharedPreferences.getInstance();
+        if (prefs.getString('linux_last_update_result') != text) {
+          final status = jsonDecode(text) as Map;
+          await config.event?.call('Managed update ${status['status']}: ${status['version']}', status['status'] == 'rolled_back' ? 'error' : 'info');
+          await prefs.setString('linux_last_update_result',text);
+        }
+      }
+      final policy = config.values['content_update_interval'] as Map? ?? {};
+      if (managed && _topic.isNotEmpty && _mqttClientService.isConnected && policy['data_saving_mode'] != true) {
+        final usage = await _linuxTelemetry.sample();
+        _mqttClientService.publish(_topic, jsonEncode({'action':'resource_usage','resourceUsage':usage,'sender':'Linux'}), retain:false);
+        devicesinfo['memory_information'] = {'total_memory': usage['memory']['used'] + usage['memory']['free'], 'used_memory':usage['memory']['used'], 'available_memory':usage['memory']['free']};
+        devicesinfo['cpu_information']['count_cores'] = Platform.numberOfProcessors;
+        if (usage['cpu'] != null) devicesinfo['cpu_usage'] = usage['cpu']['usedPercent'].toString();
+      }
+      if (managed && config.values['apply_app_updates'] == true && _mqttClientService.isConnected &&
+          (_lastLinuxUpdateCheck == null || DateTime.now().difference(_lastLinuxUpdateCheck!).inHours >= 1) && await config.allowsDownload()) {
+        _lastLinuxUpdateCheck = DateTime.now();
+        try {
+          final update = await LinuxOta.instance.exclusiveUpdate().timeout(const Duration(minutes: 30));
+          if (update.exitCode != 0) throw StateError(update.stderr.toString().substring(0, update.stderr.toString().length.clamp(0,300)));
+          final outcome = update.stdout.toString().trim();
+          await config.event?.call('Player update: $outcome', 'info');
+        } catch (error) { await config.event?.call('Player update failed: $error', 'error'); }
+      }
+      if (managed && _pendingLinuxTriggers != null && await config.allowsDownload(checkInterval:false) && await LinuxInteractivity.instance.prepareMedia()) {
+        _sendContentSynced(_pendingLinuxTriggers!);
+        _pendingLinuxTriggers = null;
+        await (await SharedPreferences.getInstance()).remove('linux_pending_triggers');
+      }
+      if (managed && _deferredLinuxContent != null && await config.allowsDownload()) {
+        final push = _deferredLinuxContent!;
+        _deferredLinuxContent = null;
+        await _handleIncomingMessage(jsonEncode(push));
+        if (_deferredLinuxContent == null) await (await SharedPreferences.getInstance()).remove('linux_deferred_content');
+      }
+    } catch (error) { _debugLog('Linux management: $error'); }
+    finally { _linuxManagementBusy = false; }
+  }
+
   final DeviceSettingsViewModel deviceSettings = DeviceSettingsViewModel();
 
   MqttState _state = MqttState.initial;
@@ -149,7 +271,6 @@ class MqttViewModel extends ChangeNotifier {
     String? jsonString = prefs.getString('jsonObj');
 
     if (jsonString != null) {
-      print('Retrieved JSON from SharedPreferences: $jsonString');
       storedJsonObj = jsonDecode(jsonString);
       print('Loaded JSON Object: $storedJsonObj');
       notifyListeners();
@@ -179,10 +300,8 @@ class MqttViewModel extends ChangeNotifier {
 
     if (jsonString != null) {
       final jsonResponse = jsonDecode(jsonString) as Map<String, dynamic>;
-      print('Retrieved stored response: $jsonResponse');
       _topic = jsonResponse["player_code"] ?? "";
       _captureRestrictionContext(jsonResponse);
-      debugPrint("This is the response from the$topic API: $jsonResponse");
       if (_topic.isNotEmpty) {
         globleTopic = _topic;
       }
@@ -1153,7 +1272,23 @@ class MqttViewModel extends ChangeNotifier {
     ]);
   }
 
+  Future<void> _refreshLinuxNetworkInfo() async {
+    try {
+      final route = jsonDecode(await LinuxConfiguration.runCommand('ip',['-j','route','get','1.1.1.1'])) as List;
+      if (route.isEmpty) return;
+      final device = route.first['dev']?.toString();
+      if (device == null) return;
+      final addresses = jsonDecode(await LinuxConfiguration.runCommand('ip',['-j','address','show'])) as List;
+      devicesinfo['mac_address']['macAddress'] = addresses.where((entry)=>entry['link_type']=='ether').map((entry)=>{'interface':entry['ifname'],'mac':entry['address']}).toList();
+      // The Wi-Fi name, or "Ethernet": NetworkManager profile names mean nothing in the CMS.
+      final primary = (await LinuxNetwork.instance.status())['primary'] as Map;
+      devicesinfo['network_name'] = primary['type'] == 'wifi' ? primary['ssid'] : primary['type'] == 'ethernet' ? 'Ethernet' : '';
+      devicesinfo['last_ip_address'] = route.first['prefsrc']?.toString() ?? '';
+    } catch (error) { _debugLog('Linux network telemetry: $error'); }
+  }
+
   Future<void> getDataForLinux() async {
+    await _startLinuxManagement();
     try {
       final systemInfo = await _collectLinuxSystemInfo();
       _applyLinuxSystemInfo(systemInfo);
@@ -1205,7 +1340,7 @@ class MqttViewModel extends ChangeNotifier {
       "free -m | grep 'Mem:' | awk '{print \$2}'",
     );
     final diskCapacity = await _runLinuxShell(
-      "df -h --total 2>/dev/null | grep 'total' | awk '{print \$2}'",
+      "df -h / | tail -1 | awk '{print \$2}'",
     );
 
     return {
@@ -1234,8 +1369,13 @@ class MqttViewModel extends ChangeNotifier {
     devicesinfo['mac_address']['macAddress'][0]['mac'] =
         macAddress.isNotEmpty ? macAddress : machineId;
     devicesinfo['ram_info'] = systemInfo['InstalledRAM'] ?? '';
+    // The hardware's own make and model (e.g. "Azulle" / "Access4"); the
+    // hostname only when the firmware does not say.
+    final (manufacturer, model) = LinuxHardware.current();
+    devicesinfo['hardware_details']['manufacturer'] = manufacturer;
+    devicesinfo['hardware_details']['brand'] = manufacturer;
     devicesinfo['hardware_details']['model'] =
-        systemInfo['DeviceName'] ?? 'Linux';
+        model.isNotEmpty ? model : systemInfo['DeviceName'] ?? 'Linux';
     devicesinfo['hardware_details']['device_id'] =
         machineId.isNotEmpty ? machineId : macAddress;
     devicesinfo['storage_info']['total_storage'] =
@@ -1244,7 +1384,10 @@ class MqttViewModel extends ChangeNotifier {
     devicesinfo['cpu_information']['cpu_architecture'] =
         systemInfo['CPUArchitecture'] ?? '';
     devicesinfo['cpu_information']['processor'] = systemInfo['CPUInfo'] ?? '';
+    devicesinfo['cpu_information']['count_cores'] = Platform.numberOfProcessors;
+    devicesinfo['system_version'] = 'Linux ${systemInfo['OSVersion'] ?? ''}';
     devicesinfo['android_version'] = systemInfo['OSVersion'] ?? '';
+    unawaited(_refreshLinuxNetworkInfo());
   }
 
   Future<String> getDeviceIDForLinux() async {
@@ -1794,7 +1937,8 @@ class MqttViewModel extends ChangeNotifier {
         notifyListeners();
 
         Dio dio = Dio();
-        await dio.download(
+        if (Platform.isLinux) await LinuxConfiguration.instance.waitForDownload(destination:url);
+      await dio.download(
           url,
           filePath,
           onReceiveProgress: (received, total) {
@@ -2104,6 +2248,7 @@ class MqttViewModel extends ChangeNotifier {
     final dio = Dio();
     print('Downloading from URL: $downloadUrl to $filePath');
     try {
+      if (Platform.isLinux) await LinuxConfiguration.instance.waitForDownload(destination:downloadUrl);
       await dio.download(
         downloadUrl,
         filePath,
@@ -2188,6 +2333,8 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> reportAdProofOfPlay(AdProofOfPlayRequest request) async {
+    if (Platform.isLinux && (!LinuxConfiguration.instance.working ||
+        (LinuxInteractivity.instance.active != null && !LinuxInteractivity.instance.overlay && !request.campaignId.startsWith('trigger:')))) return;
     final url = '$baseurl$adCampaignProofOfPlayPath';
     if (playerCode.isEmpty) {
       print('[AdPoP] Skipped: player_code is empty (POST $url)');
@@ -2257,7 +2404,85 @@ class MqttViewModel extends ChangeNotifier {
     devicesinfo['device_model'] = devicesinfo['hardware_details']?['model'] ?? 'Linux';
     devicesinfo['action'] = 'player_details';
     devicesinfo['last_seen'] = DateTime.now().toUtc().toIso8601String();
-    devicesinfo['player_version'] = 'Version: arm64-recovery-20261029';
+    devicesinfo['player_version'] = 'Version: ${const String.fromEnvironment('APP_BUILD_ID', defaultValue: 'linux-config-dev')}';
+    devicesinfo['capabilities'] = _linuxCapabilities();
+  }
+
+  /// Capabilities plus the latest device-signed CMS reports (update, network).
+  Map<String, dynamic> _linuxCapabilities() => {
+        ...LinuxConfiguration.instance.capabilities,
+        if (_signedOtaReport != null) 'linux_ota': _signedOtaReport,
+        if (_signedNetworkReport != null) 'linux_network': _signedNetworkReport,
+      };
+
+  /// Publish the device-signed update report when it changes (or on demand),
+  /// not on every tick: thousands of screens should not add MQTT chatter.
+  Future<void> _publishLinuxOtaReport({bool force = false}) async {
+    if (!Platform.isLinux || _topic.isEmpty) return;
+    try {
+      final config = LinuxConfiguration.instance;
+      final report = await LinuxOta.instance.report(_topic, supported: config.managedUpdates);
+      final key = jsonEncode(report);
+      if (!force && key == _lastOtaReport && _signedOtaReport != null) return;
+      final signed = (await _secureRemote.signOta(jsonEncode({...report, 'reported': DateTime.now().millisecondsSinceEpoch}))).value;
+      if (signed == null) return;
+      _lastOtaReport = key;
+      _signedOtaReport = signed;
+      _updateLinuxDisplayInfo();
+      // Set directly: the display refresh above returns early before a window exists.
+      devicesinfo['action'] = 'player_details';
+      devicesinfo['capabilities'] = _linuxCapabilities();
+      if (storeState == true && _storedApiResponse?['paired'] == true && _mqttClientService.isConnected) {
+        _mqttClientService.publish(_topic, jsonEncode(devicesinfo), retain: false);
+      }
+    } catch (error) { _debugLog('Linux update report: $error'); }
+  }
+
+  /// Publish the device-signed network report when it changes (signal in
+  /// 10-point steps) and at least every 15 minutes, never on every tick.
+  Future<void> _publishLinuxNetworkReport({bool force = false}) async {
+    if (!Platform.isLinux || _topic.isEmpty) return;
+    try {
+      final report = await LinuxNetwork.instance.report(_topic);
+      final key = LinuxNetwork.fingerprint(report);
+      final fresh = _networkReportSigned != null && DateTime.now().difference(_networkReportSigned!) < const Duration(minutes: 15);
+      if (!force && key == _lastNetworkReport && _signedNetworkReport != null && fresh) return;
+      final signed = (await _secureRemote.signOta(jsonEncode({...report, 'reported': DateTime.now().millisecondsSinceEpoch}))).value;
+      if (signed == null) return;
+      _lastNetworkReport = key;
+      _signedNetworkReport = signed;
+      _networkReportSigned = DateTime.now();
+      _updateLinuxDisplayInfo();
+      devicesinfo['action'] = 'player_details';
+      devicesinfo['capabilities'] = _linuxCapabilities();
+      if (storeState == true && _storedApiResponse?['paired'] == true && _mqttClientService.isConnected) {
+        _mqttClientService.publish(_topic, jsonEncode(devicesinfo), retain: false);
+      }
+    } catch (error) { _debugLog('Linux network report: $error'); }
+  }
+
+  /// CMS Wi-Fi change: verified (and its password decrypted) by the adapter.
+  Future<void> _handleLinuxNetworkCommand(Map command) async {
+    final reply = await _secureRemote.verifyNetwork(command);
+    final verified = reply.value;
+    if (verified == null) {
+      await LinuxConfiguration.instance.event?.call('Network change request rejected: ${reply.reason}', 'warning');
+      return;
+    }
+    await LinuxNetwork.instance.run(verified);
+  }
+
+  /// CMS "Update player": verified by the adapter, then run immediately.
+  Future<void> _handleLinuxOtaCommand(Map command) async {
+    final reply = await _secureRemote.verifyOta(command);
+    final verified = reply.value;
+    if (verified == null) {
+      // 'stale' usually means the device clock is wrong; 'wrong_key' that the
+      // CMS offer predates an adapter identity change.
+      await LinuxConfiguration.instance.event?.call('Player update request rejected: ${reply.reason}', 'warning');
+      return;
+    }
+    await LinuxOta.instance.run(verified, supported: LinuxConfiguration.instance.managedUpdates);
   }
 
   Future<void> _checkPairingStatus({bool refresh = false}) async {
@@ -2328,6 +2553,10 @@ class MqttViewModel extends ChangeNotifier {
       }
 
       globleTopic = _topic;
+      if (Platform.isLinux && response['paired'] == true && response['settings'] is Map) {
+        final ack = await LinuxConfiguration.instance.apply(Map<String,dynamic>.from(response['settings']));
+        if (_mqttClientService.isConnected) _mqttClientService.publishSyncAck(_topic, jsonEncode(ack));
+      }
 
       // Process pairing status FIRST so state updates even if MQTT ops fail below
       if (response["paired"] == false &&
@@ -2470,6 +2699,14 @@ class MqttViewModel extends ChangeNotifier {
         debugPrint(
             "Max retries ($_maxPairingRetries) reached for pairing check. Restarting app...");
         _pairingRetryCount = 0; // Reset counter
+        if (Platform.isLinux) {
+          // No app-restart channel on Linux, and relaunching the browser during
+          // a network outage only burns CPU: wait and check again instead.
+          _state = MqttState.connectionScreen;
+          notifyListeners();
+          Future.delayed(const Duration(seconds: 30), _checkPairingStatus);
+          return;
+        }
         // Restart the app to reset the flow
         await Future.delayed(const Duration(seconds: 2));
         await restartApp();
@@ -2509,6 +2746,10 @@ class MqttViewModel extends ChangeNotifier {
     // from the CMS arrive here too — without this the player would stream
     // screenshots out but never receive any input back.
     _mqttClientService.subscribe('$topic/remote');
+    if (Platform.isLinux) {
+      _mqttClientService.subscribe('$topic/remote/v2/command',reliable:true);
+      unawaited(_secureRemote.start(topic));
+    }
   }
 
   void publishMessage(String topic, String message) {
@@ -2524,6 +2765,8 @@ class MqttViewModel extends ChangeNotifier {
       await _channel.invokeMethod('com.example/restartApp');
     } on PlatformException catch (e) {
       print("Failed to restart app: ${e.message}");
+    } on MissingPluginException {
+      print("Failed to restart app: not supported on this platform");
     }
   }
 
@@ -2581,7 +2824,7 @@ class MqttViewModel extends ChangeNotifier {
             (interactivity) => interactivity.keyPress
                 .any((key) => key.toUpperCase() == _key!.toUpperCase())) ??
         false;
-    print("this is key data $keydata");
+    print('MQTT_LOGS:: Key event received');
     if (keyFound) {
       print("I am in interactivity by key");
     } else {
@@ -2589,23 +2832,20 @@ class MqttViewModel extends ChangeNotifier {
     }
   }
 
-  void _handleIncomingMessage(String message) async {
-    print('Received message in ViewModel: $message');
+  Future<void> _handleIncomingMessage(String message) async {
 
-    print('Received message in store state: $storeState');
-    print('i am in recive msgss:');
 // await restartApp();
     final jsonObj = jsonDecode(message);
 
     // Our own acknowledgement, echoed back because we subscribe to the topic
     // we publish it on.
-    if (jsonObj["action"] == "content_synced") return;
+    if (["content_synced", "settings_applied", "resource_usage", "player_logs", "player_details", "sealed_v2"].contains(jsonObj["action"])) return;
 
     final action = jsonObj["action"];
     try {
       await _applyIncomingMessage(jsonObj);
     } catch (e) {
-      if (action == "publish_campaign" || _syncAckOnApply.contains(action)) {
+      if (["publish_campaign","create_interactivity","publish_interactivity"].contains(action) || _syncAckOnApply.contains(action)) {
         _sendContentSynced(jsonObj, error: 'failed to apply $action: $e');
       }
       rethrow;
@@ -2618,8 +2858,8 @@ class MqttViewModel extends ChangeNotifier {
   // Pushes acknowledged as soon as they have been handled. See
   // docs/PLAYER_SYNC_CONTRACT.md for the full list and why the device
   // commands and run_interactivity are left out. create_interactivity is
-  // left out too: this build has no handler for it, so its triggers are
-  // never applied and acknowledging them would report a false Synced.
+  // acknowledged separately after its media has been prepared; acknowledging
+  // receipt alone would incorrectly report a pending download as Synced.
   static const _syncAckOnApply = {
     "remove_campaign",
     "remove_playlist",
@@ -2666,7 +2906,6 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> _applyIncomingMessage(dynamic jsonObj) async {
-    print('Saving JSON Object: $jsonObj');
 
     // Check if message has an action field
     if (jsonObj["action"] == null) {
@@ -2676,6 +2915,24 @@ class MqttViewModel extends ChangeNotifier {
       return;
     }
 
+    if (Platform.isLinux && jsonObj['action'] == LinuxNetwork.protocol) {
+      if (jsonObj['data'] is String && jsonObj['signature'] is String) unawaited(_handleLinuxNetworkCommand(jsonObj as Map));
+      return;
+    }
+    if (Platform.isLinux && jsonObj['action'] == LinuxOta.protocol) {
+      if (jsonObj['data'] is String && jsonObj['signature'] is String) unawaited(_handleLinuxOtaCommand(jsonObj as Map));
+      return;
+    }
+    if (Platform.isLinux && ['publish_playlist','publish_campaign'].contains(jsonObj['action'])) {
+      final config = LinuxConfiguration.instance;
+      if (!await config.allowsDownload()) {
+        _deferredLinuxContent = Map<String,dynamic>.from(jsonObj);
+        await (await SharedPreferences.getInstance()).setString('linux_deferred_content', jsonEncode(jsonObj));
+        await config.event?.call('Content update waiting for download policy', 'info');
+        return;
+      }
+      config.markContentUpdate();
+    }
     if (jsonObj["action"] == "publish_playlist" ||
         jsonObj["action"] == "publish_campaign") {
       SharedPreferences prefs = await SharedPreferences.getInstance();
@@ -2688,6 +2945,39 @@ class MqttViewModel extends ChangeNotifier {
       }
     }
     print(jsonObj["action"]);
+    if (Platform.isLinux && jsonObj['action'] == 'action_send_logs') {
+      try {
+        final directory = await getApplicationSupportDirectory();
+        final file = File('${directory.path}/signagex_debug.log');
+        final identity = _storedApiResponse?['data']?['macAddress']?.toString() ?? '';
+        if (!await file.exists() || identity.isEmpty) throw StateError('Diagnostic log or player identity unavailable');
+        final response = await Dio().post('${baseurl}player-diagnostics/upload', data: FormData.fromMap({
+          'player_code':_topic,'mac_address':identity,'reason':'manual',
+          'file':await MultipartFile.fromFile(file.path,filename:'signagex_debug.log'),
+        }), options:Options(sendTimeout:const Duration(seconds:60),receiveTimeout:const Duration(seconds:30)));
+        if (response.statusCode != 200 && response.statusCode != 201) throw StateError('Diagnostic upload failed');
+        await LinuxConfiguration.instance.event?.call('Diagnostic log uploaded', 'info');
+      } catch (error) { await LinuxConfiguration.instance.event?.call('Diagnostic upload failed: $error','error'); }
+      return;
+    }
+    if (Platform.isLinux && ['create_interactivity','publish_interactivity'].contains(jsonObj['action'])) {
+      final generation = ++_linuxTriggerGeneration;
+      _pendingLinuxTriggers = Map<String,dynamic>.from(jsonObj);
+      await (await SharedPreferences.getInstance()).setString('linux_pending_triggers',jsonEncode(jsonObj));
+      final ready = await LinuxInteractivity.instance.replace(jsonObj['data']?['interactivity'] as List? ?? []);
+      if (generation != _linuxTriggerGeneration) return;
+      if (ready) {
+        _sendContentSynced(jsonObj);
+        _pendingLinuxTriggers = null;
+        await (await SharedPreferences.getInstance()).remove('linux_pending_triggers');
+      }
+      return;
+    }
+    if (Platform.isLinux && jsonObj['action'] == 'run_interactivity') {
+      final ok = LinuxInteractivity.instance.activate(jsonObj['data']?['interactivity_id']?.toString() ?? '');
+      await LinuxConfiguration.instance.event?.call(ok ? 'On-demand interactivity activated' : 'On-demand interactivity unavailable or restricted','${'info'}');
+      return;
+    }
     if (jsonObj["action"] == "action_reboot") {
       try {
         _mqttClientService.publish(topic, jsonEncode({
@@ -2716,6 +3006,21 @@ class MqttViewModel extends ChangeNotifier {
         await deviceSettings.rebootDeviceForWindows();
       }
     } else if (jsonObj["action"] == "action_setup_player") {
+      if (Platform.isLinux) {
+        if (storeState != true) await _checkPairingStatus(refresh:true);
+        if (_storedApiResponse?['paired'] != true) return;
+        if (jsonObj['settings'] is Map) {
+          final ack = await LinuxConfiguration.instance.apply(Map<String,dynamic>.from(jsonObj['settings']));
+          if (_topic.isNotEmpty) _mqttClientService.publishSyncAck(_topic, jsonEncode(ack));
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            _updateLinuxDisplayInfo();
+            if (_topic.isNotEmpty && _mqttClientService.isConnected) _mqttClientService.publish(_topic,jsonEncode(devicesinfo),retain:false);
+          });
+          notifyListeners();
+        }
+        return;
+      }
+
       Map<String, dynamic> sendLog = {
         "action": "Action Setup Player",
         "name": "Player ${deviceInfo?["hardware_details"]["model"] ?? ""}",
@@ -2874,7 +3179,7 @@ class MqttViewModel extends ChangeNotifier {
     } else if (jsonObj["action"] == "click") {
       // The CMS scales clicks into the reported device resolution already.
       // Resizing the transmitted JPEG must not scale the input a second time.
-      print("MQTT_LOGS:: click received: $jsonObj");
+      print("MQTT_LOGS:: click received");
       if (Platform.isLinux) {
         final x = (jsonObj["x"] as num?)?.toDouble();
         final y = (jsonObj["y"] as num?)?.toDouble();
@@ -2886,7 +3191,7 @@ class MqttViewModel extends ChangeNotifier {
     } else if (jsonObj["action"] == "scroll") {
       // Same shape as Android's InputAction.getScroll: hold/release objects
       // each carrying an x/y pair, treated as a press-drag-release gesture.
-      print("MQTT_LOGS:: scroll received: $jsonObj");
+      print("MQTT_LOGS:: scroll received");
       if (Platform.isLinux) {
         final hold = jsonObj["hold"];
         final release = jsonObj["release"];
@@ -2909,7 +3214,7 @@ class MqttViewModel extends ChangeNotifier {
         }
       }
     } else if (jsonObj["action"] == "send_text") {
-      print("MQTT_LOGS:: send_text received: $jsonObj");
+      print("MQTT_LOGS:: send_text received");
       if (Platform.isLinux) {
         final text = jsonObj["message"]?.toString();
         if (text != null && text.isNotEmpty) {
@@ -2920,14 +3225,14 @@ class MqttViewModel extends ChangeNotifier {
       // CMS "home screen" remote-view button. Matches Android's PRESS_HOME
       // (input keyevent 3 / GLOBAL_ACTION_HOME) — a raw OS key injection,
       // not app-level navigation.
-      print("MQTT_LOGS:: press_home received: $jsonObj");
+      print("MQTT_LOGS:: press_home received");
       if (Platform.isLinux) {
         deviceSettings.pressHomeForLinux();
       }
     } else if (jsonObj["action"] == "press_back") {
       // Undoes press_home -- there was previously no way to bring the
       // player back into view remotely after Home minimized it.
-      print("MQTT_LOGS:: press_back received: $jsonObj");
+      print("MQTT_LOGS:: press_back received");
       if (Platform.isLinux) {
         deviceSettings.pressBackForLinux();
       }
@@ -3625,6 +3930,8 @@ class MqttViewModel extends ChangeNotifier {
 // Clean up timer
   @override
   void dispose() {
+    _secureRemote.close();
+    _linuxManagementTimer?.cancel();
     _timerOfCampaign?.cancel();
     _timer?.cancel();
     _remoteViewTimer?.cancel();
