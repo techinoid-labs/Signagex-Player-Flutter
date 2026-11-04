@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../widgets/linux_configured_surface.dart';
 import '../widgets/linux_trigger_surface.dart';
 import '../services/linux_interactivity.dart';
+import '../services/linux_setup_hotspot.dart';
 import 'dart:io';
 import 'package:flutter/services.dart';
 
@@ -19,6 +20,7 @@ import '../views/no_content_view.dart';
 import '../views/no_internet_view.dart';
 import '../views/play_list_view.dart';
 import '../views/player_stopped_view.dart';
+import '../views/setup_hotspot_view.dart';
 
 class MqttProvider extends StatefulWidget {
   final Widget child;
@@ -70,7 +72,7 @@ class _MqttProviderState extends State<MqttProvider> {
             onKeyEvent: (_,event) => Platform.isLinux && event is KeyDownEvent && LinuxInteractivity.instance.key(event.logicalKey.keyLabel,consumeOnly:true) ? KeyEventResult.handled : KeyEventResult.ignored,
             child: GestureDetector(
               onTapUp: _onTap,
-              child: LinuxConfiguredSurface(applySchedule: [MqttState.campaignScreen,MqttState.playlistScreen,MqttState.noContent].contains(viewModel.state),child: Platform.isLinux ? LinuxTriggerSurface(child: _getScreenForState(viewModel.state)) : _getScreenForState(viewModel.state)),
+              child: LinuxConfiguredSurface(applySchedule: [MqttState.campaignScreen,MqttState.playlistScreen,MqttState.noContent].contains(viewModel.state),child: Platform.isLinux ? LinuxTriggerSurface(child: _linuxScreen(viewModel.state)) : _getScreenForState(viewModel.state)),
             ),
           );
         },
@@ -91,6 +93,17 @@ class _MqttProviderState extends State<MqttProvider> {
   // notifyListeners(), and logging each one would bury the log in
   // duplicates for a screen that never changed.
   MqttState? _lastLoggedState;
+
+  /// The setup hotspot screen replaces whatever is showing while it runs (only
+  /// ever with no network, so nothing is playing that it could hide).
+  Widget _linuxScreen(MqttState state) {
+    final hotspot = LinuxSetupHotspot.instance;
+    return ListenableBuilder(
+      listenable: hotspot,
+      builder: (context, _) => hotspot.info != null ? SetupHotspotView(hotspot: hotspot) : _getScreenForState(state),
+    );
+  }
+
   Widget _getScreenForState(MqttState state) {
     if (state != _lastLoggedState) {
       debug.debugLog('MqttProvider', 'state -> $state (was $_lastLoggedState)');

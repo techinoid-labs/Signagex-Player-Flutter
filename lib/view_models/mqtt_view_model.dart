@@ -1,6 +1,7 @@
 import '../services/linux_remote_view.dart';
 import '../services/linux_ota.dart';
 import '../services/linux_network.dart';
+import '../services/linux_setup_hotspot.dart';
 import '../services/linux_hardware.dart';
 import 'dart:async';
 import '../services/linux_configuration.dart';
@@ -124,6 +125,7 @@ class MqttViewModel extends ChangeNotifier {
     unawaited(LinuxOta.instance.load());
     LinuxNetwork.instance.event = config.event;
     LinuxNetwork.instance.onChange = () => unawaited(_publishLinuxNetworkReport(force: true));
+    LinuxSetupHotspot.instance.event = config.event;
     _mqttClientService.onRemoteMessageReceived = _secureRemote.receive;
     final triggers = LinuxInteractivity.instance;
     triggers.event = config.event;
@@ -159,8 +161,10 @@ class MqttViewModel extends ChangeNotifier {
     _linuxManagementBusy = true;
     try {
       final config = LinuxConfiguration.instance;
-      if (_topic.isNotEmpty) await _secureRemote.start(_topic);
       final managed = storeState == true && _storedApiResponse?['paired'] == true;
+      // First, so nothing below that fails offline can keep a screen with no network from offering the hotspot.
+      unawaited(LinuxSetupHotspot.instance.tick(connected: _mqttClientService.isConnected, paired: managed, code: _topic));
+      if (_topic.isNotEmpty) await _secureRemote.start(_topic);
       devicesinfo['capabilities'] = _linuxCapabilities();
       if (managed) await _publishLinuxOtaReport();
       if (managed) await _publishLinuxNetworkReport();

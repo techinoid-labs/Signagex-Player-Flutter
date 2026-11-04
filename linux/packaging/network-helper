@@ -5,8 +5,14 @@ The player runs it through pkexec (polkit group signagex-network) with one JSON
 request on stdin, after its remote-view adapter verified the server signature.
 It only adds or removes NetworkManager Wi-Fi profiles. The change itself runs in
 a transient systemd unit, so a rollback still happens if the player exits.
+
+It also runs the setup hotspot: a temporary WPA2 access point the player starts
+when it has no network, so an installer can give it Wi-Fi from a phone. The
+profile lives in /run (gone at reboot), the password is random per boot, the
+firewall opens DHCP, DNS and the setup page on the hotspot interface only, and a
+root timer stops it after 15 minutes whatever the player does.
 """
-import fcntl, json, os, pathlib, re, string, subprocess, sys, time, urllib.parse, uuid
+import fcntl, json, os, pathlib, re, secrets, shutil, string, subprocess, sys, time, urllib.parse, uuid
 
 STATE = pathlib.Path('/var/lib/signagex-player')
 STATUS = STATE/'network-status.json'
@@ -14,6 +20,14 @@ REQUEST = pathlib.Path('/run/signagex-network/request.json')
 PROFILES = pathlib.Path('/etc/NetworkManager/system-connections')
 CHANNEL = pathlib.Path('/usr/lib/signagex-player/update-channel.json')
 CONNECT_TIMEOUT = 45
+HOTSPOT_UUID = '5e7a1c2e-56a7-4b1e-9d3f-5167a6e70001'
+HOTSPOT_PROFILE = pathlib.Path('/run/NetworkManager/system-connections/signagex-setup-hotspot.nmconnection')
+HOTSPOT_STATE = pathlib.Path('/run/signagex-network/hotspot.json')
+HOTSPOT_ADDRESS, HOTSPOT_SUBNET, SETUP_PORT = '10.42.0.1', '10.42.0.0/24', 8080
+HOTSPOT_MINUTES = 15
+HOTSPOT_TIMER = 'signagex-setup-hotspot-expire'
+# No 0/O, 1/l/i: the password may be typed from the screen.
+PASSWORD_ALPHABET = 'abcdefghjkmnpqrstuvwxyz23456789'
 
 def nmcli(*args, timeout=60):
     return subprocess.run(['nmcli', *args], capture_output=True, text=True, timeout=timeout)
@@ -42,6 +56,11 @@ def validate(request):
     if not isinstance(request, dict): raise ValueError('Invalid request')
     job, op, ssid = request.get('job'), request.get('op'), request.get('ssid')
     if not isinstance(job, str) or not re.fullmatch(r'[A-Za-z0-9-]{1,64}', job): raise ValueError('Invalid job')
+    if op == 'hotspot_start':
+        suffix = request.get('suffix')
+        if not isinstance(suffix, str) or not re.fullmatch(r'[A-Za-z0-9]{4}', suffix): raise ValueError('Invalid hotspot name')
+        return {'job': job, 'op': op, 'suffix': suffix.upper()}
+    if op == 'hotspot_stop': return {'job': job, 'op': op}
     if op not in ('wifi_add', 'wifi_remove'): raise ValueError('Invalid operation')
     if not valid_ssid(ssid): raise ValueError('Invalid network name')
     password = request.get('password', '')
@@ -110,8 +129,8 @@ def api_host():
         return 'api.signagex.ai'
 
 def reaches_api(device):
-    """Any HTTPS answer from the SignageX API through this interface counts."""
-    return subprocess.run(['curl', '-sS', '-o', '/dev/null', '--max-time', '10', '--interface', device,
+    """Any HTTPS answer from the SignageX API (through this interface, or any) counts."""
+    return subprocess.run(['curl', '-sS', '-o', '/dev/null', '--max-time', '10', *(['--interface', device] if device else []),
                            'https://' + api_host() + '/'], capture_output=True).returncode == 0
 
 def add(request):
@@ -136,13 +155,105 @@ def add(request):
     while up.returncode == 0 and time.monotonic() < deadline:
         if reaches_api(device):
             for old in replaced: nmcli('connection', 'delete', old[0])
+            if previous == HOTSPOT_UUID: hotspot_stop()
             return "Connected to '%s'." % ssid
         time.sleep(3)
-    # Roll back: drop the new profile and restore whatever the radio used before.
+    # Roll back: drop the new profile and restore whatever the radio used before
+    # (from the setup page that is the hotspot, so the installer can try again).
     nmcli('connection', 'delete', identifier)
     path.unlink(missing_ok=True)
-    if previous: nmcli('-w', '30', 'connection', 'up', previous, timeout=45)
+    if previous == HOTSPOT_UUID: activate_hotspot(device)
+    elif previous: nmcli('-w', '30', 'connection', 'up', previous, timeout=45)
     raise RuntimeError("Could not connect to '%s' (wrong password or no internet). Restored previous connection." % ssid)
+
+def hotspot_keyfile(ssid, password, device):
+    return '\n'.join(['[connection]', 'id=SignageX Setup Hotspot', 'uuid=' + HOTSPOT_UUID, 'type=wifi',
+                      'autoconnect=false', 'interface-name=' + device, '',
+                      '[wifi]', 'mode=ap', 'ssid=' + ssid, 'band=bg', 'channel=6', '',
+                      '[wifi-security]', 'key-mgmt=wpa-psk', 'proto=rsn', 'pairwise=ccmp', 'group=ccmp', 'psk=' + password, '',
+                      '[ipv4]', 'method=shared', 'address1=' + HOTSPOT_ADDRESS + '/24', '',
+                      '[ipv6]', 'method=disabled', ''])
+
+def hotspot_active():
+    return any(fields(line)[0] == HOTSPOT_UUID for line in nmcli('-t', '-f', 'UUID', 'connection', 'show', '--active').stdout.splitlines())
+
+def nearby_networks(device):
+    """Strongest first, one entry per name, for the setup page (scanned before the radio becomes an access point)."""
+    output = nmcli('-t', '-f', 'SSID,SIGNAL,SECURITY', 'device', 'wifi', 'list', 'ifname', device, '--rescan', 'yes', timeout=30).stdout
+    networks = {}
+    for line in output.splitlines():
+        ssid, signal, security = (fields(line) + ['', ''])[:3]
+        if not valid_ssid(ssid) or ssid.startswith('SignageX-Setup-'): continue
+        entry = {'ssid': ssid, 'signal': max(0, min(100, int(signal) if signal.isdigit() else 0)),
+                 'security': 'enterprise' if '802.1X' in security else 'wpa' if security.strip() not in ('', '--') else 'open'}
+        if ssid not in networks or entry['signal'] > networks[ssid]['signal']: networks[ssid] = entry
+    return sorted(networks.values(), key=lambda entry: -entry['signal'])[:30]
+
+def ufw_active():
+    return shutil.which('ufw') is not None and subprocess.run(['ufw', 'status'], capture_output=True, text=True).stdout.startswith('Status: active')
+
+def firewall_rules(device):
+    """DHCP, DNS (NetworkManager's dnsmasq) and the player's setup page, on the hotspot interface only."""
+    return [['in', 'on', device, 'to', 'any', 'port', '67', 'proto', 'udp'],
+            ['in', 'on', device, 'from', HOTSPOT_SUBNET, 'to', HOTSPOT_ADDRESS, 'port', '53'],
+            ['in', 'on', device, 'from', HOTSPOT_SUBNET, 'to', HOTSPOT_ADDRESS, 'port', str(SETUP_PORT), 'proto', 'tcp']]
+
+def activate_hotspot(device):
+    if nmcli('-w', '30', 'connection', 'up', HOTSPOT_UUID, 'ifname', device, timeout=45).returncode != 0:
+        raise RuntimeError('Could not start the setup hotspot')
+    disable_forwarding(device)
+
+def disable_forwarding(device):
+    # Shared mode turns on IPv4 forwarding; hotspot clients must not reach any other network through the player.
+    pathlib.Path('/proc/sys/net/ipv4/conf/%s/forwarding' % device).write_text('0')
+
+def hotspot_start(suffix):
+    """Start (or return the running) setup hotspot. The result holds the password: it goes only to the player."""
+    device = wifi_device()
+    if device is None: raise RuntimeError('This player has no Wi-Fi hardware')
+    state = json.loads(HOTSPOT_STATE.read_text()) if HOTSPOT_STATE.exists() else {}
+    if hotspot_active() and state.get('expires', 0) > time.time():
+        return state
+    if reaches_api(None): raise RuntimeError('Refused: the player is online')
+    password = state.get('password') or ''.join(secrets.choice(PASSWORD_ALPHABET) for _ in range(12))
+    state = {'ssid': 'SignageX-Setup-' + suffix, 'password': password, 'device': device, 'address': HOTSPOT_ADDRESS,
+             'port': SETUP_PORT, 'expires': int(time.time()) + HOTSPOT_MINUTES * 60, 'networks': nearby_networks(device)}
+    # The stop timer comes first, so nothing below can leave a hotspot running.
+    subprocess.run(['systemctl', 'stop', HOTSPOT_TIMER + '.timer'], capture_output=True)
+    subprocess.check_call(['systemd-run', '--unit=' + HOTSPOT_TIMER, '--collect', '--quiet', '--on-active=%dmin' % HOTSPOT_MINUTES,
+                           '--setenv=SIGNAGEX_NETWORK_SERVICE=1', '/usr/lib/signagex-player/network-helper', '--hotspot-expire'])
+    HOTSPOT_STATE.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    descriptor = os.open(HOTSPOT_STATE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, 'w') as output: json.dump(state, output)
+    HOTSPOT_PROFILE.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    descriptor = os.open(HOTSPOT_PROFILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, 'w') as output: output.write(hotspot_keyfile(state['ssid'], password, device))
+    try:
+        if nmcli('connection', 'load', str(HOTSPOT_PROFILE)).returncode != 0: raise RuntimeError('NetworkManager rejected the hotspot settings')
+        if ufw_active():
+            for rule in firewall_rules(device):
+                subprocess.run(['ufw', 'allow', *rule, 'comment', 'signagex-setup-hotspot'], capture_output=True, check=True)
+        activate_hotspot(device)
+    except Exception:
+        hotspot_stop()
+        raise
+    return state
+
+def hotspot_stop():
+    """Idempotent: removes the hotspot profile, its firewall rules and the stop timer."""
+    state = json.loads(HOTSPOT_STATE.read_text()) if HOTSPOT_STATE.exists() else {}
+    nmcli('connection', 'delete', HOTSPOT_UUID)
+    HOTSPOT_PROFILE.unlink(missing_ok=True)
+    device = state.get('device') or wifi_device()
+    if device and ufw_active():
+        for rule in firewall_rules(device):
+            subprocess.run(['ufw', 'delete', 'allow', *rule], capture_output=True)
+    subprocess.run(['systemctl', 'stop', HOTSPOT_TIMER + '.timer'], capture_output=True)
+    if state:
+        # Keep the password for this boot (phones remember it); drop the rest.
+        descriptor = os.open(HOTSPOT_STATE, os.O_WRONLY | os.O_TRUNC, 0o600)
+        with os.fdopen(descriptor, 'w') as output: json.dump({'password': state.get('password', '')}, output)
+    return 'Setup hotspot stopped'
 
 def remove(request):
     device = wifi_device()
@@ -170,17 +281,36 @@ def apply():
         update_status(request['job'], 'failed', str(error))
         print(json.dumps({'phase': 'failed', 'detail': str(error)[:200]}))
 
+def lock(blocking=False):
+    STATE.mkdir(parents=True, exist_ok=True)
+    handle = open(STATE/'network.lock', 'a')
+    try: fcntl.flock(handle, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+    except BlockingIOError:
+        handle.close()
+        raise SystemExit('Another network change is running')
+    return handle
+
+def hotspot(request):
+    """Hotspot requests run here, not in the logged transient unit: the answer holds the password."""
+    try:
+        if request['op'] == 'hotspot_stop': result = {'phase': 'applied', 'detail': hotspot_stop()}
+        else: result = {'phase': 'applied', 'detail': 'Setup hotspot running', 'hotspot': hotspot_start(request['suffix'])}
+    except Exception as error:
+        result = {'phase': 'failed', 'detail': str(error)[:200]}
+    print(json.dumps(result))
+
 def main():
     if os.geteuid() != 0: raise SystemExit('Network helper requires its installed policy')
     if sys.argv[1:] == ['--apply'] and os.environ.get('SIGNAGEX_NETWORK_SERVICE') == '1':
         return apply()
+    if sys.argv[1:] == ['--hotspot-expire'] and os.environ.get('SIGNAGEX_NETWORK_SERVICE') == '1':
+        with lock(blocking=True): return print(hotspot_stop())
     if sys.argv[1:]: raise SystemExit('Network helper accepts no arguments')
     if int(os.environ.get('PKEXEC_UID', '0')) < 1000: raise SystemExit('No graphical player user')
     request = validate(json.loads(sys.stdin.read(8192)))
-    STATE.mkdir(parents=True, exist_ok=True)
-    with open(STATE/'network.lock', 'a') as lock:
-        try: fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError: raise SystemExit('Another network change is running')
+    if request['op'].startswith('hotspot_'):
+        with lock(): return hotspot(request)
+    with lock():
         REQUEST.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
         descriptor = os.open(REQUEST, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(descriptor, 'w') as output: json.dump(request, output)
