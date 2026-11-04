@@ -43,6 +43,65 @@ class UpdatePolicyTests(unittest.TestCase):
             self.assertEqual(calls,[('dpkg','-i',str(rollback))])
             self.assertEqual(statuses,[('rolled_back',)])
 
+    def check_once(self, root, installed, feed_version='v15'):
+        """Run one service-mode check against a fake feed; returns (printed, fetched).
+        A package download is simulated as a failure, as a broken release would be."""
+        import json, types
+        namespace=updater['main'].__globals__
+        channel=root/'channel.json'
+        channel.write_text(json.dumps({'manifest':'https://api.signagex.ai/v1/player-releases/latest?platform=linux','package':'signagex-player','architecture':'amd64','platform':'linux'}))
+        fetched=[]
+        def download(url, destination, hosts):
+            if pathlib.Path(destination).name == 'manifest.json':
+                pathlib.Path(destination).write_text(json.dumps({'platform':'linux','version':feed_version,'sha256':'a'*64,'downloadUrl':'https://norwin.sfo3.digitaloceanspaces.com/release.deb'}))
+                return ''
+            fetched.append(url); raise RuntimeError('download failed')
+        with patch.dict(namespace,{'CONFIG':channel,'CACHE':root/'cache','ATTEMPTS':root/'attempts.json','download':download,'run':lambda *args: installed}), \
+             patch('os.geteuid',return_value=0), patch('sys.argv',['update-player']), \
+             patch.dict('os.environ',{'PKEXEC_UID':'1000','SIGNAGEX_UPDATE_SERVICE':'1'}), \
+             patch('pwd.getpwuid',return_value=types.SimpleNamespace(pw_name='player')), patch('builtins.print') as output:
+            try: updater['main']()
+            except RuntimeError: pass
+        return [call.args[0] for call in output.call_args_list], fetched
+
+    def test_feed_build_id_is_compared_as_the_package_version(self):
+        # The amd64 feed has published the CI build id ("v15"). Raw, dpkg sorts it
+        # above every number: a player on 50 would fetch 15, then abort on the
+        # Version check. Normalized, only a genuinely newer package is fetched.
+        import tempfile
+        for installed, printed, fetches in [('50',['up-to-date'],0),('15',['up-to-date'],0),('14',[],1)]:
+            with self.subTest(installed=installed), tempfile.TemporaryDirectory() as temporary:
+                self.assertEqual(self.check_once(pathlib.Path(temporary), installed), (printed, ['https://norwin.sfo3.digitaloceanspaces.com/release.deb']*fetches))
+
+    def test_failed_release_backs_off_instead_of_redownloading_hourly(self):
+        import json, tempfile, time
+        with tempfile.TemporaryDirectory() as temporary:
+            root=pathlib.Path(temporary)
+            self.assertEqual(len(self.check_once(root,'14')[1]),1)
+            state=json.loads((root/'attempts.json').read_text())
+            self.assertEqual((state['version'],state['failures']),('15',1))
+            self.assertTrue(time.time()+0.8*3600-5 <= state['next'] <= time.time()+1.2*3600+5)
+            # The next hourly check of the same broken release downloads nothing.
+            self.assertEqual(self.check_once(root,'14'),(['deferred'],[]))
+            # A newer release is not held back by the old release's failures.
+            self.assertEqual(len(self.check_once(root,'14',feed_version='v16')[1]),1)
+            self.assertEqual(json.loads((root/'attempts.json').read_text())['failures'],1)
+
+    def test_backoff_doubles_with_jitter_and_caps_at_a_day(self):
+        import json, tempfile
+        namespace=updater['record_failure'].__globals__
+        with tempfile.TemporaryDirectory() as temporary:
+            attempts=pathlib.Path(temporary)/'attempts.json'
+            with patch.dict(namespace,{'ATTEMPTS':attempts}):
+                for failures, base in [(1,3600),(2,7200),(3,14400),(5,57600),(6,86400),(9,86400)]:
+                    attempts.write_text(json.dumps({'version':'15','failures':failures-1,'next':0}))
+                    updater['record_failure']('15',1000)
+                    state=json.loads(attempts.read_text())
+                    self.assertEqual(state['failures'],failures)
+                    self.assertTrue(1000+0.8*base <= state['next'] <= 1000+1.2*base, (failures, state))
+                updater['clear_failures'](); updater['clear_failures']()
+                self.assertFalse(attempts.exists())
+
     def test_transaction_runs_outside_player_control_group(self):
         with patch('os.geteuid',return_value=0), patch('sys.argv',['update-player']), patch.dict('os.environ',{'PKEXEC_UID':'1000','SIGNAGEX_UPDATE_SERVICE':''}), patch('subprocess.check_call') as command:
             updater['main']()

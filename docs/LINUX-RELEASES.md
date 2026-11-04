@@ -5,6 +5,13 @@ keeps the same version and binary checksum. A new player build receives a new
 version. Staging and production are separate channels; promotion does not mean
 a new player build. Record tested hardware and outstanding issues per release.
 
+The release feed carries the package's Debian `Version` (`15`), not the CI id
+(`v15`): `update-player` compares it with dpkg, where `v15` sorts above every
+number. Feeds published before 2026-11-04 carried `v15`; the updater now accepts
+either form. A release that fails on a device is retried with per-release backoff
+(1 h doubling to 24 h, ±20 % jitter), so a bad release does not make the fleet
+re-download it every hour.
+
 ## v15 — 2026-10-23 — staging
 
 - Added xdotool dependency to Debian packaging and bundled it in AppImage.

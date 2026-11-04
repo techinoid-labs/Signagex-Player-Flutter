@@ -400,7 +400,10 @@ jobs:
           fi
           file="$(ls dist/signagex-player-staging_*_amd64.deb | head -n 1)"
           size_mb=$(( $(stat -c%s "$file") / 1024 / 1024 ))
-          echo "Uploading $file (${size_mb} MB) as $build_id"
+          # The feed carries the package Version ("15"), which the on-device
+          # updater compares with dpkg -- not the build id ("v15").
+          version="$(dpkg-deb -f "$file" Version)"
+          echo "Uploading $file (${size_mb} MB) as $version (build $build_id)"
 
           # -sf hides the response body and collapses every HTTP error into
           # "exit 22", which says nothing about why the server refused. The
@@ -412,7 +415,7 @@ jobs:
             -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
             -H "x-release-key: $RELEASE_KEY" \
             -F "platform=linux" \
-            -F "version=$build_id" \
+            -F "version=$version" \
             -F "file=@$file") || true
 
           echo "HTTP $status"
@@ -422,7 +425,7 @@ jobs:
 
           case "$status" in
             2*)
-              echo "Staging package published as $build_id."
+              echo "Staging package published as $version (build $build_id)."
               ;;
             413)
               echo "::error::The release endpoint refused the upload as too large (${size_mb} MB). The package contains a full Chromium, so this is expected size -- the receiving end needs its body limit raised (nginx client_max_body_size, or the equivalent)."
