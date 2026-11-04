@@ -34,3 +34,26 @@ class PackageContractTests(unittest.TestCase):
                     self.assertIn('WatchdogSec=75',service)
                 dependencies=subprocess.check_output(['dpkg-deb','-f',str(output),'Depends'],text=True)
                 self.assertIn('polkitd | policykit-1',dependencies)
+
+@unittest.skipUnless(shutil.which('dpkg-deb') and shutil.which('patchelf') and shutil.which('readelf'), 'requires dpkg-deb, patchelf and readelf')
+class BundledRunpathTests(unittest.TestCase):
+    def test_runpath_without_origin_is_repaired_in_the_package(self):
+        # Build v51 shipped libmdk with "$:$/lib" (ORIGIN stripped) and the player exited 127.
+        source = pathlib.Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temporary:
+            root=pathlib.Path(temporary)
+            shutil.copytree(source,root/'linux/packaging')
+            bundle=root/'build/linux/x64/release/bundle'; (bundle/'lib').mkdir(parents=True)
+            shutil.copy2('/bin/true',bundle/'lib/libcef.so')
+            for name, runpath in [('libmdk.so.0','$:$/lib:$/../lib'),('libgood.so','$ORIGIN:$ORIGIN/lib')]:
+                shutil.copy2('/bin/true',bundle/'lib'/name)
+                subprocess.check_call(['patchelf','--set-rpath',runpath,str(bundle/'lib'/name)])
+            binary=bundle/'signagex-player'; binary.write_text('#!/bin/sh\nexit 0\n'); binary.chmod(0o755)
+            output=root/'fixture.deb'
+            result=subprocess.run(['bash',str(root/'linux/packaging/make_deb.sh'),'runpath-fixture',str(output)],cwd=root,env={**os.environ,'DEB_ARCH':'amd64'},capture_output=True,text=True)
+            self.assertEqual(result.returncode,0,result.stdout+result.stderr)
+            extracted=root/'extracted'; subprocess.check_call(['dpkg-deb','-x',str(output),str(extracted)])
+            def runpath(name):
+                return subprocess.check_output(['patchelf','--print-rpath',str(extracted/'opt/signagex-player/lib'/name)],text=True).strip()
+            self.assertEqual(runpath('libmdk.so.0'),'$ORIGIN')
+            self.assertEqual(runpath('libgood.so'),'$ORIGIN:$ORIGIN/lib')
