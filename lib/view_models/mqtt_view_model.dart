@@ -1,6 +1,7 @@
 import '../services/linux_remote_view.dart';
 import '../services/linux_ota.dart';
 import '../services/linux_network.dart';
+import '../services/linux_hardware.dart';
 import 'dart:async';
 import '../services/linux_configuration.dart';
 import '../services/linux_telemetry.dart';
@@ -1368,8 +1369,13 @@ class MqttViewModel extends ChangeNotifier {
     devicesinfo['mac_address']['macAddress'][0]['mac'] =
         macAddress.isNotEmpty ? macAddress : machineId;
     devicesinfo['ram_info'] = systemInfo['InstalledRAM'] ?? '';
+    // The hardware's own make and model (e.g. "Azulle" / "Access4"); the
+    // hostname only when the firmware does not say.
+    final (manufacturer, model) = LinuxHardware.current();
+    devicesinfo['hardware_details']['manufacturer'] = manufacturer;
+    devicesinfo['hardware_details']['brand'] = manufacturer;
     devicesinfo['hardware_details']['model'] =
-        systemInfo['DeviceName'] ?? 'Linux';
+        model.isNotEmpty ? model : systemInfo['DeviceName'] ?? 'Linux';
     devicesinfo['hardware_details']['device_id'] =
         machineId.isNotEmpty ? machineId : macAddress;
     devicesinfo['storage_info']['total_storage'] =
