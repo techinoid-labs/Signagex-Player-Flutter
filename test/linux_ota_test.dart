@@ -124,7 +124,10 @@ void main() {
     await restarted.load();
     expect(restarted.job?['phase'], 'installing'); // installed, health check still running
     status('updated', timestamp: 1000090);
-    await Future<void>.delayed(const Duration(milliseconds: 80));
+    for (var i = 0; i < 300 && restarted.job?['phase'] != 'updated'; i++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    await restarted.settled(); // its last save must finish before tearDown deletes the folder
     expect(restarted.job?['phase'], 'updated');
   });
 

@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:flutter/foundation.dart';
+
 /// CMS "Update player" for managed Linux players (protocol linux_ota_v1).
 ///
 /// The CMS sends a server-signed command; the remote-view adapter verifies it
@@ -157,14 +159,31 @@ class LinuxOta {
     return _setPhase('failed', detail: reason);
   }
 
-  /// Follow the updater's status until the job reaches a terminal phase.
+  /// Follow the updater's status until the job reaches a terminal phase. Ticks
+  /// never overlap: two saves at once would race on the same temporary file.
   void _watch() {
     _poll?.cancel();
-    _poll = Timer.periodic(pollEvery, (timer) async {
-      if (_running || job == null) return;
-      await _resolve();
-      if (!active.contains(job!['phase'])) timer.cancel();
+    _poll = Timer.periodic(pollEvery, (timer) {
+      if (_tick != null || _running || job == null) return;
+      _tick = () async {
+        try {
+          await _resolve();
+          if (!active.contains(job!['phase'])) timer.cancel();
+        } finally {
+          _tick = null;
+        }
+      }();
     });
+  }
+
+  Future<void>? _tick;
+
+  /// Waits for a watcher tick that is still running (tests).
+  @visibleForTesting
+  Future<void> settled() async {
+    while (_tick != null) {
+      await _tick;
+    }
   }
 
   /// Run a verified CMS request. [verified] comes from the remote-view adapter.

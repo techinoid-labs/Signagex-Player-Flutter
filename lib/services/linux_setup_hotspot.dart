@@ -82,6 +82,10 @@ class LinuxSetupHotspot extends ChangeNotifier {
 
   /// waiting | connecting | failed | connected, with a line for the screen and page.
   String phase = 'waiting';
+
+  /// The Wi-Fi join started from the phone page, while it runs (tests await it).
+  @visibleForTesting
+  Future<void>? pendingConnect;
   String detail = '';
 
   DateTime? _offlineSince;
@@ -317,7 +321,11 @@ class LinuxSetupHotspot extends ChangeNotifier {
       return _reply(response, HttpStatus.badRequest, {'phase': phase, 'detail': 'The password must be 8-63 characters (or empty for an open network)'});
     }
     _reply(response, HttpStatus.accepted, {'phase': 'connecting', 'detail': 'Connecting to "$ssid"…'});
-    unawaited(_connect(ssid as String, password as String, body['hidden'] == true));
+    final join = _connect(ssid as String, password as String, body['hidden'] == true);
+    pendingConnect = join;
+    unawaited(join.whenComplete(() {
+      if (identical(pendingConnect, join)) pendingConnect = null;
+    }));
   }
 
   static void _reply(HttpResponse response, int status, Map body) {
