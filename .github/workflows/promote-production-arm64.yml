@@ -35,6 +35,24 @@ jobs:
         env:
           CONFIRM: ${{ inputs.confirm }}
         run: test "$CONFIRM" = release
+      - name: Require the linux branch's workflow
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/linux" ]; then
+            echo "::error::Run this workflow from the linux branch, not $GITHUB_REF."
+            exit 1
+          fi
+      - name: Require a successful linux ARM64 build as the source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          read -r path branch conclusion < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
+            -q '[.path, .head_branch, .conclusion] | @tsv')
+          echo "Run $RUN_ID: $path on $branch -> $conclusion"
+          test "$path" = .github/workflows/build-linux-arm64.yml || { echo "::error::Run $RUN_ID is not a Build Linux ARM64 run."; exit 1; }
+          test "$branch" = linux || { echo "::error::Run $RUN_ID built $branch, not linux."; exit 1; }
+          test "$conclusion" = success || { echo "::error::Run $RUN_ID concluded $conclusion."; exit 1; }
       - uses: actions/download-artifact@v4
         with:
           name: signagex-player-arm64

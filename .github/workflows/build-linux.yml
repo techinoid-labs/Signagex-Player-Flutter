@@ -7,7 +7,7 @@ name: Build Linux
 on:
   workflow_dispatch:
   push:
-    branches: [linux, perf/linux-browser-size]
+    branches: [linux]
 
 env:
   # Pinned so a build is reproducible rather than silently following whatever
@@ -15,14 +15,10 @@ env:
   # plugin configuration, this pin falling behind the runner image is the
   # first thing to check -- that is how the Windows workflow broke.
   #
-  # Was 3.24.5, which ships Dart 3.5.4. webview_cef 0.5.0 and later require
-  # Dart 3.6, so pub could not reach them and silently resolved 0.2.2 from
-  # 22 months ago -- a version predating the InjectUserScripts API this code
-  # uses. The build then failed with an undefined_function that nobody could
-  # reproduce locally, because a developer machine on a current Flutter
-  # resolves 0.6.x and compiles fine. 3.27.4 is the earliest stable carrying
-  # Dart 3.6, so this is the smallest bump that makes CI and a developer
-  # machine agree.
+  # Dependencies, webview_cef included, are pinned by
+  # linux/packaging/pubspec.lock (webview_cef 0.2.2, patched at configure time
+  # by linux/cef_safety/prepare.py), so this pin and that lockfile together
+  # define the build. Change them together.
   FLUTTER_VERSION: '3.27.4'
 
 jobs:
@@ -98,6 +94,15 @@ jobs:
 
       - name: Test
         run: flutter test
+
+      # The on-device updater, network helper, remote-view adapter and
+      # packaging scripts are Python. They run as root or handle signed CMS
+      # commands, so a regression there ships a broken updater to every screen.
+      - name: Test packaging and privileged helpers
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-cryptography python3-pil
+          /usr/bin/python3 -m unittest discover -s linux/packaging/tests -v
 
       - name: Exercise browser frame lifetime under sanitizers
         run: |
@@ -377,6 +382,12 @@ jobs:
     needs: [test, package]
     if: github.ref == 'refs/heads/linux'
     runs-on: ubuntu-latest
+    # Merges land close together and their package jobs finish in any order.
+    # One publish at a time, plus the version check below, keeps the feed
+    # from going backwards (run 66 once overwrote 67 this way).
+    concurrency:
+      group: publish-staging-linux-amd64
+      cancel-in-progress: false
     steps:
       - name: Download build identity
         uses: actions/download-artifact@v4
@@ -412,7 +423,16 @@ jobs:
           # The feed carries the package Version ("15"), which the on-device
           # updater compares with dpkg -- not the build id ("v15").
           version="$(dpkg-deb -f "$file" Version)"
-          echo "Uploading $file (${size_mb} MB) as $version (build $build_id)"
+
+          # Never move the feed backwards. Devices only install a strictly
+          # newer version, so an older upload would just strand them on it.
+          current="$(curl -sS --max-time 30 'https://stage.signagexai.com/v1/player-releases/latest?platform=linux' \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
+          if [ -n "$current" ] && ! dpkg --compare-versions "$version" gt "$current"; then
+            echo "::notice::Staging already serves $current; not publishing older or equal $version."
+            exit 0
+          fi
+          echo "Uploading $file (${size_mb} MB) as $version (build $build_id), replacing ${current:-nothing}"
 
           # -sf hides the response body and collapses every HTTP error into
           # "exit 22", which says nothing about why the server refused. The
@@ -453,63 +473,3 @@ jobs:
               exit 1
               ;;
           esac
-
-  size-audit:
-    # Audit the exact published v15 artifact independently of full recompiles.
-    if: startsWith(github.ref, 'refs/heads/perf/linux-browser-size')
-    runs-on: ubuntu-22.04
-    permissions:
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: signagex-player-deb
-          path: original
-          run-id: 40011248815
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Measure and trim the verified production package
-        run: |
-          set -euo pipefail
-          deb=original/signagex-player_v15_amd64.deb
-          echo "095b0766f82ed34ce5987212a059d6367713a9ea2ea5cb3634aabf7d2c50b041  $deb" | sha256sum -c -
-          dpkg-deb -R "$deb" work
-          cp work/opt/signagex-player/lib/libcef.so /tmp/original-libcef.so
-          python3 linux/packaging/trim_browser.py work/opt/signagex-player
-          # Make an explicitly distinct test version; leave v15's release untouched.
-          sed -i 's/^Version:.*/Version: 15+sizeaudit1/' work/DEBIAN/control
-          installed=$(du -sk work/opt/signagex-player | cut -f1)
-          sed -i "s/^Installed-Size:.*/Installed-Size: $installed/" work/DEBIAN/control
-          mkdir -p dist
-          dpkg-deb --build -Zxz --root-owner-group work dist/signagex-player_15+sizeaudit1_amd64.deb
-          {
-            echo '### Published v15 size audit'
-            echo "Original browser bytes: $(stat -c%s /tmp/original-libcef.so)"
-            echo "Trimmed browser bytes: $(stat -c%s work/opt/signagex-player/lib/libcef.so)"
-            echo "Original package bytes: $(stat -c%s "$deb")"
-            echo "Trimmed package bytes: $(stat -c%s dist/*.deb)"
-            echo "Trimmed installed KiB: $installed"
-          } | tee dist/size-report.txt >> "$GITHUB_STEP_SUMMARY"
-          (cd dist && sha256sum *.deb > SHA256SUMS)
-      - name: Install and verify browser ABI
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ./dist/signagex-player_15+sizeaudit1_amd64.deb
-          python3 - <<'CHECK'
-          import subprocess, sys
-          probe = "import ctypes,sys; lib=ctypes.CDLL(sys.argv[1]); f=lib.cef_api_hash; f.argtypes=[ctypes.c_int]; f.restype=ctypes.c_char_p; value=f(0); assert value; print(value.decode())"
-          def api_hash(path):
-              # CEF uses static TLS: load each version in its own process.
-              return subprocess.check_output([sys.executable, '-c', probe, path], text=True).strip()
-          original = api_hash('/tmp/original-libcef.so')
-          trimmed = api_hash('/opt/signagex-player/lib/libcef.so')
-          assert original == trimmed, (original, trimmed)
-          print('Original and trimmed Chromium libraries load and expose the same CEF API hash.')
-          CHECK
-          dpkg-query -W signagex-player
-      - uses: actions/upload-artifact@v4
-        with:
-          name: signagex-player-size-test-amd64
-          path: dist/
-          if-no-files-found: error
