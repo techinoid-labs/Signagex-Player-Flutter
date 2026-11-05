@@ -20,7 +20,7 @@ class _NoInternetViewState extends State<NoInternetView> {
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             CustomImageWidget(
-              imagePath: 'assets/images/WIFIX.png',
+              imagePath: 'assets/images/WifiX.png',
             ),
             SimpleText(
               text: "No Internet",
