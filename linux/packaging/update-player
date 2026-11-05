@@ -83,6 +83,22 @@ def clear_failures():
     try: ATTEMPTS.unlink()
     except FileNotFoundError: pass
 
+# The rollback copy is rebuilt on the device from ~530 MB of installed files.
+# dpkg's default xz took 7.5 of the 8.5 minutes of a CMS update on an Azulle's
+# 2-core Celeron (2026-11-05), while the CMS still showed "Downloading update".
+# On the same files gzip -1 is ~19x faster (5.6 s vs 107 s on two laptop cores)
+# for a 209 MB instead of 143 MB file, and every dpkg reads it. The file is
+# kept only until the next update.
+ROLLBACK_COMPRESSION = ('-Zgzip', '-z1')
+
+def rollback_space_needed(candidate_bytes, installed_kb):
+    # Unpacked copy of the installed package + its rollback .deb (at most the
+    # same size with fast compression) + the candidate + a margin for apt.
+    return candidate_bytes + 2*installed_kb*1024 + 512*1024*1024
+
+def build_rollback(previous, destination):
+    run('dpkg-deb', *ROLLBACK_COMPRESSION, '--build', '--root-owner-group', str(previous), str(destination))
+
 def recover_interrupted_update():
     status = pathlib.Path('/var/lib/signagex-player/update-status.json')
     if status.exists() and json.loads(status.read_text()).get('status') == 'installing':
@@ -157,7 +173,8 @@ def main():
                 if run('dpkg-deb','-f',str(candidate),'Version') != version:
                     raise ValueError('Manifest/package version mismatch')
                 # Build an exact rollback installer from the currently installed files.
-                if shutil.disk_usage(CACHE).free < candidate.stat().st_size*3 + 512*1024*1024: raise ValueError('Insufficient space for safe update and rollback')
+                installed_kb = int(run('dpkg-query','-W','-f=${Installed-Size}',package) or 0)
+                if shutil.disk_usage(CACHE).free < rollback_space_needed(candidate.stat().st_size, installed_kb): raise ValueError('Insufficient space for safe update and rollback')
                 previous = temporary/'previous'; previous.mkdir()
                 for entry in run('dpkg-query','-L',package).splitlines():
                     path = pathlib.Path(entry)
@@ -175,7 +192,7 @@ def main():
                     original = pathlib.Path('/var/lib/dpkg/info')/(package+'.'+name)
                     if original.exists(): shutil.copy2(original,control/name)
                 rollback = CACHE/'rollback.deb'
-                run('dpkg-deb','--build','--root-owner-group',str(previous),str(rollback))
+                build_rollback(previous, rollback)
                 restart = ['runuser','-u',user,'--','env',f'XDG_RUNTIME_DIR=/run/user/{uid}','systemctl','--user']
                 installing = True
                 update_status('installing',version)
