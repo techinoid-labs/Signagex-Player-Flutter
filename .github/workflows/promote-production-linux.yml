@@ -40,13 +40,48 @@ jobs:
   promote:
     if: inputs.architecture != 'arm64'
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read
+    concurrency:
+      group: production-amd64-release
+      cancel-in-progress: false
     steps:
       - name: Require explicit confirmation
+        env:
+          CONFIRM: ${{ inputs.confirm }}
         run: |
-          if [ "${{ inputs.confirm }}" != "release" ]; then
+          if [ "$CONFIRM" != "release" ]; then
             echo "::error::Confirmation not given. Type 'release' to promote this build to customers."
             exit 1
           fi
+
+      # GitHub runs the copy of this file on the ref it is dispatched from.
+      # Only the linux branch's copy is the reviewed release process.
+      - name: Require the linux branch's workflow
+        run: |
+          if [ "$GITHUB_REF" != "refs/heads/linux" ]; then
+            echo "::error::Run this workflow from the linux branch (Use workflow from: linux), not $GITHUB_REF."
+            exit 1
+          fi
+
+      # Only a green push build of linux has passed the tests and been on
+      # staging. A feature-branch run, or one whose tests failed, still
+      # uploads a production-named package, so the artifact alone proves
+      # nothing.
+      - name: Require a successful linux build as the source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ inputs.run_id }}
+        run: |
+          set -euo pipefail
+          read -r path branch event conclusion < <(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" \
+            -q '[.path, .head_branch, .event, .conclusion] | @tsv')
+          echo "Run $RUN_ID: $path on $branch ($event) -> $conclusion"
+          test "$path" = .github/workflows/build-linux.yml || { echo "::error::Run $RUN_ID is not a Build Linux run."; exit 1; }
+          test "$branch" = linux || { echo "::error::Run $RUN_ID built $branch, not linux."; exit 1; }
+          test "$event" = push || { echo "::error::Run $RUN_ID was $event, not a push to linux."; exit 1; }
+          test "$conclusion" = success || { echo "::error::Run $RUN_ID concluded $conclusion; promote only a fully green build."; exit 1; }
 
       - name: Download build identity from the chosen run
         uses: actions/download-artifact@v4
@@ -64,12 +99,28 @@ jobs:
           run-id: ${{ inputs.run_id }}
           github-token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Record what is being promoted
+      - name: Verify and record what is being promoted
         run: |
+          set -euo pipefail
+          packages=(dist/signagex-player_*_amd64.deb)
+          test "${#packages[@]}" = 1
+          deb="${packages[0]}"
+          test "$(dpkg-deb -f "$deb" Package)" = signagex-player
+          test "$(dpkg-deb -f "$deb" Architecture)" = amd64
           build_id="$(cat identity/build_id.txt)"
           commit="$(cat identity/commit.txt)"
-          echo "build_id=$build_id" >> "$GITHUB_ENV"
-          echo "Promoting $build_id (commit $commit) from run ${{ inputs.run_id }}."
+          # Register the package's own Version ("15"), not the build id ("v15"):
+          # the on-device updater compares this with dpkg.
+          version="$(dpkg-deb -f "$deb" Version)"
+          test "v$version" = "$build_id" || { echo "::error::Package version $version does not match build $build_id."; exit 1; }
+          checksum="$(sha256sum "$deb" | cut -d' ' -f1)"
+          {
+            echo "deb=$deb"
+            echo "version=$version"
+            echo "checksum=$checksum"
+            echo "build_id=$build_id"
+          } >> "$GITHUB_ENV"
+          echo "Promoting $build_id (commit $commit, sha256 $checksum) from run ${{ inputs.run_id }}."
           {
             echo "### Promoted Linux to production"
             echo ""
@@ -77,6 +128,7 @@ jobs:
             echo "|---|---|"
             echo "| Build | \`$build_id\` |"
             echo "| Commit | \`$commit\` |"
+            echo "| SHA-256 | \`$checksum\` |"
             echo "| Source run | [${{ inputs.run_id }}](${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ inputs.run_id }}) |"
             echo "| Promoted by | @${{ github.actor }} |"
           } >> "$GITHUB_STEP_SUMMARY"
@@ -85,32 +137,31 @@ jobs:
         env:
           RELEASE_KEY: ${{ secrets.PLAYER_RELEASE_UPLOAD_KEY }}
         run: |
+          set -euo pipefail
           if [ -z "$RELEASE_KEY" ]; then
             echo "::error::PLAYER_RELEASE_UPLOAD_KEY is not set, so nothing can be published."
             exit 1
           fi
-          deb="$(ls dist/signagex-player_*_amd64.deb | head -n 1)"
-          # Register the package's own Version ("15"), not the build id ("v15"):
-          # the on-device updater compares this with dpkg, as on ARM64.
-          version="$(dpkg-deb -f "$deb" Version)"
           # Strict, unlike the staging publish: if this fails, nothing reached
           # the fleet and the run must say so.
-          curl -sf -X POST "https://signagexai.com/v1/player-releases/upload" \
+          curl --fail-with-body --silent --show-error -X POST "https://signagexai.com/v1/player-releases/upload" \
             -H "x-release-key: $RELEASE_KEY" \
             -F "platform=linux" \
             -F "version=$version" \
             -F "file=@$deb"
-          echo "version=$version" >> "$GITHUB_ENV"
+          echo
           echo "Production package published as $version (build $build_id)."
 
-      - name: Confirm the feed serves it
+      # Devices read the feed on api.signagex.ai (update-channel.json), not
+      # the upload response, so that is what must serve this exact package.
+      - name: Confirm the device feed serves it
         run: |
-          # An upload that returns success but leaves the feed unchanged is
-          # the failure worth catching here -- devices read the feed, not the
-          # upload response.
-          served="$(curl -sf "https://signagexai.com/v1/player-releases/latest?platform=linux" | grep -o '"version":"[^"]*"' | cut -d'"' -f4 || true)"
-          if [ "$served" = "$version" ]; then
-            echo "Production feed now serves $served."
-          else
-            echo "::warning::Production feed reports '$served' but '$version' was just published. Check the release feed before telling anyone the update is live."
-          fi
+          set -euo pipefail
+          curl --fail --silent --show-error 'https://api.signagex.ai/v1/player-releases/latest?platform=linux' > feed.json
+          python3 - "$version" "$checksum" <<'PY'
+          import json, sys
+          feed = json.load(open('feed.json'))
+          assert feed.get('version') == sys.argv[1], f"feed serves {feed.get('version')!r}, expected {sys.argv[1]!r}"
+          assert feed.get('sha256') == sys.argv[2], f"feed sha256 {feed.get('sha256')!r} does not match the promoted package"
+          print('Production linux feed verified:', feed['version'], feed['sha256'])
+          PY

@@ -1,10 +1,11 @@
 name: Build Linux ARM64
 
-# Separate from amd64 publication. No production/staging feed mutation.
+# Separate from amd64 publication. Pushes to linux publish the staging arm64
+# package to the staging linux-arm64 feed; production is promote-production-arm64.yml.
 on:
   workflow_dispatch:
   push:
-    branches: [linux, perf/linux-browser-size]
+    branches: [linux]
     paths:
       - 'lib/**'
       - 'linux/**'
@@ -184,3 +185,65 @@ jobs:
             dist/signagex-player-staging_*_arm64.deb
             dist/SignageX-Player-Staging-*-aarch64.AppImage
 
+  publish-staging-arm64:
+    needs: [package-arm64]
+    if: github.ref == 'refs/heads/linux'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: publish-staging-linux-arm64
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: signagex-player-arm64
+          path: dist
+
+      - name: Verify the artifact belongs to this commit
+        run: |
+          set -euo pipefail
+          # SHA256SUMS lists paths as dist/<file>, relative to the workspace.
+          sha256sum --check dist/SHA256SUMS
+          grep -qx "commit=${{ github.sha }}" dist/build-identity.txt
+
+      - name: Publish staging package
+        env:
+          RELEASE_KEY: ${{ secrets.PLAYER_RELEASE_UPLOAD_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$RELEASE_KEY" ]; then
+            echo "::warning::PLAYER_RELEASE_UPLOAD_KEY secret not set -- skipping staging publish."
+            exit 0
+          fi
+          packages=(dist/signagex-player-staging_*_arm64.deb)
+          test "${#packages[@]}" = 1
+          deb="${packages[0]}"
+          test "$(dpkg-deb -f "$deb" Architecture)" = arm64
+          test "$(dpkg-deb -f "$deb" Package)" = signagex-player-staging
+          version="$(dpkg-deb -f "$deb" Version)"
+          feed='https://stage.signagexai.com/v1/player-releases/latest?platform=linux-arm64'
+
+          # Never move the feed backwards (see build-linux.yml).
+          current="$(curl -sS --max-time 30 "$feed" \
+            | python3 -c 'import json,sys; print(json.load(sys.stdin).get("version",""))' 2>/dev/null || true)"
+          if [ -n "$current" ] && ! dpkg --compare-versions "$version" gt "$current"; then
+            echo "::notice::Staging arm64 already serves $current; not publishing older or equal $version."
+            exit 0
+          fi
+
+          status=$(curl -sS -o response.txt -w '%{http_code}' \
+            -X POST "https://stage.signagexai.com/v1/player-releases/upload" \
+            -H "x-release-key: $RELEASE_KEY" \
+            -F "platform=linux-arm64" \
+            -F "version=$version" \
+            -F "file=@$deb") || true
+          echo "HTTP $status"; head -c 2000 response.txt || true; echo
+          case "$status" in
+            2*) echo "Staging arm64 package published as $version." ;;
+            400)
+              # Production accepts linux-arm64; staging may not yet. Do not
+              # turn every Pi build red over a backend setting.
+              echo "::warning::Staging rejected platform=linux-arm64 (400). Enable linux-arm64 on the staging player-releases endpoint."
+              ;;
+            401|403) echo "::error::Staging rejected the release key (HTTP $status)."; exit 1 ;;
+            *) echo "::error::Staging arm64 upload failed with HTTP $status."; exit 1 ;;
+          esac
