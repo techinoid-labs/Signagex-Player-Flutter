@@ -59,12 +59,16 @@ class LinuxConfiguration extends ChangeNotifier {
   bool get managedUpdates =>
       File('/usr/lib/signagex-player/update-player').existsSync() && _updatePermission;
 
+  /// The SignageX kiosk session (SIGNAGEX_KIOSK=1) always starts the player at
+  /// boot itself and runs no XDG autostart, so "Launch on boot" cannot apply there.
+  static bool get kiosk => Platform.environment['SIGNAGEX_KIOSK'] == '1';
+
   Map<String, dynamic> get capabilities => {
         'protocol': 1,
         'platform': 'linux',
         'settings': {
           for (final key in linuxConfigurationKeys)
-            key: key == 'use_html5_webview'
+            key: key == 'use_html5_webview' || (key == 'launch_on_boot' && kiosk)
                 ? 'unsupported'
                 : key == 'apply_app_updates' &&
                         (!File('/usr/lib/signagex-player/update-player')
@@ -260,7 +264,10 @@ class LinuxConfiguration extends ChangeNotifier {
     if (key == 'use_html5_webview' && value == true)
       throw UnsupportedError(
           'Legacy Android WebView is unavailable on Linux; CEF is used');
-    if (key == 'launch_on_boot') {
+    if (key == 'launch_on_boot' && kiosk) {
+      // Reported as unsupported; never recreate the desktop autostart entry here.
+      return;
+    } else if (key == 'launch_on_boot') {
       if (value == true) {
         final unit = File(
             '${Platform.environment['HOME']}/.config/systemd/user/signagex-player.service');
