@@ -27,6 +27,21 @@ int main() {
   assert(width == 2 && height == 1);
   assert(pixels[0] == 3 && pixels[1] == 2 && pixels[2] == 1);
   assert(pixels[4] == 6 && pixels[7] == 128);
+  // Widths around the SIMD block sizes (4 and 16 pixels) exercise both the
+  // vector body and the scalar tail against a bytewise reference.
+  for (int w = 1; w <= 70; ++w) {
+    std::vector<uint8_t> src(size_t(w) * 3 * 4);
+    for (size_t i = 0; i < src.size(); ++i) src[i] = uint8_t(i * 37 + w);
+    signagex::FrameStore swizzle;
+    assert(swizzle.PublishBgra(src.data(), w, 3));
+    assert(swizzle.Snapshot(&pixels, &width, &height));
+    assert(width == uint32_t(w) && height == 3);
+    for (size_t i = 0; i < src.size(); i += 4) {
+      assert(pixels[i] == src[i + 2] && pixels[i + 1] == src[i + 1]);
+      assert(pixels[i + 2] == src[i] && pixels[i + 3] == src[i + 3]);
+    }
+  }
+  assert(frames.Snapshot(&pixels, &width, &height));
   const auto* held = pixels;
   std::thread producer([&] {
     for (int i = 0; i < 10000; ++i) {

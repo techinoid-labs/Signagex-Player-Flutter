@@ -20,9 +20,10 @@ class FrameStore {
     std::lock_guard<std::mutex> lock(mutex_);
     const size_t bytes = size_t(width) * size_t(height) * 4;
     pending_.resize(bytes);
-    // This runs on the platform thread for every CEF paint (8 MB at 1080p).
-    // Swap B and R a whole pixel at a time so the compiler vectorises it; the
-    // byte-by-byte loop cost about half of that thread on a web zone.
+    // This runs on the platform thread for every CEF paint (8 MB at 1080p, up
+    // to 30 a second). Swap B and R a whole pixel at a time: on the Celeron
+    // N4020 that is ~4.4 ms a 1080p frame against ~17 ms bytewise, and it is
+    // already memory-bound (explicit SIMD measured no faster).
     // Both Linux targets (x86_64, arm64) are little-endian.
     const auto* src = static_cast<const uint8_t*>(source);
     uint8_t* dst = pending_.data();
