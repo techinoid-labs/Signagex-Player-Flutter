@@ -14,6 +14,23 @@ struct _MyApplication {
 
 G_DEFINE_TYPE(MyApplication, my_application, GTK_TYPE_APPLICATION)
 
+// Flutter 3.27 renders into a GtkGLArea with an alpha channel. For an alpha
+// GL area, GTK 3.24 on Ubuntu (glarea-transparency.patch) composites the
+// window's cairo background under it on every frame via GLX
+// texture-from-pixmap: a window-sized X pixmap, a walk over every GLX
+// fbconfig (XGetVisualInfo) and a blend. On the 2-core Celeron that was most
+// of the frame-present cost in the player and in Xorg. The window is always
+// fullscreen and opaque, so an opaque GL area loses nothing and lets GTK blit
+// Flutter's frame straight to the back buffer. SIGNAGEX_GL_ALPHA=1 restores
+// the stock alpha GL area (A/B measurement, or if a future build needs it).
+static void make_gl_areas_opaque(GtkWidget* widget, gpointer) {
+  if (GTK_IS_GL_AREA(widget)) {
+    gtk_gl_area_set_has_alpha(GTK_GL_AREA(widget), FALSE);
+  } else if (GTK_IS_CONTAINER(widget)) {
+    gtk_container_forall(GTK_CONTAINER(widget), make_gl_areas_opaque, nullptr);
+  }
+}
+
 // Called when first Flutter frame received.
 static void first_frame_cb(MyApplication* self, FlView* view) {
   gtk_widget_show(gtk_widget_get_toplevel(GTK_WIDGET(view)));
@@ -68,6 +85,9 @@ static void my_application_activate(GApplication* application) {
   // for transparent.
   gdk_rgba_parse(&background_color, "#000000");
   fl_view_set_background_color(view, &background_color);
+  if (g_strcmp0(g_getenv("SIGNAGEX_GL_ALPHA"), "1") != 0) {
+    make_gl_areas_opaque(GTK_WIDGET(view), nullptr);
+  }
   gtk_widget_show(GTK_WIDGET(view));
   gtk_container_add(GTK_CONTAINER(window), GTK_WIDGET(view));
 

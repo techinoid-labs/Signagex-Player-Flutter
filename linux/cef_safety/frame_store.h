@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstring>
 #include <mutex>
 #include <vector>
 
@@ -19,12 +20,18 @@ class FrameStore {
     std::lock_guard<std::mutex> lock(mutex_);
     const size_t bytes = size_t(width) * size_t(height) * 4;
     pending_.resize(bytes);
+    // This runs on the platform thread for every CEF paint (8 MB at 1080p, up
+    // to 30 a second). Swap B and R a whole pixel at a time: on the Celeron
+    // N4020 that is ~4.4 ms a 1080p frame against ~17 ms bytewise, and it is
+    // already memory-bound (explicit SIMD measured no faster).
+    // Both Linux targets (x86_64, arm64) are little-endian.
     const auto* src = static_cast<const uint8_t*>(source);
+    uint8_t* dst = pending_.data();
     for (size_t i = 0; i < bytes; i += 4) {
-      pending_[i] = src[i + 2];
-      pending_[i + 1] = src[i + 1];
-      pending_[i + 2] = src[i];
-      pending_[i + 3] = src[i + 3];
+      uint32_t pixel;
+      std::memcpy(&pixel, src + i, 4);
+      pixel = (pixel & 0xFF00FF00u) | ((pixel >> 16) & 0xFFu) | ((pixel & 0xFFu) << 16);
+      std::memcpy(dst + i, &pixel, 4);
     }
     pending_width_ = width;
     pending_height_ = height;

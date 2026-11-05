@@ -99,6 +99,10 @@ jobs:
           flutter analyze --no-fatal-warnings --no-fatal-infos
           flutter test
           python3 -m unittest discover -s linux/packaging/tests -v
+          clang++ -std=c++17 -Wall -Wextra -Werror -pthread \
+            -fsanitize=address,undefined -fno-omit-frame-pointer -g \
+            linux/cef_safety/tests/frame_store_test.cc -o /tmp/cef-frame-store-test
+          ASAN_OPTIONS=detect_leaks=1 /tmp/cef-frame-store-test
           clang++ -std=c++17 -Wall -Wextra -Werror -fsanitize=address,undefined \
             linux/cef_safety/tests/page_frame_gate_test.cc -o /tmp/cef-page-gate-test
           /tmp/cef-page-gate-test
