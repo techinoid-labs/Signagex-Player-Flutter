@@ -18,7 +18,7 @@ class LinuxNetwork {
     Future<bool> Function()? permitted,
     DateTime Function()? clock,
   })  : _run = run ?? _command,
-        _runHelper = runHelper ?? _pkexecHelper,
+        _runHelper = runHelper ?? pkexecHelper,
         _permitted = permitted ?? _inNetworkGroup,
         _clock = clock ?? DateTime.now;
 
@@ -41,6 +41,9 @@ class LinuxNetwork {
   DateTime? _statusAt;
   Future<void>? _loading;
   bool _running = false;
+
+  /// A Wi-Fi change is being applied.
+  bool get busy => _running;
 
   /// Split one `nmcli -t` line; ':' and '\' inside values arrive escaped.
   static List<String> fields(String line) {
@@ -190,10 +193,11 @@ class LinuxNetwork {
       final values = fields(line);
       if (values.length < 3 || values[1] != '802-11-wireless' || saved.length >= 16) continue;
       final details = properties(await _run('nmcli', [
-        '-t', '-f', '802-11-wireless.ssid,802-11-wireless.hidden,802-11-wireless-security.key-mgmt', 'connection', 'show', values[0]
+        '-t', '-f', '802-11-wireless.ssid,802-11-wireless.mode,802-11-wireless.hidden,802-11-wireless-security.key-mgmt', 'connection', 'show', values[0]
       ]));
       final ssid = details['802-11-wireless.ssid'] ?? '';
-      if (ssid.isEmpty || utf8.encode(ssid).length > 32) continue;
+      // The setup hotspot is an access point, not a network the player can join.
+      if (ssid.isEmpty || utf8.encode(ssid).length > 32 || details['802-11-wireless.mode'] == 'ap') continue;
       final keyManagement = details['802-11-wireless-security.key-mgmt'] ?? '';
       saved.add({
         'ssid': ssid,
@@ -236,8 +240,9 @@ class LinuxNetwork {
   }
 
   /// Run a verified CMS request. [verified] comes from the remote-view adapter
-  /// and is the only place the decrypted password exists in the player.
-  Future<void> run(Map verified) async {
+  /// and is the only place the decrypted password exists in the player (or from
+  /// the setup hotspot page, [source]).
+  Future<void> run(Map verified, {String source = 'the CMS'}) async {
     await load();
     final id = verified['job']?.toString() ?? '';
     if (id.isEmpty || id.length > 64 || (job != null && job!['job'] == id)) return;
@@ -251,7 +256,7 @@ class LinuxNetwork {
     if (!(await status(force: true))['supported']) {
       return _setPhase('failed', detail: 'Wi-Fi management is not enabled on this device');
     }
-    await event?.call('Network change requested from the CMS: ${verified['op']} "$ssid"', 'info');
+    await event?.call('Network change requested from $source: ${verified['op']} "$ssid"', 'info');
     _running = true;
     try {
       final result = await _runHelper(jsonEncode({
@@ -315,7 +320,7 @@ class LinuxNetwork {
   static Future<bool> _inNetworkGroup() async =>
       (await _command('id', ['-nG'])).split(RegExp(r'\s+')).contains('signagex-network');
 
-  static Future<ProcessResult> _pkexecHelper(String request) async {
+  static Future<ProcessResult> pkexecHelper(String request) async {
     final process = await Process.start('pkexec', ['/usr/lib/signagex-player/network-helper']);
     process.stdin.write(request);
     await process.stdin.close();

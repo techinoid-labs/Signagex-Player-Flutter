@@ -122,5 +122,141 @@ class ChangeTests(unittest.TestCase):
         with patch.object(helper, 'nmcli', fake), self.assertRaisesRegex(RuntimeError, 'not saved'):
             helper.remove(self.request(op='wifi_remove'))
 
+class HotspotNetworkManager(FakeNetworkManager):
+    """Adds the access-point profile, scans and activation results to the fake."""
+    def __init__(self, devices, scan='', up_ok=True, profiles=None):
+        super().__init__(profiles or {}, devices, up_ok=up_ok)
+        self.scan, self.loaded, self.active = scan, False, set()
+    def __call__(self, *args, timeout=60):
+        self.calls.append(args)
+        if args[:4] == ('-t', '-f', 'UUID', 'connection'): return done('\n'.join(self.active))
+        if args[:4] == ('-t', '-f', 'SSID,SIGNAL,SECURITY', 'device'): return done(self.scan)
+        if args[:2] == ('connection', 'load'): self.loaded = True; return done()
+        if args[:2] == ('connection', 'delete') and args[2] == helper.HOTSPOT_UUID:
+            self.loaded = False; self.active.discard(helper.HOTSPOT_UUID); return done()
+        if 'up' in args and helper.HOTSPOT_UUID in args:
+            if self.up_ok: self.active.add(helper.HOTSPOT_UUID)
+            return done(code=0 if self.up_ok else 4)
+        self.calls.pop()
+        return super().__call__(*args, timeout=timeout)
+
+class HotspotTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        root = pathlib.Path(self.temporary.name)
+        patch.object(helper, 'HOTSPOT_PROFILE', root/'nm'/'signagex-setup-hotspot.nmconnection').start()
+        patch.object(helper, 'HOTSPOT_STATE', root/'run'/'hotspot.json').start()
+        patch.object(helper, 'PROFILES', root/'profiles').start()
+        patch.object(helper.time, 'sleep', lambda _: None).start()
+        self.forwarding = []
+        patch.object(helper, 'disable_forwarding', self.forwarding.append).start()
+        self.commands = []
+        def run(command, **_):
+            self.commands.append(command); return done('Status: active\n' if command == ['ufw', 'status'] else '')
+        patch.object(helper.subprocess, 'run', run).start()
+        patch.object(helper.subprocess, 'check_call', lambda command: self.commands.append(command)).start()
+        patch.object(helper.shutil, 'which', lambda name: '/usr/sbin/' + name).start()
+        self.fake = HotspotNetworkManager([('enp2s0', 'ethernet', 'unavailable'), ('wlp3s0', 'wifi', 'disconnected')],
+                                          scan='Office:70:WPA2\nOffice:40:WPA2\nCafe:55:\nCorp\\:HQ:90:WPA2 802.1X\nSignageX-Setup-ZZZZ:99:WPA2\n:30:WPA2\n')
+        patch.object(helper, 'nmcli', self.fake).start()
+        patch.object(helper, 'reaches_api', lambda device: False).start()
+    def tearDown(self):
+        patch.stopall(); self.temporary.cleanup()
+
+    def test_validates_hotspot_requests(self):
+        self.assertEqual(helper.validate({'job': 'h-1', 'op': 'hotspot_start', 'suffix': 'ab12'}), {'job': 'h-1', 'op': 'hotspot_start', 'suffix': 'AB12'})
+        self.assertEqual(helper.validate({'job': 'h-1', 'op': 'hotspot_stop', 'ssid': 'ignored'}), {'job': 'h-1', 'op': 'hotspot_stop'})
+        for suffix in ('abc', 'ab;d', 'abcde', None, 1234):
+            with self.assertRaises(ValueError, msg=suffix): helper.validate({'job': 'h', 'op': 'hotspot_start', 'suffix': suffix})
+
+    def test_keyfile_is_a_wpa2_access_point_without_routing_or_ipv6(self):
+        text = helper.hotspot_keyfile('SignageX-Setup-AB12', 'pw', 'wlp3s0')
+        for line in ('mode=ap', 'ssid=SignageX-Setup-AB12', 'key-mgmt=wpa-psk', 'proto=rsn', 'method=shared',
+                     'address1=10.42.0.1/24', 'method=disabled', 'autoconnect=false', 'interface-name=wlp3s0'):
+            self.assertIn(line + '\n', text)
+
+    def test_nearby_networks_are_unique_strongest_first(self):
+        self.assertEqual(helper.nearby_networks('wlp3s0'), [
+            {'ssid': 'Corp:HQ', 'signal': 90, 'security': 'enterprise'},
+            {'ssid': 'Office', 'signal': 70, 'security': 'wpa'},
+            {'ssid': 'Cafe', 'signal': 55, 'security': 'open'}])
+
+    def test_start_opens_hotspot_and_firewall_on_the_hotspot_interface_only(self):
+        state = helper.hotspot_start('AB12')
+        self.assertEqual(state['ssid'], 'SignageX-Setup-AB12')
+        self.assertEqual(len(state['password']), 12)
+        self.assertTrue(set(state['password']) <= set(helper.PASSWORD_ALPHABET))
+        self.assertEqual((state['address'], state['port']), ('10.42.0.1', 8080))
+        self.assertEqual(state['networks'][0]['ssid'], 'Corp:HQ')
+        self.assertEqual(helper.HOTSPOT_PROFILE.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(helper.HOTSPOT_STATE.stat().st_mode & 0o777, 0o600)
+        self.assertIn('psk=' + state['password'], helper.HOTSPOT_PROFILE.read_text())
+        self.assertEqual(self.forwarding, ['wlp3s0'])
+        timer = next(i for i, c in enumerate(self.commands) if c[0] == 'systemd-run')
+        self.assertIn('--on-active=15min', self.commands[timer])
+        allows = [c for c in self.commands if c[:2] == ['ufw', 'allow']]
+        self.assertEqual(len(allows), 3)
+        self.assertTrue(all(c[2:5] == ['in', 'on', 'wlp3s0'] for c in allows))
+        self.assertTrue(timer < self.commands.index(allows[0]), 'the stop timer is armed before anything is opened')
+        everything = [' '.join(c) for c in self.commands] + [' '.join(c) for c in self.fake.calls]
+        self.assertFalse(any(state['password'] in c for c in everything), 'password must never reach a command line')
+
+    def test_start_returns_the_running_hotspot_unchanged(self):
+        first = helper.hotspot_start('AB12')
+        self.commands.clear()
+        self.assertEqual(helper.hotspot_start('AB12'), first)
+        self.assertFalse(any(c[0] in ('systemd-run', 'ufw') and c[1:2] != ['status'] for c in self.commands))
+
+    def test_password_is_kept_for_the_boot(self):
+        first = helper.hotspot_start('AB12')['password']
+        helper.hotspot_stop()
+        self.assertNotIn('networks', json.loads(helper.HOTSPOT_STATE.read_text()))
+        self.assertEqual(helper.hotspot_start('AB12')['password'], first)
+
+    def test_refuses_while_online(self):
+        with patch.object(helper, 'reaches_api', lambda device: True), self.assertRaisesRegex(RuntimeError, 'online'):
+            helper.hotspot_start('AB12')
+        self.assertFalse(helper.HOTSPOT_PROFILE.exists())
+
+    def test_failed_start_cleans_up(self):
+        self.fake.up_ok = False
+        with self.assertRaisesRegex(RuntimeError, 'Could not start'):
+            helper.hotspot_start('AB12')
+        self.assertFalse(helper.HOTSPOT_PROFILE.exists())
+        self.assertEqual(len([c for c in self.commands if c[:3] == ['ufw', 'delete', 'allow']]), 3)
+        self.assertIn(['systemctl', 'stop', 'signagex-setup-hotspot-expire.timer'], self.commands)
+
+    def test_stop_removes_profile_rules_and_timer(self):
+        helper.hotspot_start('AB12')
+        self.commands.clear()
+        self.assertEqual(helper.hotspot_stop(), 'Setup hotspot stopped')
+        self.assertFalse(self.fake.loaded)
+        self.assertEqual(len([c for c in self.commands if c[:3] == ['ufw', 'delete', 'allow']]), 3)
+        self.assertIn(['systemctl', 'stop', 'signagex-setup-hotspot-expire.timer'], self.commands)
+
+    def test_wifi_from_the_setup_page_ends_the_hotspot(self):
+        helper.hotspot_start('AB12')
+        self.fake.profiles[helper.HOTSPOT_UUID] = ('SignageX-Setup-AB12', True)
+        with patch.object(helper, 'reaches_api', lambda device: True):
+            helper.add({'job': 'j', 'op': 'wifi_add', 'ssid': 'Office', 'password': 'secret123', 'hidden': False, 'connect': True})
+        self.assertFalse(self.fake.loaded)
+
+    def test_failed_wifi_from_the_setup_page_brings_the_hotspot_back(self):
+        helper.hotspot_start('AB12')
+        self.fake.profiles[helper.HOTSPOT_UUID] = ('SignageX-Setup-AB12', True)
+        self.forwarding.clear()
+        with patch.object(helper.time, 'monotonic', side_effect=[0, 0, 100]), self.assertRaisesRegex(RuntimeError, 'Restored'):
+            helper.add({'job': 'j', 'op': 'wifi_add', 'ssid': 'Office', 'password': 'wrongpass', 'hidden': False, 'connect': True})
+        self.assertTrue(self.fake.loaded)
+        self.assertIn(helper.HOTSPOT_UUID, self.fake.active)
+        self.assertEqual(self.forwarding, ['wlp3s0'])
+
+    def test_answer_goes_to_stdout_only(self):
+        with patch('builtins.print') as output:
+            helper.hotspot({'job': 'h', 'op': 'hotspot_start', 'suffix': 'AB12'})
+        answer = json.loads(output.call_args[0][0])
+        self.assertEqual(answer['phase'], 'applied')
+        self.assertEqual(answer['hotspot']['ssid'], 'SignageX-Setup-AB12')
+
 if __name__ == '__main__':
     unittest.main()

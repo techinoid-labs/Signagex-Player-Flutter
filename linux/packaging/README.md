@@ -161,6 +161,23 @@ root-only NetworkManager profile and never puts the password on a command line.
 otherwise it restores the previous connection and deletes the new profile. Removing
 the network that carries the player's only connection is refused.
 
+### Setup hotspot
+
+With the same opt-in, a player with Wi-Fi hardware that has had no default route
+or no SignageX API for 3 minutes, and is unpaired or has no saved Wi-Fi, asks the
+helper for a temporary WPA2 hotspot `SignageX-Setup-XXXX` (last 4 of the player
+code, else of the Wi-Fi MAC). The screen shows a QR code to join it and one for the
+setup page, `http://10.42.0.1:8080/`, which the player serves on that address only
+(Host and Origin checked, JSON only, 60 requests/min per phone, 10 attempts). The
+page's Wi-Fi goes through the same "connect now" path; on failure the helper's
+rollback reopens the hotspot. The helper refuses to start it while the API is
+reachable, keeps the profile and a random per-boot password root-only in `/run`,
+opens DHCP, DNS and 8080 in ufw on the hotspot interface only, turns IPv4
+forwarding off on it, and arms a root timer that closes it after 15 minutes. The
+player also closes it as soon as a default route appears (cable, saved Wi-Fi).
+Needs `dnsmasq-base` (NetworkManager shared mode) and `wpasupplicant`. While the
+player is online the cost is one read of `/proc/net/route` per 30 s tick.
+
 ## Optional dedicated kiosk session
 
 On Ubuntu/Debian, after installing the .deb, run:
