@@ -134,4 +134,32 @@ class UpdatePolicyTests(unittest.TestCase):
             self.assertIn('--unit=signagex-managed-update', arguments)
             self.assertIn('--setenv=PKEXEC_UID=1000', arguments)
             self.assertIn('--wait', arguments)
+
+    def test_rollback_is_built_fast_and_installs_the_same_files(self):
+        # A real dpkg-deb build of a small package, with the flags the device uses.
+        import shutil, subprocess, tempfile
+        if not shutil.which('dpkg-deb'): self.skipTest('dpkg-deb not available')
+        namespace = updater['main'].__globals__
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            previous = root/'previous'
+            (previous/'DEBIAN').mkdir(parents=True)
+            (previous/'DEBIAN'/'control').write_text('Package: signagex-player\nVersion: 68\nArchitecture: amd64\nMaintainer: SignageX <support@signagex.ai>\nDescription: test\n')
+            (previous/'opt/signagex-player/lib').mkdir(parents=True)
+            payload = previous/'opt/signagex-player/lib/libapp.so'
+            payload.write_bytes(b'\x7fELF' + bytes(range(256))*4096)
+            rollback = root/'rollback.deb'
+            namespace['build_rollback'](previous, rollback)
+            members = subprocess.run(['ar','t',str(rollback)], capture_output=True, text=True, check=True).stdout.split()
+            self.assertIn('data.tar.gz', members)
+            self.assertEqual(subprocess.run(['dpkg-deb','-f',str(rollback),'Version'], capture_output=True, text=True, check=True).stdout.strip(), '68')
+            unpacked = root/'unpacked'
+            subprocess.run(['dpkg-deb','-x',str(rollback),str(unpacked)], check=True)
+            self.assertEqual((unpacked/'opt/signagex-player/lib/libapp.so').read_bytes(), payload.read_bytes())
+
+    def test_space_check_counts_the_unpacked_copy_and_the_rollback(self):
+        needed = updater['rollback_space_needed'](143_000_000, 540_000)
+        # 143 MB candidate + 2 x 540 MB installed + 512 MiB margin.
+        self.assertEqual(needed, 143_000_000 + 2*540_000*1024 + 512*1024*1024)
+        self.assertGreater(needed, 143_000_000*3 + 512*1024*1024)
 if __name__ == '__main__': unittest.main()
