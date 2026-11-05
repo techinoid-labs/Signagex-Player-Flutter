@@ -85,6 +85,8 @@ void main() {
   });
 
   tearDown(() async {
+    // A join still writing its state must finish before the folder goes.
+    await hotspot.pendingConnect;
     await hotspot.stop('test finished');
     await root.delete(recursive: true);
   });
@@ -191,7 +193,7 @@ void main() {
     await offlineFor(const Duration(minutes: 3));
     final response = await send('POST', '/connect', body: {'ssid': 'Office', 'password': 'secret123'}, origin: 'http://127.0.0.1:$port');
     expect(response.statusCode, HttpStatus.accepted);
-    await Future.delayed(const Duration(milliseconds: 50));
+    await hotspot.pendingConnect;
     expect(wifiRequests.single, containsPair('op', 'wifi_add'));
     expect(wifiRequests.single, containsPair('connect', true));
     expect(wifiRequests.single, containsPair('password', 'secret123'));
@@ -204,7 +206,7 @@ void main() {
     wifiOutcome = {'phase': 'failed', 'detail': "Could not connect to 'Office' (wrong password or no internet). Restored previous connection."};
     await offlineFor(const Duration(minutes: 3));
     await send('POST', '/connect', body: {'ssid': 'Office', 'password': 'wrongpass'});
-    await Future.delayed(const Duration(milliseconds: 50));
+    await hotspot.pendingConnect;
     expect(hotspot.phase, 'failed');
     expect(hotspot.info, isNotNull);
     final status = jsonDecode(await text(await send('GET', '/status'))) as Map;
