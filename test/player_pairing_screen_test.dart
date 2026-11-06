@@ -8,6 +8,12 @@ void main() {
     const Size(1024, 600),
     const Size(800, 480),
     const Size(600, 1024),
+    const Size(1280, 720),
+    const Size(1920, 1080),
+    const Size(3840, 2160),
+    const Size(1080, 1920),
+    const Size(2160, 3840),
+    const Size(3440, 1440),
   ]) {
     testWidgets('complete pairing flow fits $size without scrolling',
         (tester) async {
@@ -38,6 +44,26 @@ void main() {
       }
     });
   }
+
+  testWidgets('4K pairing QR and code scale with the display', (tester) async {
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+    Future<double> qrWidth(Size size) async {
+      tester.view.physicalSize = size;
+      await tester.pumpWidget(const MaterialApp(
+        home: PlayerPairingScreen(code: '0607c6'),
+      ));
+      await tester.pumpAndSettle();
+      final qr = find.byType(QrImageView);
+      return tester.getBottomRight(qr).dx - tester.getTopLeft(qr).dx;
+    }
+
+    final hdWidth = await qrWidth(const Size(1280, 720));
+    final uhdWidth = await qrWidth(const Size(3840, 2160));
+    expect(uhdWidth, closeTo(hdWidth * 3, 0.1));
+    expect(tester.takeException(), isNull);
+  });
 
   testWidgets('empty code shows a loading state rather than a fake QR',
       (tester) async {

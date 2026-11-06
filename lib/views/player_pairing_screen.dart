@@ -1,8 +1,10 @@
+import 'dart:math' as math;
+
 import '../widgets/linux_configured_surface.dart';
 import 'package:flutter/material.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
-/// Fits the complete pairing flow on small signage displays, including 1024x600.
+/// Scales pairing to signage displays while preserving compact-screen reflow.
 /// Scrolling remains available for unusually small screens or large text sizes.
 class PlayerPairingScreen extends StatelessWidget {
   const PlayerPairingScreen({super.key, required this.code});
@@ -18,51 +20,74 @@ class PlayerPairingScreen extends StatelessWidget {
       backgroundColor: _background,
       body: SafeArea(
         child: LayoutBuilder(builder: (context, constraints) {
-          final landscape = constraints.maxWidth >= 760 &&
-              constraints.maxWidth > constraints.maxHeight;
-          final compact = constraints.maxHeight < 700;
-          final padding = constraints.maxWidth < 480 ? 20.0 : 32.0;
-          final qrSize = landscape
-              ? (constraints.maxHeight < 520 ? 160.0 : 220.0)
-              : (compact ? 156.0 : 240.0);
-          final introduction = _introduction(compact: compact);
-          final pairing = _pairingCard(qrSize: qrSize, compact: compact);
-
-          return SingleChildScrollView(
-            child: ConstrainedBox(
-              constraints: BoxConstraints(minHeight: constraints.maxHeight),
-              child: Padding(
-                padding: EdgeInsets.all(padding),
-                child: Center(
-                  child: ConstrainedBox(
-                    constraints: const BoxConstraints(maxWidth: 1120),
-                    child: landscape
-                        ? Row(
-                            crossAxisAlignment: CrossAxisAlignment.center,
-                            children: [
-                              Expanded(child: introduction),
-                              const SizedBox(width: 40),
-                              SizedBox(width: qrSize + 72, child: pairing),
-                            ],
-                          )
-                        : Column(
-                            mainAxisSize: MainAxisSize.min,
-                            children: [
-                              introduction,
-                              SizedBox(height: compact ? 20 : 32),
-                              ConstrainedBox(
-                                constraints:
-                                    const BoxConstraints(maxWidth: 360),
-                                child: pairing,
-                              ),
-                            ],
-                          ),
-                  ),
-                ),
+          // Use a readable 720p canvas on larger displays. Scale the whole flow
+          // together so QR modules, spacing and text retain their proportions.
+          // Small screens keep their real constraints and can reflow or scroll.
+          final wide = constraints.maxWidth > constraints.maxHeight;
+          final scale = math.max(
+            1.0,
+            math.min(
+              constraints.maxWidth / (wide ? 1280 : 720),
+              constraints.maxHeight / (wide ? 720 : 1280),
+            ),
+          );
+          return SizedBox.expand(
+            child: FittedBox(
+              fit: BoxFit.contain,
+              child: SizedBox(
+                width: constraints.maxWidth / scale,
+                height: constraints.maxHeight / scale,
+                child: LayoutBuilder(builder: _buildLayout),
               ),
             ),
           );
         }),
+      ),
+    );
+  }
+
+  Widget _buildLayout(BuildContext context, BoxConstraints constraints) {
+    final landscape = constraints.maxWidth >= 760 &&
+        constraints.maxWidth > constraints.maxHeight;
+    final compact = constraints.maxHeight < 700;
+    final padding = constraints.maxWidth < 480 ? 20.0 : 32.0;
+    final qrSize = landscape
+        ? (constraints.maxHeight < 520 ? 160.0 : 220.0)
+        : (compact ? 156.0 : 240.0);
+    final introduction = _introduction(compact: compact);
+    final pairing = _pairingCard(qrSize: qrSize, compact: compact);
+
+    return SingleChildScrollView(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(minHeight: constraints.maxHeight),
+        child: Padding(
+          padding: EdgeInsets.all(padding),
+          child: Center(
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 1120),
+              child: landscape
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(child: introduction),
+                        const SizedBox(width: 40),
+                        SizedBox(width: qrSize + 72, child: pairing),
+                      ],
+                    )
+                  : Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        introduction,
+                        SizedBox(height: compact ? 20 : 32),
+                        ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 360),
+                          child: pairing,
+                        ),
+                      ],
+                    ),
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -72,7 +97,8 @@ class PlayerPairingScreen extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        ConfiguredPlayerLogo(fallback: Image.asset(
+        ConfiguredPlayerLogo(
+            fallback: Image.asset(
           'assets/images/Logo.png',
           width: 160,
           height: 48,
