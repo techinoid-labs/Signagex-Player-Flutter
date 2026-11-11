@@ -382,7 +382,7 @@ class KioskCampaignService extends ChangeNotifier {
     _retryRaw = null;
     await _cache.save(payload, body);
     if (_active == null) {
-      _log('starting version ${payload.versionNo} of ${payload.campaignId}');
+      _log('starting version ${payload.versionNo} of ${payload.campaignId} at ${_pageWhere(payload.playerUrl)}');
       _show(payload);
       return;
     }
@@ -455,8 +455,16 @@ class KioskCampaignService extends ChangeNotifier {
   }
 
   /// From the page: the main frame failed to load (offline, DNS, 5xx...).
-  void onPageLoadFailed() {
-    _recover('page failed to load');
+  /// Host and path of the kiosk page, for logs (the query holds the player code).
+  static String _pageWhere(String url) {
+    final u = Uri.tryParse(url);
+    return u == null ? 'an invalid address' : '${u.scheme}://${u.host}${u.path}';
+  }
+
+  void onPageLoadFailed([String? detail]) {
+    _recover(detail == null || detail.isEmpty
+        ? 'page failed to load'
+        : 'page failed to load ($detail)');
   }
 
   void _recover(String reason) {
@@ -527,7 +535,7 @@ class KioskCampaignService extends ChangeNotifier {
     }
     final next = _pending!;
     _pending = null;
-    _log('switching to version ${next.versionNo}');
+    _log('switching to version ${next.versionNo} at ${_pageWhere(next.playerUrl)}');
     _show(next);
   }
 

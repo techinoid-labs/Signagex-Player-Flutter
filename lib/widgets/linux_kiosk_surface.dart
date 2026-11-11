@@ -70,7 +70,10 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
         // The Linux safety override reports a failed main frame this way
         // (see LinuxWebView).
         if (url.startsWith('signagex-load-failed:')) {
-          widget.kiosk.onPageLoadFailed();
+          // The code is a CEF net error (-105 = name not resolved, -106 =
+          // offline...) or an HTTP status (404, 502...).
+          widget.kiosk.onPageLoadFailed(
+              'code ${url.substring('signagex-load-failed:'.length)} at ${_where(widget.url)}');
         }
       },
     ));
@@ -79,11 +82,17 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
     unawaited(_initialize());
   }
 
+  /// Host and path only: the query holds the runtime address and player code.
+  static String _where(String url) {
+    final u = Uri.tryParse(url);
+    return u == null ? 'an invalid address' : '${u.scheme}://${u.host}${u.path}';
+  }
+
   Future<void> _initialize() async {
     try {
       await _controller.initialize(widget.url);
-    } catch (_) {
-      widget.kiosk.onPageLoadFailed();
+    } catch (error) {
+      widget.kiosk.onPageLoadFailed('browser did not start: $error');
     }
   }
 
@@ -95,8 +104,8 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
     try {
       await _controller.ready;
       if (mounted) await _controller.loadUrl(url).timeout(const Duration(seconds: 10));
-    } catch (_) {
-      widget.kiosk.onPageLoadFailed();
+    } catch (error) {
+      widget.kiosk.onPageLoadFailed('reload of ${_where(url)}: $error');
     }
   }
 
