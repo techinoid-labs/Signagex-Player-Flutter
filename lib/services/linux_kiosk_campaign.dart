@@ -483,8 +483,11 @@ class KioskCampaignService extends ChangeNotifier {
     }
     _log('$reason; reloading (${_failures}x)');
     final delay = Duration(seconds: 5 * _failures);
-    Timer(delay, () => reloadRequests.value++);
+    _reloadTimer?.cancel();
+    _reloadTimer = Timer(delay, () => reloadRequests.value++);
   }
+
+  Timer? _reloadTimer;
 
   void _tick() {
     final now = DateTime.now();
@@ -501,7 +504,16 @@ class KioskCampaignService extends ChangeNotifier {
       notifyListeners();
       return;
     }
-    if (!showing) return;
+    // Fallen back to signage because the page kept failing: nobody can be in
+    // a session, so a new campaign/version (or a clear) applies now instead
+    // of waiting forever behind the broken page.
+    if (!showing && _active != null && (_pending != null || _pendingClear)) {
+      _fallbackUntil = null;
+      _state = KioskPageState.none;
+      _shownAt = now; // so the 60 s "no state" check below doesn't fire first
+    } else if (!showing) {
+      return;
+    }
 
     // A page that never says anything is as stuck as one reporting errors.
     if (_state == KioskPageState.none && now.difference(_shownAt) > const Duration(seconds: 60)) {
@@ -574,12 +586,20 @@ class KioskCampaignService extends ChangeNotifier {
   @visibleForTesting
   bool get debugPendingClear => _pendingClear;
 
+  /// A downloaded version waiting to be shown (normally set by handleMessage).
+  @visibleForTesting
+  void debugSetPending(KioskPayload payload) {
+    _pending = payload;
+    _waitingSince = DateTime.now();
+  }
+
   @visibleForTesting
   void debugTick() => _tick();
 
   @override
   void dispose() {
     _timer?.cancel();
+    _reloadTimer?.cancel();
     reloadRequests.dispose();
     endSessionRequests.dispose();
     super.dispose();

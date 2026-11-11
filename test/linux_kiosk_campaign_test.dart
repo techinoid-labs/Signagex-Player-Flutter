@@ -202,5 +202,26 @@ void main() {
       expect(service.debugPending, isNull);
       service.dispose();
     });
+
+    test('a new campaign is shown at once while a broken page has fallen back to signage', () async {
+      final cache = KioskCache(temp);
+      final first = KioskMessage.parse(jsonEncode(publish(version: 'v-1', no: 1)))!.publish!;
+      await cache.save(first, document('v-1'));
+      final service = KioskCampaignService(cache: cache);
+      await service.restore();
+      // The first campaign's page fails three times: signage for 2 minutes.
+      for (var i = 0; i < 3; i++) {
+        service.onPageLoadFailed('code 404 at https://api.example.com/kiosk-play');
+      }
+      expect(service.showing, isFalse);
+
+      final second = KioskMessage.parse(jsonEncode(publish(version: 'b-1', no: 1)))!.publish!;
+      service.debugSetPending(second);
+      service.debugTick();
+      expect(service.active!.versionId, 'b-1', reason: 'not stuck behind the broken page');
+      expect(service.showing, isTrue);
+      expect(service.debugPending, isNull);
+      service.dispose();
+    });
   });
 }
