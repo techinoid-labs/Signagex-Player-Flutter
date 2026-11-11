@@ -1,4 +1,5 @@
 import '../services/linux_remote_view.dart';
+import '../services/linux_remote_backend.dart' show LinuxRemoteBackend;
 import '../services/linux_ota.dart';
 import '../services/linux_network.dart';
 import '../services/linux_setup_hotspot.dart';
@@ -569,6 +570,13 @@ class MqttViewModel extends ChangeNotifier {
       // not to strain the CMS's browser-side MQTT connection over
       // WebSocket once a second.
       final file = File('${tempDir.path}/signagex_remote_view_frame.jpg');
+      // Wayland (cage kiosk): scrot only sees XWayland's root window, so the
+      // compositor's own capture is used; scrot stays as the fallback.
+      final wayland = LinuxRemoteBackend.instance;
+      if (wayland.isWayland) {
+        final frame = await wayland.capture(file.path);
+        if (frame != null) return frame;
+      }
       if (await file.exists()) {
         await file.delete();
       }

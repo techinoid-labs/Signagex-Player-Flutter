@@ -59,6 +59,15 @@ static void my_application_activate(GApplication* application) {
     }
   }
 #endif
+  // The Wayland kiosk (cage, linux/packaging/wayland-kiosk) shows only this
+  // window, full screen: no client-side header bar, close button or frame
+  // that a customer could reach. X11 sessions keep the behaviour above.
+  const gboolean wayland_kiosk =
+      g_strcmp0(g_getenv("SIGNAGEX_WAYLAND_KIOSK"), "1") == 0;
+  if (wayland_kiosk) {
+    use_header_bar = FALSE;
+    gtk_window_set_decorated(window, FALSE);
+  }
   if (use_header_bar) {
     GtkHeaderBar* header_bar = GTK_HEADER_BAR(gtk_header_bar_new());
     gtk_widget_show(GTK_WIDGET(header_bar));
@@ -71,7 +80,7 @@ static void my_application_activate(GApplication* application) {
 
   gtk_window_set_title(window, "SignageX Player");
   gtk_window_set_default_size(window, 1280, 720);
-  if (g_strcmp0(g_getenv("SIGNAGEX_KIOSK"), "1") == 0) {
+  if (wayland_kiosk || g_strcmp0(g_getenv("SIGNAGEX_KIOSK"), "1") == 0) {
     gtk_window_fullscreen(window);
   }
 

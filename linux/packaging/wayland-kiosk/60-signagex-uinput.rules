@@ -1,0 +1,3 @@
+# Remote-view input on the Wayland kiosk: members of signagex-input may create
+# the virtual pointer and keyboard (kiosk/wayland_input.py) through uinput.
+KERNEL=="uinput", SUBSYSTEM=="misc", GROUP="signagex-input", MODE="0660", OPTIONS+="static_node=uinput"
