@@ -82,7 +82,11 @@ class KioskPayload {
     final page = Uri.tryParse(playerUrl);
     if (playerUrl.isEmpty ||
         page == null ||
-        !['https', 'http'].contains(page.scheme)) {
+        !['https', 'http'].contains(page.scheme) ||
+        // The page is served by the frontend, never by the API. A backend
+        // without KIOSK_PLAYER_BASE_URL falls back to its own address, which
+        // answers 404 for /kiosk-play: use the known frontend instead.
+        page.host == runtime.host) {
       playerUrl = kioskPageUrl(url, frontendBase ?? kioskFrontendBase);
     }
     final versionNo = data['version_no'];

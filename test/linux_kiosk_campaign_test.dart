@@ -46,6 +46,13 @@ void main() {
               Uri.encodeComponent('https://api.example.com/v1/kiosk-runtime/v-2?player=ABC123'));
     });
 
+    test('a player_url on the API host (backend without KIOSK_PLAYER_BASE_URL) is replaced', () {
+      final message = KioskMessage.parse(
+          jsonEncode(publish(playerUrl: 'https://api.example.com/kiosk-play?runtime=x')),
+          frontendBase: 'https://app.example.com/')!;
+      expect(message.publish!.playerUrl, startsWith('https://app.example.com/kiosk-play?runtime='));
+    });
+
     test('a clear is recognised', () {
       final message = KioskMessage.parse(
           jsonEncode({'action': 'clear_kiosk_campaign', 'sender': 'signagex_web', 'data': null}))!;
