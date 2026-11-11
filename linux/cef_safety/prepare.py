@@ -117,7 +117,11 @@ app = replace_once(app, '\tif (process_type.empty())\n\t{', '''\tif (process_typ
         const char* kiosk = std::getenv("SIGNAGEX_KIOSK");
         if (kiosk && std::string(kiosk) == "1") {
             command_line->AppendSwitchWithValue("password-store", "basic");
-        }''')
+        }
+        // A signage screen has nobody to tap "play": web content and kiosk
+        // campaigns may start media with sound (as Android's WebView does with
+        // mediaPlaybackRequiresUserGesture = false).
+        command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");''')
 (output / "webview_app.cc").write_text(app)
 handler = texts["../common/webview_handler.cc"]
 handler = replace_once(handler, '#include "webview_handler.h"',
