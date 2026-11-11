@@ -66,7 +66,7 @@ resend comparison).
 | 22 | Live logs (`player_logs`) | player-logs | ✅ | ✅ | ✅ |
 | 23 | Device details (`player_details`) | players | ✅ | ✅ `:2417` | ✅ |
 | 24 | Resource usage (`resource_usage`) | players | ✅ | ✅ `:190` | ✅ |
-| 25 | Remote view v1 (start/stop, quality, click, scroll, text, home, back) | remote | ✅ | ✅ X11 (`scrot`/`xdotool`); Wayland in a separate branch | ✅ X11 |
+| 25 | Remote view v1 (start/stop, quality, click, scroll, text, home, back) | remote | ✅ | ✅ X11 (`scrot`/`xdotool`) and Wayland (`grim` + virtual uinput mouse/keyboard, see LINUX-WAYLAND-KIOSK.md) | ✅ |
 | 26 | Remote view v2 (`/remote/v2/command`: restart_player, reboot_device, resume_player, confirmation) | remote-protocol.ts | ✅ | ✅ `remote_view_agent.py:176-182` | ✅ |
 | 27 | OTA update | player-releases | ✅ | ✅ `LinuxOta` (`:3000`) | ✅ |
 | 28 | Managed network (Wi-Fi / hotspot) | linux network protocol | ✅ (Android settings) | ✅ `LinuxNetwork` (`:2996`) | ✅ |
@@ -79,7 +79,7 @@ resend comparison).
 | 35 | Optional items missing (`optional_missing`) | campaign | ✅ | ✅ | ✅ |
 | 36 | **Composition data feeds** (text and images bound to a feed) | data-feed, composition | ✅ `CompositionRenderFragment.kt:179` DATA_FEED_RUNTIME | ✅ fixed here: same rules (all / match / fixed row, initial row, step, cycle, remembered position), `GET data-feed/{id}` every 60 s, last data kept offline (`data_feed_binding.dart`, `widgets/feed_bound.dart`) | ✅ |
 | 37 | **Content proof of play for Reports** (`content_proof_of_play`, signed) | content-report, PopSigning | ✅ `data/pop/*` | ✅ fixed here: same entry fields, merge per content/day/status/reason, on-disk queue (5,000 cap, 30-day age, 24 h MQTT-only), `pop-key` trust on first use, HMAC-SHA256 signature, 2-minute rounds of up to 10×200, backoff 30 s..15 min, MQTT fallback every 15 min not retained, per-entry results (`linux_pop.dart`) | ✅ |
-| 38 | **Proof screenshot now** (`capture_proof_screenshot`) | screenshot.service.ts | ✅ | ✅ fixed here: through a `ScreenCapture` interface (X11 scrot now, Wayland grim later), JPEG ≤1280 px and ≤2 MB, signed multipart `POST player/screenshot`, 3 attempts (`proof_screenshots.dart`) | ✅ |
+| 38 | **Proof screenshot now** (`capture_proof_screenshot`) | screenshot.service.ts | ✅ | ✅ fixed here: through a `ScreenCapture` interface (X11 scrot; Wayland grim through the same capture function), JPEG ≤1280 px and ≤2 MB, signed multipart `POST player/screenshot`, 3 attempts (`proof_screenshots.dart`) | ✅ |
 | 39 | **Scheduled proof screenshots** (`proof_screenshot_schedule`) | screenshot.service.ts | ✅ | ✅ fixed here: every `interval_minutes` until `until`, 0 stops, saved and resumed after restart | ✅ |
 | 40 | **Player plugins** (`{code}/plugins`, `publish_player_plugins`) | player-plugin | ✅ hidden WebView + `SignageXPlugin` bridge | ✅ fixed here: one hidden 1×1 CEF view per plugin; the page runs in an iframe of a wrapper page, which forwards the runtime's `postMessage` (setAttributes, log) as title changes; reload on `version` change and every 24 h; stopped on unpair (`linux_plugins.dart`, `widgets/linux_plugin_host.dart`). `getLocation` is not bridged: the page uses its configured fallback location | ✅ |
 | 41 | **Player attributes** (`{code}/attrs`, `update_player_attributes`, pairing `attrs`, `player_attributes` reports, `player_attribute` restriction) | player-attribute.service.ts | ✅ | ✅ fixed here: newer `updated_at` wins, `removed`, 100 keys, 500-char text, kept on disk, restriction operators as the contract, reports merged per instance for 5 s and kept while offline, cleared on unpair (`player_attributes.dart`) | ✅ |
@@ -102,7 +102,7 @@ can't be proven without one:
    running while the view is 1×1 and transparent. Check that the Weather plugin
    updates within a minute.
 3. **Screenshots are X11 only for now (#38, #39).** Capture uses the existing
-   scrot path. The Wayland branch adds a grim `ScreenCapture`.
+   scrot path on X11 and grim on Wayland (both inside `_captureScreenshotForLinux`).
 4. **Web app SDK (#42b, plan).** Inject `window.signagex` (getPlayerAttribute,
    onPlayerAttributesChanged, event) into web apps through the same
    wrapper/title channel. This is a separate feature; Android has it.
