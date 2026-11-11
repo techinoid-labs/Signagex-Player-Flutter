@@ -25,8 +25,10 @@ class WaylandRemoteTests(unittest.TestCase):
     def test_click_uses_fractions_on_the_virtual_pointer(self):
         with patch.object(self.remote,'geometry',return_value=(1920,1080,'1920x1080:wayland')), \
              patch.object(agent,'run') as run, patch.object(agent.wayland_input,'missing',return_value=None):
+            # Joining starts the session (and clears old frames); then a frame, then the click.
+            self.remote.receive(self.command())
             self.remote.frames['frame']=(100,'1920x1080:wayland')
-            self.remote.receive(self.command(input={'action':'click','x':0.25,'y':0.75,'frame_id':'frame'}))
+            self.remote.receive(self.command(revision=2,command_id='command-2',input={'action':'click','x':0.25,'y':0.75,'frame_id':'frame'}))
             run.assert_not_called()
         self.remote.input.tap.assert_called_once_with(0.25,0.75)
         self.assertEqual(self.result(),'executed')
