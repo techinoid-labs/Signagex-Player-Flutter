@@ -7,6 +7,9 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
   late List<List<String>> calls;
   late LinuxConfiguration config;
+  // These tests cover the X11 path (xrandr); don't follow the session they run in.
+  setUpAll(() => LinuxConfiguration.debugWaylandOverride = false);
+  tearDownAll(() => LinuxConfiguration.debugWaylandOverride = null);
   setUp(() {
     SharedPreferences.setMockInitialValues({}); calls=[];
     config = LinuxConfiguration(command:(exe,args) async {

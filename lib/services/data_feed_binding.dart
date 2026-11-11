@@ -95,15 +95,17 @@ class FeedRules {
     var v = _cell(row, col);
     if (v == null) return '';
     if (v is String) {
+      // A local copy: `v` is reassigned below, so Dart can't keep it promoted to String.
+      final text = v;
       try {
-        final p = jsonDecode(v);
+        final p = jsonDecode(text);
         if (p is Map) {
           v = p;
         } else {
-          return v;
+          return text;
         }
       } catch (_) {
-        return v;
+        return text;
       }
     }
     if (v is Map) {

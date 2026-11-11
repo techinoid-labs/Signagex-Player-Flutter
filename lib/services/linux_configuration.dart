@@ -70,7 +70,13 @@ class LinuxConfiguration extends ChangeNotifier {
   /// rather than failing on every attempt; rotation is set in
   /// /etc/signagex-kiosk.conf there (docs/LINUX-WAYLAND-KIOSK.md).
   static bool get wayland =>
+      debugWaylandOverride ??
       linuxDisplaySession() == LinuxDisplaySession.wayland;
+
+  /// Tests set this so they don't depend on the session they run in
+  /// (a developer's desktop is often Wayland).
+  @visibleForTesting
+  static bool? debugWaylandOverride;
   static const _x11OnlyKeys = {'screen_rotation', 'brightness'};
 
   /// Remote-view input works here. X11 always has xdotool (a package
