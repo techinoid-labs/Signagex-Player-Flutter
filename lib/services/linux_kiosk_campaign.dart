@@ -671,9 +671,16 @@ class KioskCache {
   }
 
   /// Nothing scheduled: nothing runs on the next start.
+  /// Removes everything the cache wrote. The folder itself stays: it was
+  /// handed to the cache, and the next save writes into it again.
   Future<void> clear() async {
     try {
-      if (await directory.exists()) await directory.delete(recursive: true);
+      if (!await directory.exists()) return;
+      await for (final entry in directory.list(followLinks: false)) {
+        try {
+          await entry.delete(recursive: true);
+        } catch (_) {}
+      }
     } catch (_) {}
   }
 }
