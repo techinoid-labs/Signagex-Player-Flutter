@@ -1,0 +1,8 @@
+# PAM stack for signagex-wayland-kiosk.service: no password (the service is
+# the login), but a real logind session so the user gets XDG_RUNTIME_DIR,
+# seat access for the compositor, and the user services (PipeWire audio).
+auth      required  pam_permit.so
+account   required  pam_unix.so
+session   required  pam_unix.so
+session   required  pam_loginuid.so
+session   required  pam_systemd.so

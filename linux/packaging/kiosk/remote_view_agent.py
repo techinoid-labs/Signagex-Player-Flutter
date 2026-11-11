@@ -1,5 +1,9 @@
 #!/usr/bin/python3
-"""Unprivileged X11 adapter for the existing SignageX signed remote-v2 protocol.
+"""Unprivileged X11/Wayland adapter for the existing SignageX signed remote-v2 protocol.
+
+X11: scrot for frames, xdotool for input (unchanged). Wayland (the cage kiosk,
+WAYLAND_DISPLAY set): grim for frames and wayland_input.py's uinput devices for
+input, since neither X11 tool reaches a Wayland compositor.
 
 Only encrypted frames/receipts and a public identity leave stdout. Commands are
 verified against the packaged server key before decryption or OS interaction.
@@ -9,6 +13,9 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from PIL import Image
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import wayland_input
 
 SERVER_KEY = 'MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAsEJfK9Jr9KvAj7656FpxrwGDC3LckOE/pxML3CXazXslmGRRbf9gHJM0SMRw8NlGTdkTWL/NGGNTIUPkF1XiBW7S8FlVkYHGjQtQuiB5u7pX0aUx5F41liax27RGu/xF3WOmOJXhPgDMzv/J1SEgNEFpqCVYFkS6W17AhNa66brQW+3Kk13Obc7zUxO+Q7iLLgV4/SdDInn32ohWRe15+Cqxmv1sbCpVc4fRoI6Y5ggupq9TgtO+gE0iJLp4iZJuf0GaGc8zirTMH+0wAtvbzE1j41lHTjaA3Esga5LPEtS/D0SF8wQKyJm+gRh/O/c+c4r4eM4znoMdYSXGDmNihQIDAQAB'
 OAEP = padding.OAEP(mgf=padding.MGF1(hashes.SHA1()), algorithm=hashes.SHA1(), label=None)
@@ -43,6 +50,9 @@ class Remote:
         self.frames, self.results = collections.OrderedDict(), collections.OrderedDict()
         self.upload = self.download = self.dropped = 0
         self.boot = str(uuid.uuid4())
+        self.wayland = bool(os.environ.get('WAYLAND_DISPLAY', '').strip())
+        self.input = None
+        self.last_size = None
 
     def atomic(self, path, data):
         temporary = path.with_suffix('.tmp')
@@ -134,7 +144,21 @@ class Remote:
             # Never log the command, encrypted keys, or typed text.
             return False
 
+    def wayland_frame(self, path):
+        """One full-output grim JPEG at path; returns its (width, height)."""
+        run('grim','-t','jpeg','-q','75',str(path))
+        with Image.open(path) as image: size = image.size
+        self.last_size = size
+        return size
+
     def geometry(self):
+        if self.wayland:
+            if self.last_size is None:
+                with tempfile.TemporaryDirectory(prefix='signagex-remote-') as directory:
+                    self.wayland_frame(pathlib.Path(directory)/'size.jpg')
+            width, height = self.last_size
+            if not (0 < width <= 16384 and 0 < height <= 16384): raise ValueError('Invalid display')
+            return width, height, f'{width}x{height}:wayland'
         width, height = map(int, run('xdotool','getdisplaygeometry').split())
         if not (0 < width <= 16384 and 0 < height <= 16384): raise ValueError('Invalid display')
         # Include rotation so a square or identically-sized output is fenced too.
@@ -160,6 +184,8 @@ class Remote:
                 if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in (x,y)):
                     raise ValueError('Invalid coordinates')
                 return str(min(width-1,int(x*width))),str(min(height-1,int(y*height)))
+            if self.wayland:
+                self.ack(command,self.execute_wayland(action, item)); return
             if action == 'click': run('xdotool','mousemove','--sync',*point(item),'click','1')
             elif action in ('scroll','long_press'):
                 start,end = (point(item['hold']),point(item['release'])) if action == 'scroll' else (point(item),point(item))
@@ -186,6 +212,35 @@ class Remote:
             self.ack(command,'executed')
         except subprocess.TimeoutExpired: self.ack(command,'timeout')
         except Exception: self.ack(command,'unsupported_or_invalid')
+
+    def execute_wayland(self, action, item):
+        """Wayland input; returns the receipt result."""
+        def fraction(value):
+            x,y = value['x'],value['y']
+            if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in (x,y)):
+                raise ValueError('Invalid coordinates')
+            return x,y
+        if action in ('click','scroll','long_press','send_text','press_back'):
+            if wayland_input.missing(): return 'unsupported_or_invalid'
+            if self.input is None: self.input = wayland_input.WaylandInput()
+        if action == 'click': self.input.tap(*fraction(item))
+        elif action == 'scroll': self.input.drag(*fraction(item['hold']), *fraction(item['release']), 150)
+        elif action == 'long_press':
+            x,y = fraction(item); self.input.drag(x,y,x,y,700)
+        elif action == 'send_text':
+            text = item['message']
+            if not isinstance(text,str) or len(text)>512 or '\0' in text: raise ValueError('Invalid text')
+            self.input.type(text)
+        elif action == 'press_back': self.input.key('alt+Left')
+        elif action in ('press_home','resume_player'):
+            pass  # The cage kiosk shows only the player; it is always in front.
+        elif action == 'restart_player' and item.get('confirmed') is True:
+            # The kiosk session restarts the player when it exits (session wrapper loop).
+            subprocess.Popen(['/bin/sh','-c',f'sleep 1; kill -TERM {os.getppid()}'],
+                             start_new_session=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        elif action == 'reboot_device': return 'permission_required'
+        else: return 'unsupported_or_invalid'
+        return 'executed'
 
     def sign_ota(self, data):
         """Sign a CMS report (update or network status) with the persistent device key."""
@@ -248,16 +303,22 @@ class Remote:
         if not self.enabled or not self.active: return
         if self.monotonic() >= self.deadline: self.stop('expired'); return
         captured = int(self.clock()*1000)
-        width,height,geometry = self.geometry()
+        if not self.wayland: width,height,geometry = self.geometry()
         with tempfile.TemporaryDirectory(prefix='signagex-remote-') as directory:
             path = pathlib.Path(directory)/'frame.jpg'
-            run('scrot','-z','-q','75',str(path))
+            if self.wayland:
+                width,height = self.wayland_frame(path)
+                geometry = f'{width}x{height}:wayland'
+            else: run('scrot','-z','-q','75',str(path))
             with Image.open(path) as image:
                 image.thumbnail((1280,1280) if self.high else (800,800))
                 output = io.BytesIO(); image.convert('RGB').save(output,format='JPEG',quality=78 if self.high else 60)
         if not self.active or self.monotonic() >= self.deadline: return
-        try: foreground = 'signagex' in run('xdotool','getactivewindow','getwindowname').lower()
-        except Exception: foreground = False
+        if self.wayland: foreground = True  # the only client of the kiosk compositor
+        else:
+            try: foreground = 'signagex' in run('xdotool','getactivewindow','getwindowname').lower()
+            except Exception: foreground = False
+        can_input = not self.wayland or wayland_input.missing() is None
         self.sequence += 1
         frame_id = f'{self.boot}:{self.sequence}'
         self.frames[frame_id] = self.monotonic(),geometry
@@ -265,7 +326,7 @@ class Remote:
         self.publish('frame', {'action':'image','sender':'linux','protocol':2,'img_url':b64(output.getvalue()),
             'stream_id':self.stream,'sequence':self.sequence,'frame_id':frame_id,'captured_at':captured,
             'capture_to_send_ms':int(self.clock()*1000)-captured,'input_width':width,'input_height':height,
-            'can_tap':True,'can_text':True,'text_mode':'type','can_navigate':True,'can_resume':True,
+            'can_tap':can_input,'can_text':can_input,'text_mode':'type','can_navigate':can_input,'can_resume':True,
             'can_restart':True,'can_reboot':False,'player_foreground':foreground,'process_id':self.boot,
             'geometry':geometry,'quality':'high' if self.high else 'low','upload_bytes':self.upload,
             'download_bytes':self.download,'upload_bps':int(self.upload/max(1,self.monotonic()-self.started)),

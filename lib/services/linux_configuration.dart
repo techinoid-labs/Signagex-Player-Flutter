@@ -9,6 +9,8 @@ import 'package:flutter/painting.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/configuration_policy.dart';
+import 'linux_remote_backend.dart'
+    show linuxDisplaySession, LinuxDisplaySession, LinuxRemoteBackend;
 import '../utils/transitions.dart';
 
 typedef LinuxCommand = Future<String> Function(
@@ -63,12 +65,26 @@ class LinuxConfiguration extends ChangeNotifier {
   /// boot itself and runs no XDG autostart, so "Launch on boot" cannot apply there.
   static bool get kiosk => Platform.environment['SIGNAGEX_KIOSK'] == '1';
 
+  /// Rotation and brightness are applied with xrandr, which only drives X11
+  /// outputs. On the Wayland (cage) kiosk they are reported as unsupported
+  /// rather than failing on every attempt; rotation is set in
+  /// /etc/signagex-kiosk.conf there (docs/LINUX-WAYLAND-KIOSK.md).
+  static bool get wayland =>
+      linuxDisplaySession() == LinuxDisplaySession.wayland;
+  static const _x11OnlyKeys = {'screen_rotation', 'brightness'};
+
+  /// Remote-view input works here. X11 always has xdotool (a package
+  /// dependency); Wayland needs python3-evdev and a writable /dev/uinput.
+  bool remoteInput = true;
+
   Map<String, dynamic> get capabilities => {
         'protocol': 1,
         'platform': 'linux',
         'settings': {
           for (final key in linuxConfigurationKeys)
-            key: key == 'use_html5_webview' || (key == 'launch_on_boot' && kiosk)
+            key: key == 'use_html5_webview' ||
+                    (key == 'launch_on_boot' && kiosk) ||
+                    (wayland && _x11OnlyKeys.contains(key))
                 ? 'unsupported'
                 : key == 'apply_app_updates' &&
                         (!File('/usr/lib/signagex-player/update-player')
@@ -87,6 +103,8 @@ class LinuxConfiguration extends ChangeNotifier {
           'recurring': true
         },
         'brightness_kind': 'software',
+        'display_session': wayland ? 'wayland' : 'x11',
+        'remote_input': remoteInput,
         'schedule_timezone': 'device-local',
       };
 
@@ -98,6 +116,7 @@ class LinuxConfiguration extends ChangeNotifier {
           .split(RegExp(r'\s+'))
           .contains('signagex-updates');
     } catch (_) {}
+    if (wayland) remoteInput = await LinuxRemoteBackend.instance.inputAvailable();
     final prefs = await SharedPreferences.getInstance();
     try {
       final stored =
@@ -128,6 +147,8 @@ class LinuxConfiguration extends ChangeNotifier {
       if (values.containsKey(key)) {
         try {
           await _validateAndApply(key, values[key]);
+        } on UnsupportedError catch (error) {
+          results[key] = {'status': 'unsupported', 'message': error.message};
         } catch (error) {
           results[key] = {'status': 'failed', 'message': error.toString()};
         }
@@ -249,6 +270,11 @@ class LinuxConfiguration extends ChangeNotifier {
   }
 
   Future<void> _validateAndApply(String key, dynamic value) async {
+    if (wayland && _x11OnlyKeys.contains(key)) {
+      throw UnsupportedError(key == 'screen_rotation'
+          ? 'Rotation on the Wayland kiosk is set in /etc/signagex-kiosk.conf (ROTATE)'
+          : 'Brightness control needs an X11 session');
+    }
     const booleanKeys = {
       'launch_on_boot',
       'apply_app_updates',
@@ -483,7 +509,7 @@ class LinuxConfiguration extends ChangeNotifier {
         await _persist();
       }
       final brightness = values['brightness'] as Map?;
-      if (brightness != null) {
+      if (brightness != null && !wayland) {
         final expired =
             _brightnessUntil != null && !now.isBefore(_brightnessUntil!);
         final percent = expired ? 100 : _brightness(brightness, now);

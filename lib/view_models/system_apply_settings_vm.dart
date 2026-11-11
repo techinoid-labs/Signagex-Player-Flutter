@@ -5,6 +5,7 @@ import 'package:flutter/services.dart';
 
 import 'package:screen_brightness/screen_brightness.dart';
 
+import 'package:digital_signage/services/linux_remote_backend.dart';
 import 'package:digital_signage/services/mqtt_client_service.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
 
@@ -38,6 +39,11 @@ class DeviceSettingsViewModel with ChangeNotifier {
   /// expected to already be in real screen-pixel space — the caller is
   /// responsible for any scaling from CMS/image space.
   Future<String> moveCursorAndClickForLinux(double x, double y) async {
+    // Wayland (cage kiosk): xdotool can't reach the compositor; a virtual
+    // absolute pointer does (see linux_remote_backend.dart).
+    if (LinuxRemoteBackend.instance.isWayland) {
+      return LinuxRemoteBackend.instance.click(x, y);
+    }
     try {
       final ix = x.round();
       final iy = y.round();
@@ -57,6 +63,9 @@ class DeviceSettingsViewModel with ChangeNotifier {
   }
 
   Future<String> moveCursorForLinux(double x, double y) async {
+    if (LinuxRemoteBackend.instance.isWayland) {
+      return LinuxRemoteBackend.instance.move(x, y);
+    }
     try {
       final result = await Process.run(
         'xdotool',
@@ -79,6 +88,9 @@ class DeviceSettingsViewModel with ChangeNotifier {
     double endX,
     double endY,
   ) async {
+    if (LinuxRemoteBackend.instance.isWayland) {
+      return LinuxRemoteBackend.instance.drag(startX, startY, endX, endY);
+    }
     try {
       final result = await Process.run('xdotool', [
         'mousemove', '${startX.round()}', '${startY.round()}',
@@ -98,6 +110,9 @@ class DeviceSettingsViewModel with ChangeNotifier {
   }
 
   Future<String> typeTextForLinux(String text) async {
+    if (LinuxRemoteBackend.instance.isWayland) {
+      return LinuxRemoteBackend.instance.type(text);
+    }
     try {
       final result = await Process.run('xdotool', ['type', '--', text]);
       if (result.exitCode != 0) {
@@ -122,6 +137,11 @@ class DeviceSettingsViewModel with ChangeNotifier {
   /// to have an observable effect on any X11 WM (a standard ICCCM/EWMH
   /// window operation, not a WM-specific keybinding).
   Future<String> pressHomeForLinux() async {
+    // The cage kiosk runs the player alone, full screen: there is no home
+    // screen or other window to show, and the player can't be minimized.
+    if (LinuxRemoteBackend.instance.isWayland) {
+      return 'Unsupported: the Wayland kiosk has no home screen';
+    }
     try {
       final result = await Process.run(
           'xdotool', ['getactivewindow', 'windowminimize']);
@@ -145,6 +165,11 @@ class DeviceSettingsViewModel with ChangeNotifier {
   /// the kiosk. xdotool's windowactivate both focuses AND de-iconifies
   /// (un-minimizes) a window, per its own docs.
   Future<String> pressBackForLinux() async {
+    // Nothing is ever minimized on the Wayland kiosk; Back is the same
+    // Alt+Left key the X11 remote-view adapter sends.
+    if (LinuxRemoteBackend.instance.isWayland) {
+      return LinuxRemoteBackend.instance.back();
+    }
     try {
       final result = await Process.run('xdotool',
           ['search', '--name', r'^SignageX Player$', 'windowactivate']);
