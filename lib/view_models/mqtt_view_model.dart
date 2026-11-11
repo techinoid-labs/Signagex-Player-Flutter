@@ -46,6 +46,7 @@ import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 
 import '../data/api_repository/api_repository.dart';
 import '../services/mqtt_client_service.dart';
+import '../services/linux_kiosk_campaign.dart';
 import '../utils/constants.dart';
 
 /// Result of shrinking a remote-view screenshot: the smaller encoded bytes,
@@ -334,6 +335,10 @@ class MqttViewModel extends ChangeNotifier {
   MqttViewModel(this._mqttClientService) {
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
     _mqttClientService.onMessageReceived = _handleIncomingMessage;
+    if (Platform.isLinux) {
+      _mqttClientService.onKioskMessageReceived =
+          (payload) => unawaited(KioskCampaignService.instance.handleMessage(payload));
+    }
 
     fetchAllInfo();
     _initializeBasedOnPlatform();
@@ -2752,6 +2757,9 @@ class MqttViewModel extends ChangeNotifier {
     _mqttClientService.subscribe('$topic/remote');
     if (Platform.isLinux) {
       _mqttClientService.subscribe('$topic/remote/v2/command',reliable:true);
+      // Kiosk campaigns: retained, so a reconnect gets the current one again.
+      _mqttClientService.subscribe('$topic/kiosk',reliable:true);
+      KioskCampaignService.instance.start(topic);
       unawaited(_secureRemote.start(topic));
     }
   }
