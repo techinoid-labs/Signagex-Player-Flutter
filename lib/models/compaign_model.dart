@@ -344,6 +344,13 @@ class MediaItem {
   List<CampaignZone>? zones; // For nested campaigns
   String? id;
 
+  /// The library content id (proof of play reports it as content_id). Web
+  /// apps, compositions and text carry none and are not reported.
+  String? itemId;
+
+  /// A composition element bound to a data feed (properties.dataFeed).
+  Map<String, dynamic>? dataFeed;
+
   MediaItem({
     this.settings,
     this.schedule,
@@ -351,6 +358,8 @@ class MediaItem {
     this.mediaUrl,
     this.zones,
     this.id,
+    this.itemId,
+    this.dataFeed,
   });
 
   /// Reads SignageX layout blob from media root or `settings.composition`.
@@ -775,6 +784,9 @@ class MediaItem {
       mediaUrl: mediaUrl,
       settings: settings,
       schedule: Schedule(alwaysPlay: true),
+      dataFeed: propMap['dataFeed'] is Map
+          ? Map<String, dynamic>.from(propMap['dataFeed'] as Map)
+          : null,
     );
   }
 
@@ -1080,6 +1092,7 @@ class MediaItem {
       mediaUrl: mediaUrl,
       zones: parseNestedZones(json),
       id: json['id']?.toString(),
+      itemId: (json['item_id'] ?? json['itemId'])?.toString(),
     );
   }
 
@@ -1092,6 +1105,7 @@ class MediaItem {
             ? null
             : List<dynamic>.from(zones!.map((x) => x.toJson())),
         "id": id,
+        "item_id": itemId,
       };
 }
 

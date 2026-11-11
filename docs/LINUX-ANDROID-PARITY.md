@@ -20,9 +20,9 @@ and Linux were not available where this was written. Run `flutter analyze` and
 | | Count |
 |---|---|
 | Features checked | 44 |
-| Already the same as Android (or ahead) | 30 |
-| Fixed on this branch | 4 (5 changes) |
-| Still gaps (documented below) | 8 |
+| Already the same as Android (or ahead) | 31 |
+| Fixed on this branch | 11 |
+| Still gaps | 0 (each fix still needs its on-device check, see the test checklist) |
 | N/A on Linux | 2 |
 
 ## Fixed on this branch
@@ -77,46 +77,39 @@ resend comparison).
 | 33 | **Unchanged re-send ignored** | playback-resend.service.ts | ✅ | ✅ fixed here | ✅ |
 | 34 | Location / position | player_details lat/long | ✅ GPS/network | ⚠️ IP-based only (no device GPS on most Linux PCs) | ✅ acceptable |
 | 35 | Optional items missing (`optional_missing`) | campaign | ✅ | ✅ | ✅ |
-| 36 | Composition data feeds (text/lists bound to a feed) | data-feed, composition | ✅ `CompositionRenderFragment.kt:179` DATA_FEED_RUNTIME | ❌ bound fields show their static value | ❌ gap |
-| 37 | Content proof of play for Reports (`content_proof_of_play`, signed) | content-report, PopSigning | ✅ `data/pop/PopSigning.kt` | ❌ not sent: Reports show no plays for Linux screens | ❌ gap |
-| 38 | Proof screenshot now (`capture_proof_screenshot`) | screenshot.service.ts | ✅ | ❌ ignored | ❌ gap |
-| 39 | Scheduled proof screenshots (`proof_screenshot_schedule`) | screenshot.service.ts | ✅ | ❌ ignored | ❌ gap |
-| 40 | Player plugins (`{code}/plugins`, `publish_player_plugins`) | player-plugin | ✅ | ❌ not subscribed | ❌ gap |
-| 41 | Player attributes (`{code}/attrs`, `update_player_attributes`, `player_attributes` reports) | player-attribute.service.ts | ✅ | ❌ | ❌ gap |
-| 42 | Crash / ANR reports (`app_event`) | mqtt-player.handler `app_event` | ✅ `docs/crash-anr-reporting.md` | ❌ crashes only in the local debug log | ❌ gap |
-| 43 | Player state (`player_state`: location / content state) | mqtt-player.handler `player_state` | ✅ `PlayerStateKeys.kt` | ⚠️ covered partly by `player_details` | ⚠️ gap |
+| 36 | **Composition data feeds** (text and images bound to a feed) | data-feed, composition | ✅ `CompositionRenderFragment.kt:179` DATA_FEED_RUNTIME | ✅ fixed here: same rules (all / match / fixed row, initial row, step, cycle, remembered position), `GET data-feed/{id}` every 60 s, last data kept offline (`data_feed_binding.dart`, `widgets/feed_bound.dart`) | ✅ |
+| 37 | **Content proof of play for Reports** (`content_proof_of_play`, signed) | content-report, PopSigning | ✅ `data/pop/*` | ✅ fixed here: same entry fields, merge per content/day/status/reason, on-disk queue (5,000 cap, 30-day age, 24 h MQTT-only), `pop-key` trust on first use, HMAC-SHA256 signature, 2-minute rounds of up to 10×200, backoff 30 s..15 min, MQTT fallback every 15 min not retained, per-entry results (`linux_pop.dart`) | ✅ |
+| 38 | **Proof screenshot now** (`capture_proof_screenshot`) | screenshot.service.ts | ✅ | ✅ fixed here: through a `ScreenCapture` interface (X11 scrot now, Wayland grim later), JPEG ≤1280 px and ≤2 MB, signed multipart `POST player/screenshot`, 3 attempts (`proof_screenshots.dart`) | ✅ |
+| 39 | **Scheduled proof screenshots** (`proof_screenshot_schedule`) | screenshot.service.ts | ✅ | ✅ fixed here: every `interval_minutes` until `until`, 0 stops, saved and resumed after restart | ✅ |
+| 40 | **Player plugins** (`{code}/plugins`, `publish_player_plugins`) | player-plugin | ✅ hidden WebView + `SignageXPlugin` bridge | ✅ fixed here: one hidden 1×1 CEF view per plugin; the page runs in an iframe of a wrapper page, which forwards the runtime's `postMessage` (setAttributes, log) as title changes; reload on `version` change and every 24 h; stopped on unpair (`linux_plugins.dart`, `widgets/linux_plugin_host.dart`). `getLocation` is not bridged: the page uses its configured fallback location | ✅ |
+| 41 | **Player attributes** (`{code}/attrs`, `update_player_attributes`, pairing `attrs`, `player_attributes` reports, `player_attribute` restriction) | player-attribute.service.ts | ✅ | ✅ fixed here: newer `updated_at` wins, `removed`, 100 keys, 500-char text, kept on disk, restriction operators as the contract, reports merged per instance for 5 s and kept while offline, cleared on unpair (`player_attributes.dart`) | ✅ |
+| 42 | Crash / suspected-freeze reports (`player_logs` with `incident_type`) | mqtt-player.handler | ✅ `docs/crash-anr-reporting.md` | ✅ already there: `LinuxDiagnostics` spools errors on disk, reports `crash` (incl. native exits from the journal) and `suspected_anr` (event-loop watchdog) as `player_logs` (`linux_diagnostics.dart`). The first audit missed this | ✅ |
+| 42b | Web app SDK events (`app_event`) | web-app SDK | ✅ `AppEventPublisher.kt` | web apps on Linux run in CEF without the SignageX web-app SDK bridge (`window.signagex`), so they cannot raise events; see "Hardware and engine checks" | N/A until the SDK bridge (plan below) |
+| 43 | **Player state** (`player_state`: location) | mqtt-player.handler `handlePlayerState` (reads latitude/longitude) | ✅ | ✅ fixed here: sent when the location changes, not retained | ✅ |
 | 44 | Screen rotate via remote (`screen_rotate`) | remote | ✅ turns on accelerometer auto-rotate | no accelerometer on Linux PCs; fixed rotation is the Rotation setting (#17) | N/A |
 
-## Not done, and why
+## Hardware and engine checks
 
-In priority order:
+Every row above is ✅ or N/A. What still needs the real Ubuntu box, because it
+can't be proven without one:
 
-1. **Content proof of play for Reports (#37).** This matters most: without it,
-   Reports and scheduled reports show nothing for Linux screens. It needs
-   Android's signing scheme (`PopSigning.kt`, key registration with the
-   backend `popKeyService`), an on-disk queue with REST retry, and one record
-   per media item played. That's too much to port blind, so it needs a build
-   machine. Plan: port `PopSigning` and the PoP queue into
-   `lib/services/linux_pop.dart`, and send from the media-item transitions in
-   `campaign_view.dart`.
-2. **Proof screenshots (#38, #39).** They need the screen-capture backend,
-   which is being changed for Wayland in a separate branch. Plan: after that
-   merges, reuse its capture function, then upload as Android does. The
-   schedule is `interval_minutes` (5 minutes or more) until `until`.
-3. **Composition data feeds (#36).** Port Android's `DATA_FEED_RUNTIME`
-   script and binding resolution into the Linux composition renderer.
-4. **Player plugins and attributes (#40, #41).** Subscribe to `{code}/plugins`
-   and `{code}/attrs`, and run plugins in the CEF webview with Android's bridge
-   (`docs/PLAYER_PLUGIN_CONTRACT.md` in the backend).
-5. **Crash reports (#42).** Wrap `main()` in `runZonedGuarded` plus
-   `FlutterError.onError`, and send `app_event` in Android's shape
-   (`crash-anr-reporting.md`), queued on disk until MQTT connects.
-6. **Player state (#43).** Send `player_state` whenever location or content
-   state changes, following `mqtt-player-state-contract.md`.
+1. **CEF data: URLs and iframes (#40).** The plugin wrapper is a `data:` page
+   with the plugin in an iframe. If this webview_cef build refuses `data:`
+   URLs, serve the same wrapper from a local file under
+   `~/.local/share/signagex-player/plugins/` instead. That's a one-line change
+   in `LinuxPlugins.wrapperUrl`.
+2. **Hidden 1×1 views keep running (#40).** CEF must keep the page's timers
+   running while the view is 1×1 and transparent. Check that the Weather plugin
+   updates within a minute.
+3. **Screenshots are X11 only for now (#38, #39).** Capture uses the existing
+   scrot path. The Wayland branch adds a grim `ScreenCapture`.
+4. **Web app SDK (#42b, plan).** Inject `window.signagex` (getPlayerAttribute,
+   onPlayerAttributesChanged, event) into web apps through the same
+   wrapper/title channel. This is a separate feature; Android has it.
 
 On-demand limits: queue modes start at the next rotation boundary, and
-`repeat` counts campaign loops (Android counts by playback end). A campaign
-whose own duration is 0 plays for 15 s per loop while on demand.
+`repeat` counts campaign loops. A campaign whose duration is 0 plays 15 s per
+loop while on demand.
 
 ## Test checklist (CMS against the Linux player)
 
@@ -166,8 +159,24 @@ player page open (Logs and Playing Loop tabs).
   plays. Plug back in: it goes online and syncs.
 - [ ] **14. OTA:** publish a newer Linux release. It updates and keeps pairing.
 - [ ] **15. Ad campaign:** plays, and its proof of play reaches the backend.
-- [ ] **16. Known gaps, which should fail until fixed (expected):**
-  - Reports show no plays (#37).
-  - "Take screenshot" and scheduled screenshots do nothing (#38, #39).
-  - Data-feed text in compositions doesn't update (#36).
-  - Plugins and attributes don't work (#40, #41).
+- [ ] **16. Reports:** play an image campaign for 10 minutes.
+  - Within about 2 minutes, Reports shows the plays for this screen.
+  - The backend log shows `content_proof_of_play` accepted (signed after the first `pop-key`).
+  - Unplug the network for 10 minutes, then reconnect: the queued plays arrive, without duplicates.
+- [ ] **17. Proof screenshots:**
+  - "Take screenshot" in the CMS: a picture arrives within a minute.
+  - Schedule every 5 minutes for 30 minutes: 6 pictures arrive.
+  - Restart the app during the schedule: it continues.
+- [ ] **18. Data feeds:** a composition with a text element bound to a feed column (cycle 10 s).
+  - The value changes every 10 s.
+  - Edit the feed in the CMS: the new value appears within 60 s.
+  - Go offline: the last values stay.
+- [ ] **19. Plugins:** assign the Weather plugin.
+  - Within a minute, the player's Plugins tab shows temperature and condition.
+  - Change the plugin: it reloads.
+  - Unassign it: it stops.
+- [ ] **20. Attributes:** set `promo_mode = true` by hand in the CMS, and restrict a campaign to "Player attribute promo_mode is true".
+  - The campaign plays only while the value is true.
+  - Restart offline: the value and restriction still apply.
+- [ ] **21. Location:** if the screen's location changes, the CMS map updates (`player_state`).
+- [ ] **22. Crash report:** kill the player with `pkill -SEGV signagex-player`. After restart, the CMS events show an App crash entry.

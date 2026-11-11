@@ -50,6 +50,10 @@ import '../services/linux_kiosk_campaign.dart';
 import '../services/on_demand_state.dart';
 import '../services/now_playing.dart';
 import '../services/content_resend.dart';
+import '../services/linux_pop.dart';
+import '../services/player_attributes.dart';
+import '../services/proof_screenshots.dart';
+import '../services/linux_plugins.dart';
 import '../utils/constants.dart';
 
 /// Result of shrinking a remote-view screenshot: the smaller encoded bytes,
@@ -1152,6 +1156,7 @@ class MqttViewModel extends ChangeNotifier {
 
       devicesinfo["latitude"] = position.latitude;
       devicesinfo["longitude"] = position.longitude;
+      _publishPlayerState(position.latitude, position.longitude);
 
       print('sadasdasasda$deviceInfoMap');
     } catch (e) {
@@ -2552,6 +2557,11 @@ class MqttViewModel extends ChangeNotifier {
       print("check status ::::$isSaved");
 
       _storedApiResponse = Map<String, dynamic>.from(response as Map);
+      // The pairing response carries the same attrs object: seed the store.
+      if (Platform.isLinux && _storedApiResponse!['data'] is Map) {
+        await PlayerAttributes.instance.load();
+        PlayerAttributes.instance.applyFromCms(_storedApiResponse!['data']);
+      }
       if (response is Map<String, dynamic>) {
         _captureRestrictionContext(response);
       }
@@ -2762,8 +2772,29 @@ class MqttViewModel extends ChangeNotifier {
       _mqttClientService.subscribe('$topic/remote/v2/command',reliable:true);
       // Kiosk campaigns: retained, so a reconnect gets the current one again.
       _mqttClientService.subscribe('$topic/kiosk',reliable:true);
+      // Player plugins and attributes: retained, like the kiosk topic.
+      _mqttClientService.subscribe('$topic/plugins',reliable:true);
+      _mqttClientService.subscribe('$topic/attrs',reliable:true);
+      unawaited(PlayerAttributes.instance.load());
+      LinuxPlugins.instance
+        ..publish = ((m) => _mqttClientService.publish(topic, m, retain: false))
+        ..connected = (() => _mqttClientService.isConnected);
       KioskCampaignService.instance.start(topic);
       _startContentSyncLoop();
+      // Proof of play for Reports (signed, queued on disk, REST with MQTT fallback).
+      unawaited(LinuxPop.instance.start(
+        baseUrl: baseurl,
+        playerCode: topic,
+        publishMqtt: (m) => _mqttClientService.publish(topic, m, retain: false),
+        mqttConnected: () => _mqttClientService.isConnected,
+      ));
+      // Proof screenshots through a capture interface: X11 scrot today; a
+      // Wayland build supplies its own ScreenCapture.
+      unawaited(ProofScreenshots.instance.start(
+        baseUrl: baseurl,
+        playerCode: topic,
+        screenCapture: CallbackScreenCapture(_captureScreenshotForLinux),
+      ));
       unawaited(_secureRemote.start(topic));
     }
   }
@@ -2784,7 +2815,7 @@ class MqttViewModel extends ChangeNotifier {
         'log': 'On-demand $id skipped: not published to this player',
         'type': 'warning',
         'date_time': DateTime.now().toIso8601String(),
-      }));
+      }), retain: false);
       return;
     }
     if (!_onDemand.start(id, repeat, mode, DateTime.now())) return;
@@ -2806,10 +2837,26 @@ class MqttViewModel extends ChangeNotifier {
     _updateIndexForCampain();
   }
 
+  double? _reportedLat, _reportedLng;
+
+  /// player_state: the location the screen re-publishes when it changes
+  /// (backend mqtt-player.handler handlePlayerState reads latitude/longitude).
+  void _publishPlayerState(double lat, double lng) {
+    if (!Platform.isLinux) return;
+    if (_reportedLat == lat && _reportedLng == lng) return;
+    if (topic.isEmpty || !_mqttClientService.isConnected) return;
+    _reportedLat = lat;
+    _reportedLng = lng;
+    _mqttClientService.publish(
+        topic,
+        jsonEncode({'action': 'player_state', 'sender': 'linux', 'latitude': lat, 'longitude': lng}),
+        retain: false);
+  }
+
   void _publishNowPlaying(Map<String, dynamic> message, {bool remember = true}) {
     if (remember) _lastNowPlaying = message;
     if (topic.isEmpty || !_mqttClientService.isConnected) return;
-    _mqttClientService.publish(topic, jsonEncode(message));
+    _mqttClientService.publish(topic, jsonEncode(message), retain: false);
   }
 
   /// Connectivity -> "Content update interval" (seconds): asks the backend to
@@ -2826,7 +2873,7 @@ class MqttViewModel extends ChangeNotifier {
       if (topic.isEmpty || !_mqttClientService.isConnected) return;
       _lastPlaybackRequest = DateTime.now();
       _mqttClientService.publish(topic,
-          jsonEncode({'action': 'request_playback', 'sender': 'linux'}));
+          jsonEncode({'action': 'request_playback', 'sender': 'linux'}), retain: false);
     });
   }
 
@@ -2917,7 +2964,7 @@ class MqttViewModel extends ChangeNotifier {
 
     // Our own acknowledgement, echoed back because we subscribe to the topic
     // we publish it on.
-    if (["content_synced", "settings_applied", "resource_usage", "player_logs", "player_details", "sealed_v2", "now_playing", "request_playback"].contains(jsonObj["action"])) return;
+    if (["content_synced", "settings_applied", "resource_usage", "player_logs", "player_details", "sealed_v2", "now_playing", "request_playback", "player_state"].contains(jsonObj["action"])) return;
 
     final action = jsonObj["action"];
     try {
@@ -3321,6 +3368,15 @@ class MqttViewModel extends ChangeNotifier {
       if (Platform.isLinux) {
         deviceSettings.pressBackForLinux();
       }
+    } else if (jsonObj["action"] == "capture_proof_screenshot") {
+      if (Platform.isLinux) unawaited(ProofScreenshots.instance.takeNow(jsonObj["data"]));
+    } else if (jsonObj["action"] == "proof_screenshot_schedule") {
+      if (Platform.isLinux) unawaited(ProofScreenshots.instance.applySchedule(jsonObj["data"]));
+    } else if (jsonObj["action"] == "update_player_attributes") {
+      await PlayerAttributes.instance.load();
+      PlayerAttributes.instance.applyFromCms(jsonObj["data"]);
+    } else if (jsonObj["action"] == "publish_player_plugins") {
+      if (Platform.isLinux) LinuxPlugins.instance.update(jsonObj["data"]);
     } else if (jsonObj["action"] == "play_on_demand") {
       _playOnDemand(jsonObj);
     } else if (jsonObj["action"] == "stop_on_demand") {
@@ -3526,6 +3582,11 @@ class MqttViewModel extends ChangeNotifier {
 
       await _checkPairingStatus();
     } else if (jsonObj["action"] == "action_delete") {
+      if (Platform.isLinux) {
+        // Unpaired: plugin values and plugins belong to the old pairing.
+        PlayerAttributes.instance.clear();
+        LinuxPlugins.instance.update(const {'plugins': []});
+      }
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
         "log": "Action Delete",
@@ -4219,6 +4280,10 @@ class MqttViewModel extends ChangeNotifier {
       case "player_name":
         return _checkTextRestriction(
             restriction, _devicePlayerName, 'player_name');
+      case "player_attribute":
+        // values[0] is the attribute key (PLAYER_PLUGIN_CONTRACT.md section 4).
+        return PlayerAttributes.instance.matches(
+            restriction.operator, restriction.values);
       case "player_os":
         // Platform.operatingSystem is "linux" here and "windows" on the
         // Windows build, which is exactly what the CMS's player_os values
