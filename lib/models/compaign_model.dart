@@ -140,8 +140,15 @@ class Campaign {
   /// never match, however the tag was configured in the CMS.
   List<String>? playerTags;
 
+  /// "loop" (normal rotation) or "on_demand": downloaded, but played only
+  /// when the CMS fires play_on_demand (Campaign.play_mode on the backend).
+  String? playMode;
+
+  bool get isOnDemand => (playMode ?? '').toLowerCase() == 'on_demand';
+
   Campaign({
     this.playerTags,
+    this.playMode,
     this.playbackType,
     this.campaignId,
     this.campaignName,
@@ -182,6 +189,7 @@ class Campaign {
             : List<CampaignZone>.from(
                 json["zones"].map((x) => CampaignZone.fromJson(x))),
         isPaused: json["is_paused"],
+        playMode: json["play_mode"]?.toString(),
       );
 
   Map<String, dynamic> toJson() => {
@@ -195,6 +203,7 @@ class Campaign {
             ? null
             : List<dynamic>.from(zones!.map((x) => x.toJson())),
         "is_paused": isPaused,
+        "play_mode": playMode,
       };
 }
 

@@ -335,7 +335,8 @@ class _CampaignViewState extends State<CampaignView> {
 
     bool campaignCanPlay = false;
 
-    if (campaignSchedule?.alwaysPlay ?? false) {
+    if ((campaignSchedule?.alwaysPlay ?? false) ||
+        mqttViewModel.isOnDemandNow(campaign.campaignId)) {
       campaignCanPlay = true;
       if (kDebugMode) print('$green✅ CAMPAIGN: alwaysPlay = true → Campaign can play$reset');
     } else {

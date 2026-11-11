@@ -47,6 +47,9 @@ import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 import '../data/api_repository/api_repository.dart';
 import '../services/mqtt_client_service.dart';
 import '../services/linux_kiosk_campaign.dart';
+import '../services/on_demand_state.dart';
+import '../services/now_playing.dart';
+import '../services/content_resend.dart';
 import '../utils/constants.dart';
 
 /// Result of shrinking a remote-view screenshot: the smaller encoded bytes,
@@ -2760,8 +2763,71 @@ class MqttViewModel extends ChangeNotifier {
       // Kiosk campaigns: retained, so a reconnect gets the current one again.
       _mqttClientService.subscribe('$topic/kiosk',reliable:true);
       KioskCampaignService.instance.start(topic);
+      _startContentSyncLoop();
       unawaited(_secureRemote.start(topic));
     }
+  }
+
+  /// CMS "Play on demand": the item named by data.campaign_id plays now
+  /// (mode play) or at the next content boundary (queue / playqueue), for
+  /// data.repeat loops (0 = until stopped or midnight).
+  void _playOnDemand(Map jsonObj) {
+    final data = jsonObj['data'] is Map ? jsonObj['data'] as Map : jsonObj;
+    final id = data['campaign_id']?.toString();
+    final repeat = int.tryParse('${data['repeat'] ?? 1}') ?? 1;
+    final mode = data['mode']?.toString() ?? 'play';
+    final campaigns = _campaignModel?.data?.playerCampaigns ?? const <Campaign>[];
+    final index = campaigns.indexWhere((c) => c.campaignId == id);
+    if (index < 0) {
+      _mqttClientService.publish(topic, jsonEncode({
+        'action': 'player_logs',
+        'log': 'On-demand $id skipped: not published to this player',
+        'type': 'warning',
+        'date_time': DateTime.now().toIso8601String(),
+      }));
+      return;
+    }
+    if (!_onDemand.start(id, repeat, mode, DateTime.now())) return;
+    _debugLog('on-demand $id started (repeat $repeat, mode ${_onDemand.mode})');
+    if (_onDemand.mode == 'play') {
+      // Interrupt now: the scan in _updateIndexForCampain starts after the
+      // current index, so point just before the on-demand item.
+      _currentIndexOfCapmaign = (index - 1 + campaigns.length) % campaigns.length;
+      _timerOfCampaign?.cancel();
+      _updateIndexForCampain();
+    }
+  }
+
+  void _stopOnDemand() {
+    if (!_onDemand.active) return;
+    _debugLog('on-demand ${_onDemand.campaignId} stopped by the CMS');
+    _onDemand.stop();
+    _timerOfCampaign?.cancel();
+    _updateIndexForCampain();
+  }
+
+  void _publishNowPlaying(Map<String, dynamic> message, {bool remember = true}) {
+    if (remember) _lastNowPlaying = message;
+    if (topic.isEmpty || !_mqttClientService.isConnected) return;
+    _mqttClientService.publish(topic, jsonEncode(message));
+  }
+
+  /// Connectivity -> "Content update interval" (seconds): asks the backend to
+  /// re-send this screen's playback every interval, to repair a missed push.
+  /// Realtime (no number) sends nothing. As on Android, re-read every 30 s.
+  void _startContentSyncLoop() {
+    _contentSyncTimer?.cancel();
+    _lastPlaybackRequest = DateTime.now();
+    _contentSyncTimer = Timer.periodic(const Duration(seconds: 30), (_) {
+      final policy = LinuxConfiguration.instance.values['content_update_interval'];
+      final seconds = policy is Map ? int.tryParse('${policy['interval']}') : null;
+      if (seconds == null || seconds <= 0) return;
+      if (DateTime.now().difference(_lastPlaybackRequest).inSeconds < seconds) return;
+      if (topic.isEmpty || !_mqttClientService.isConnected) return;
+      _lastPlaybackRequest = DateTime.now();
+      _mqttClientService.publish(topic,
+          jsonEncode({'action': 'request_playback', 'sender': 'linux'}));
+    });
   }
 
   void publishMessage(String topic, String message) {
@@ -2851,7 +2917,7 @@ class MqttViewModel extends ChangeNotifier {
 
     // Our own acknowledgement, echoed back because we subscribe to the topic
     // we publish it on.
-    if (["content_synced", "settings_applied", "resource_usage", "player_logs", "player_details", "sealed_v2"].contains(jsonObj["action"])) return;
+    if (["content_synced", "settings_applied", "resource_usage", "player_logs", "player_details", "sealed_v2", "now_playing", "request_playback"].contains(jsonObj["action"])) return;
 
     final action = jsonObj["action"];
     try {
@@ -2936,6 +3002,13 @@ class MqttViewModel extends ChangeNotifier {
       return;
     }
     if (Platform.isLinux && ['publish_playlist','publish_campaign'].contains(jsonObj['action'])) {
+      if (jsonObj['resend'] == true) {
+        final previous = (await SharedPreferences.getInstance()).getString('jsonObj');
+        if (previous != null && sameContent(previous, jsonObj)) {
+          _debugLog('content re-send unchanged; playback left as it is');
+          return;
+        }
+      }
       final config = LinuxConfiguration.instance;
       if (!await config.allowsDownload()) {
         _deferredLinuxContent = Map<String,dynamic>.from(jsonObj);
@@ -3248,6 +3321,13 @@ class MqttViewModel extends ChangeNotifier {
       if (Platform.isLinux) {
         deviceSettings.pressBackForLinux();
       }
+    } else if (jsonObj["action"] == "play_on_demand") {
+      _playOnDemand(jsonObj);
+    } else if (jsonObj["action"] == "stop_on_demand") {
+      _stopOnDemand();
+    } else if (jsonObj["action"] == NowPlaying.requestAction) {
+      final last = _lastNowPlaying;
+      if (last != null) _publishNowPlaying(last, remember: false);
     } else if (jsonObj["action"] == "publish_playlist") {
       Map<String, dynamic> sendLog = {
         "action": "player_logs",
@@ -3486,7 +3566,22 @@ class MqttViewModel extends ChangeNotifier {
   // anywhere the player decides what to show -- a Paused campaign rotated
   // into view and played exactly like any other. (Unpublish was already
   // handled separately, wherever this codebase drops to zero campaigns.)
-  bool _campaignIsPlayable(Campaign c) => c.isPaused != true;
+  bool _campaignIsPlayable(Campaign c) =>
+      c.isPaused != true && _onDemand.allows(c.campaignId, c.isOnDemand);
+
+  /// play_on_demand / stop_on_demand (see OnDemandState).
+  final OnDemandState _onDemand = OnDemandState();
+
+  /// The CMS is playing this campaign on demand right now: it shows even
+  /// outside its schedule (CampaignView skips the restriction check).
+  bool isOnDemandNow(String? campaignId) => _onDemand.isFor(campaignId);
+
+  /// Last now_playing report, re-sent on request_now_playing.
+  Map<String, dynamic>? _lastNowPlaying;
+
+  /// Connectivity -> "Content update interval": periodic request_playback.
+  Timer? _contentSyncTimer;
+  DateTime _lastPlaybackRequest = DateTime.now();
 
   /// Index of the next playable (non-paused) campaign at or after [start],
   /// wrapping around at most once. Null if every campaign is paused.
@@ -3555,6 +3650,13 @@ class MqttViewModel extends ChangeNotifier {
   /// in _updateIndexForCampain can score a CANDIDATE index without first
   /// mutating _currentIndexOfCapmaign to point at it.
   int _durationForCampaignAt(int index) {
+    final scheduled = _scheduledDurationForCampaignAt(index);
+    if (scheduled > 0) return scheduled;
+    final c = campaignModel?.data?.playerCampaigns?[index];
+    return c != null && _onDemand.isFor(c.campaignId) ? 15 : scheduled;
+  }
+
+  int _scheduledDurationForCampaignAt(int index) {
     final currentCampaign = campaignModel?.data?.playerCampaigns?[index];
     if (currentCampaign == null) return 0;
 
@@ -3702,6 +3804,11 @@ class MqttViewModel extends ChangeNotifier {
     }
 
     final playableCampaigns = campaigns!;
+    // An on-demand play that used up its loops (or reached midnight) ends here,
+    // so the scan below goes back to the normal rotation.
+    if (_onDemand.expireIfDone(DateTime.now())) {
+      _debugLog('on-demand finished; back to the normal rotation');
+    }
 
     // Bounded scan (at most `count` candidates) for the next campaign that
     // is BOTH unpaused AND currently schedule-eligible (a positive
@@ -3749,10 +3856,27 @@ class MqttViewModel extends ChangeNotifier {
       _timerOfCampaign =
           Timer(const Duration(seconds: 30), _updateIndexForCampain);
       _state = MqttState.noContent;
+      _publishNowPlaying(NowPlaying.noContent(DateTime.now()));
       notifyListeners();
       return;
     }
     _currentIndexOfCapmaign = eligibleIndex;
+    {
+      final picked = playableCampaigns[eligibleIndex];
+      final onDemandNow = _onDemand.isFor(picked.campaignId);
+      if (onDemandNow) _onDemand.countPlay();
+      if ((picked.campaignId ?? '').isNotEmpty) {
+        _publishNowPlaying(NowPlaying.campaign(
+          campaignId: picked.campaignId!,
+          name: picked.campaignName,
+          playbackType: picked.playbackType,
+          reason: onDemandNow ? 'on_demand' : 'scheduled',
+          startedAt: DateTime.now(),
+          durationSeconds: eligibleDuration,
+          zoneCount: picked.zones?.length,
+        ));
+      }
+    }
 
     final nextCampaign = playableCampaigns[_currentIndexOfCapmaign];
     print(
@@ -3945,6 +4069,7 @@ class MqttViewModel extends ChangeNotifier {
     _secureRemote.close();
     _linuxManagementTimer?.cancel();
     _timerOfCampaign?.cancel();
+    _contentSyncTimer?.cancel();
     _timer?.cancel();
     _remoteViewTimer?.cancel();
     _pairingRevalidationTimer?.cancel();
