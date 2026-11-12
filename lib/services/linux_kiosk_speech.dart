@@ -197,12 +197,19 @@ const kioskSpeechShim = r'''
   // The page title is the one route this player already reads from kiosk
   // pages (their state), so messages go the same way and the title is put
   // back right after, unless the page has changed it meanwhile.
+  // The page's own title (never one of these messages): a cancel followed at
+  // once by a speak must not "restore" the cancel message afterwards.
+  var pageTitle = null, sent = 0;
   function post(m) {
     try {
-      var previous = document.title;
+      var current = document.title;
+      if (current.indexOf('sxk-say:') !== 0) pageTitle = current;
+      m.n = ++sent; // every message is a new title, so repeats still arrive
       var mine = 'sxk-say:' + JSON.stringify(m);
       document.title = mine;
-      setTimeout(function () { if (document.title === mine) document.title = previous; }, 60);
+      setTimeout(function () {
+        if (document.title === mine && pageTitle !== null) document.title = pageTitle;
+      }, 60);
     } catch (e) {}
   }
   function Utterance(text) {
