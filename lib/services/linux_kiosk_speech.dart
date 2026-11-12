@@ -13,7 +13,32 @@ import '../utils/debug_log.dart' as debug;
 /// espeak-ng through the normal sound output (PipeWire/PulseAudio).
 class KioskSpeech {
   KioskSpeech({Future<Process> Function(String, List<String>)? start})
-      : _start = start ?? Process.start;
+      : _start = start ?? _startWithSound;
+
+  /// espeak-ng finds the sound server through XDG_RUNTIME_DIR; without it it
+  /// exits 0 having played nothing ("Host is down"). A kiosk session started
+  /// by systemd may not pass it on, so the usual /run/user/<uid> is filled in.
+  static Future<Process> _startWithSound(String exe, List<String> args) {
+    final environment = <String, String>{};
+    final runtime = Platform.environment['XDG_RUNTIME_DIR'] ?? '';
+    if (runtime.isEmpty) {
+      final dir = userRuntimeDir();
+      if (dir != null) environment['XDG_RUNTIME_DIR'] = dir;
+    }
+    return Process.start(exe, args, environment: environment);
+  }
+
+  /// /run/user/<uid> for this process, when it exists.
+  static String? userRuntimeDir() {
+    try {
+      final uid = (Process.runSync('id', ['-u']).stdout as String).trim();
+      if (!RegExp(r'^\d+$').hasMatch(uid)) return null;
+      final dir = '/run/user/$uid';
+      return Directory(dir).existsSync() ? dir : null;
+    } catch (_) {
+      return null;
+    }
+  }
 
   static final instance = KioskSpeech();
 
@@ -111,13 +136,23 @@ class KioskSpeech {
     }
     _current = process;
     unawaited(process.stdout.drain<void>());
-    unawaited(process.stderr.drain<void>());
+    // espeak-ng's own complaint (no sound server, unknown voice), for the log.
+    final complaint = StringBuffer();
+    unawaited(process.stderr
+        .transform(utf8.decoder)
+        .listen((s) { if (complaint.length < 300) complaint.write(s); })
+        .asFuture<void>()
+        .catchError((_) {}));
     // The text goes on stdin, never on the command line.
     try {
       process.stdin.write(item.text);
       await process.stdin.close();
     } catch (_) {}
-    await process.exitCode;
+    final code = await process.exitCode;
+    final said = complaint.toString().trim();
+    if (said.isNotEmpty || (code != 0 && identical(_current, process))) {
+      log('read-aloud: espeak-ng exit $code${said.isEmpty ? '' : ': $said'}');
+    }
     if (identical(_current, process)) _current = null;
     _busy = false;
     unawaited(_next());

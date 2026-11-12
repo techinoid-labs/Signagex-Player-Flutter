@@ -28,6 +28,10 @@ export SIGNAGEX_KIOSK_PLAYER="$PLAYER"
 export GDK_BACKEND="$BACKEND"
 export XDG_SESSION_TYPE=wayland
 export XDG_CURRENT_DESKTOP=cage
+# Sound (PipeWire/PulseAudio) and D-Bus are found through these; make sure
+# they are set even if the login did not pass them on.
+[ -n "${XDG_RUNTIME_DIR:-}" ] || export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+[ -n "${DBUS_SESSION_BUS_ADDRESS:-}" ] || export DBUS_SESSION_BUS_ADDRESS="unix:path=$XDG_RUNTIME_DIR/bus"
 
 # cage -r rotates the output 90 degrees clockwise per flag, where supported.
 rotation=
