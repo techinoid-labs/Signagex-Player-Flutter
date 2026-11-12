@@ -546,9 +546,9 @@ void main() {
       expect(list.map((a) => a.requestId), ['req-1']);
       final a = list.single;
       expect(a.name, 'Lunch kiosk');
-      expect(a.schedule.describe(), isNot('Always'));
+      expect(a.schedule.describe(), isNot('always'));
       expect(a.replaces.single.name, 'Breakfast kiosk');
-      expect(a.replaces.single.schedule.describe(), 'Always');
+      expect(a.replaces.single.schedule.describe(), 'always');
       expect(parsed.schedule.entries, isEmpty, reason: 'a waiting campaign is not scheduled');
       expect(a.expiresIn(DateTime.now()), 'Expires in 23 h');
     });
