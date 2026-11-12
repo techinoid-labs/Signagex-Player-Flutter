@@ -78,6 +78,7 @@ class KioskSpeech {
       return;
     }
     if (message['a'] == 'cancel') {
+      if (_busy || _queue.isNotEmpty) log('read-aloud: stopped by the page');
       cancel();
       return;
     }
