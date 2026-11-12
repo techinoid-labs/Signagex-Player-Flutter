@@ -32,7 +32,7 @@ What the installer does:
 
 | Area | Change |
 |---|---|
-| Packages | `cage grim xwayland pipewire wireplumber pipewire-pulse python3-evdev python3-cryptography python3-pil` |
+| Packages | `cage grim xwayland pipewire wireplumber pipewire-pulse espeak-ng python3-evdev python3-cryptography python3-pil` |
 | Boot | `signagex-wayland-kiosk.service` logs the user into cage on tty1 (PAM `signagex-kiosk`, a real logind session). The display manager (GDM) is disabled and remembered for uninstall. |
 | Session | `/usr/local/libexec/signagex-wayland-session` runs `cage -d` (no `-s`, so Ctrl+Alt+F1..F12 can't switch away). `signagex-wayland-player` restarts the player 3 s after it exits. |
 | Settings | `/etc/signagex-kiosk.conf`: `PLAYER`, `GDK_BACKEND`, `ROTATE`. Read as `KEY=VALUE`, never executed. |

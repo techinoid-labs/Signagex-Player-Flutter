@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:webview_cef/webview_cef.dart' as cef;
 
 import '../services/linux_kiosk_campaign.dart';
+import '../services/linux_kiosk_speech.dart';
 import '../utils/mqtt_state.dart';
 import 'linux_kiosk_approval.dart';
 
@@ -79,7 +80,9 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
           // offline...) or an HTTP status (404, 502...).
           widget.kiosk.onPageLoadFailed(
               'code ${url.substring('signagex-load-failed:'.length)} at ${_where(widget.url)}');
+          return;
         }
+        unawaited(_installSpeech());
       },
     ));
     widget.kiosk.reloadRequests.addListener(_reload);
@@ -129,6 +132,24 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
     }
   }
 
+  /// Read-aloud: CEF on Linux has speechSynthesis but no engine, so the page
+  /// hands the text to the player (KioskSpeech). Every load replaces the page,
+  /// so the channel and the shim go in again each time.
+  Future<void> _installSpeech() async {
+    try {
+      await _controller.ready;
+      await _controller.setJavaScriptChannels({
+        cef.JavascriptChannel(
+          name: KioskSpeech.channel,
+          onMessageReceived: (message) => KioskSpeech.instance.handle(message.message),
+        ),
+      });
+      await _controller.executeJavaScript(kioskSpeechShim);
+    } catch (_) {
+      // The page still works; it just stays silent.
+    }
+  }
+
   void _back() {
     unawaited(_runBack());
   }
@@ -148,7 +169,10 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
   @override
   void didUpdateWidget(covariant LinuxKioskView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.url != widget.url) unawaited(_load(widget.url));
+    if (oldWidget.url != widget.url) {
+      KioskSpeech.instance.cancel();
+      unawaited(_load(widget.url));
+    }
   }
 
   @override
@@ -156,6 +180,7 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
     widget.kiosk.reloadRequests.removeListener(_reload);
     widget.kiosk.endSessionRequests.removeListener(_endSession);
     widget.kiosk.backRequests.removeListener(_back);
+    KioskSpeech.instance.cancel();
     _controller.dispose();
     super.dispose();
   }

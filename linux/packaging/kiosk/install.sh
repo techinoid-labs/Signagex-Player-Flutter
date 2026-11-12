@@ -8,7 +8,7 @@ id "$kiosk_user" >/dev/null
 [[ "$kiosk_user" != root && "$player" == /* && -x "$player" && "$player" != *$'\n'* ]] || exit 1
 source_dir="$(cd "$(dirname "$0")" && pwd)"
 apt-get update
-apt-get install -y openbox unclutter x11-xserver-utils xdotool polkitd pkexec wireplumber
+apt-get install -y openbox unclutter x11-xserver-utils xdotool polkitd pkexec wireplumber espeak-ng
 install -D -m 755 "$source_dir/session.sh" /usr/local/libexec/signagex-kiosk-session
 printf '%s\n' "$player" > /etc/signagex-kiosk-player
 chmod 644 /etc/signagex-kiosk-player
