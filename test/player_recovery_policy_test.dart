@@ -1,3 +1,5 @@
+import 'dart:io';
+import 'package:mqtt5_client/mqtt5_server_client.dart';
 import 'package:digital_signage/utils/mqtt_state.dart';
 import 'package:digital_signage/utils/player_recovery_policy.dart';
 import 'package:digital_signage/services/mqtt_client_service.dart';
@@ -9,6 +11,22 @@ class ConnectedMqtt extends MqttClientService {
 }
 
 void main() {
+  test('Linux MQTT enforces a broker response deadline, including after reset', () async {
+    final clients=<MqttServerClient>[];
+    final service=MqttClientService(clientFactory:() {
+      final client=MqttServerClient('localhost','test-${clients.length}');
+      clients.add(client);
+      return client;
+    });
+    await service.resetClient();
+    expect(clients.length,2);
+    for(final client in clients) {
+      expect(client.keepAlivePeriod,Platform.isLinux ? 30 : 60);
+      expect(client.disconnectOnNoResponsePeriod,Platform.isLinux ? 15 : 0);
+    }
+    expect(clients.first.autoReconnect,isFalse);
+    expect(clients.last.autoReconnect,isTrue);
+  });
   test('server outage retains cached campaign even after a connection state', () {
     for (final state in [MqttState.campaignScreen, MqttState.connectionScreen,
       MqttState.noInternet, MqttState.failure]) {

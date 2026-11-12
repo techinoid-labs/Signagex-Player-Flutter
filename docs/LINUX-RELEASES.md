@@ -43,6 +43,12 @@ GLib work source was attached but never run; CEF now runs the loop itself.
   VA-API initialization/codec checks; optional Intel preset now selects it and
   validates real decoding/VideoProc before changing service settings.
 - Linux no longer requests unsupported mobile GPS/location permission channels.
+- Linux MQTT now requires a broker ping response within 15 seconds (30-second
+  keepalive), recovering sockets stranded on the previous Wi-Fi address.
+- Configuration revisions are scoped to the authoritative environment/player
+  registration ID. Migrated or re-paired disks no longer ignore portrait and
+  other settings because an older registration had a higher revision. Stale
+  commands within the current registration remain rejected.
 - Not published yet. Assign version/checksum from CI when built.
 
 ## v15 — 2026-10-23 — staging

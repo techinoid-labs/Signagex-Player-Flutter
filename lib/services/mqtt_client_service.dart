@@ -44,13 +44,16 @@ class MqttClientService {
   /// republished after an automatic reconnect -- see _onAutoReconnected.
   String? _playerCode;
 
-  MqttClientService() {
+  final MqttServerClient Function()? _clientFactory;
+
+  MqttClientService({MqttServerClient Function()? clientFactory})
+      : _clientFactory = clientFactory {
     _initializeClient();
   }
 
   void _initializeClient() {
     final fullUri = 'wss://$mqttBroker:$mqttPort$mqttWebSocketPath';
-    _client = MqttServerClient.withPort(
+    _client = _clientFactory?.call() ?? MqttServerClient.withPort(
       fullUri,
       'flutter_client_${DateTime.now().millisecondsSinceEpoch}',
       mqttPort,
@@ -65,7 +68,13 @@ class MqttClientService {
 
     _client.websocketProtocols = ['mqtt'];
 
-    _client.keepAlivePeriod = 60;
+    _client.keepAlivePeriod = Platform.isLinux ? 30 : 60;
+    // Without a response deadline, a socket on the old Wi-Fi address can
+    // remain "connected" forever. The presence watchdog then never retries.
+    // Force a reconnect if the Linux player's next PING receives no PONG;
+    // recovery must not depend on InternetConnectionChecker noticing a loss
+    // when both the old and new networks have working internet.
+    _client.disconnectOnNoResponsePeriod = Platform.isLinux ? 15 : 0;
     _client.logging(on: false);
 
     _client.autoReconnect = true;

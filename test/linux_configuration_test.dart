@@ -55,6 +55,45 @@ void main() {
     await config.apply({'configuration_revision':3,'volume':90});
     expect(calls.length,count); expect(config.values['volume'],20);
   });
+  test('new registration accepts a lower revision and applies portrait', () async {
+    await config.apply({'configuration_revision':8,'screen_rotation':'0'},
+      registrationScope:'staging:old-player');
+    calls.clear();
+    final ack=await config.apply({'configuration_revision':2,'screen_rotation':'90'},
+      registrationScope:'production:new-player');
+    expect(calls,contains(equals(['xrandr','--output','HDMI-1','--rotate','right'])));
+    expect(ack['revision'],2);
+    expect(ack['results']['screen_rotation']['value'],'90');
+    final count=calls.length;
+    await config.apply({'configuration_revision':1,'screen_rotation':'0'});
+    expect(calls.length,count);
+    expect(config.values['screen_rotation'],'90');
+  });
+  test('legacy unscoped revision cannot block the current CMS record', () async {
+    SharedPreferences.setMockInitialValues({'linux_configuration':jsonEncode({
+      'revision':2,'values':{'screen_rotation':'0'},'results':{}})});
+    await config.apply({'configuration_revision':2,'screen_rotation':'90'},
+      registrationScope:'production:current-player');
+    expect(config.values['screen_rotation'],'90');
+    expect(config.results['screen_rotation']['value'],'90');
+    final stored=jsonDecode((await SharedPreferences.getInstance()).getString('linux_configuration')!);
+    expect(stored['registration_scope'],'production:current-player');
+  });
+  test('registration scope persists and replay protection survives restart', () async {
+    await config.apply({'configuration_revision':3,'screen_rotation':'90'},
+      registrationScope:'production:current-player');
+    config.close();
+    config=LinuxConfiguration(command:(exe,args) async {
+      calls.add([exe,...args]);
+      return exe=='xrandr' && args.first=='--query' ? 'HDMI-1 connected primary 1080x1920' : '';
+    });
+    await config.start();
+    calls.clear();
+    await config.apply({'configuration_revision':2,'screen_rotation':'0'},
+      registrationScope:'production:current-player');
+    expect(config.values['screen_rotation'],'90');
+    expect(calls,isEmpty);
+  });
   test('data saving blocks downloads; no policy leaves downloads unrestricted', () async {
     await config.start(); expect(await config.allowsDownload(),isTrue);
     await config.apply({'configuration_revision':1,'content_update_interval':{'data_saving_mode':true,'schedule':[]}});

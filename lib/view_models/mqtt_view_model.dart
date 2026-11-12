@@ -2589,7 +2589,12 @@ class MqttViewModel extends ChangeNotifier {
 
       globleTopic = _topic;
       if (Platform.isLinux && response['paired'] == true && response['settings'] is Map) {
-        final ack = await LinuxConfiguration.instance.apply(Map<String,dynamic>.from(response['settings']));
+        final registrationId = response['data'] is Map ? response['data']['id']?.toString() : null;
+        final ack = await LinuxConfiguration.instance.apply(
+          Map<String,dynamic>.from(response['settings']),
+          registrationScope: registrationId == null || registrationId.isEmpty
+              ? null : '$appEnv:$registrationId',
+        );
         if (_mqttClientService.isConnected) _mqttClientService.publishSyncAck(_topic, jsonEncode(ack));
       }
 

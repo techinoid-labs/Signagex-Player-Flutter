@@ -28,6 +28,7 @@ class LinuxConfiguration extends ChangeNotifier {
   Map<String, dynamic> values = {};
   Map<String, dynamic> results = {};
   int revision = 0;
+  String? _registrationScope;
   bool working = true;
   bool get hideMessages => values['hide_no_campaign_messages'] == true;
   bool get touchFeedback => values['touch_feedback'] == true;
@@ -134,6 +135,7 @@ class LinuxConfiguration extends ChangeNotifier {
           jsonDecode(prefs.getString('linux_configuration') ?? '{}') as Map;
       values = Map<String, dynamic>.from(stored['values'] ?? {});
       revision = (stored['revision'] as num?)?.toInt() ?? 0;
+      _registrationScope = stored['registration_scope'] as String?;
       results = Map<String, dynamic>.from(stored['results'] ?? {});
       final volume = stored['volume_restore'] as Map?;
       if (volume != null) {
@@ -182,6 +184,7 @@ class LinuxConfiguration extends ChangeNotifier {
         jsonEncode({
           'values': values,
           'revision': revision,
+          'registration_scope': _registrationScope,
           'results': results,
           if (_previousVolume != null && _volumeUntil != null)
             'volume_restore': {
@@ -193,11 +196,12 @@ class LinuxConfiguration extends ChangeNotifier {
         }));
   }
 
-  Future<Map<String, dynamic>> apply(Map<String, dynamic> settings) async {
+  Future<Map<String, dynamic>> apply(Map<String, dynamic> settings,
+      {String? registrationScope}) async {
     final completer = Completer<Map<String, dynamic>>();
     _queue = _queue.catchError((_) {}).then((_) async {
       try {
-        completer.complete(await _apply(settings));
+        completer.complete(await _apply(settings, registrationScope));
       } catch (error, stack) {
         completer.completeError(error, stack);
       }
@@ -205,8 +209,21 @@ class LinuxConfiguration extends ChangeNotifier {
     return completer.future;
   }
 
-  Future<Map<String, dynamic>> _apply(Map<String, dynamic> settings) async {
+  Future<Map<String, dynamic>> _apply(
+      Map<String, dynamic> settings, String? registrationScope) async {
     await start();
+    // Revisions belong to a CMS player record, not this disk. Reinstalling,
+    // re-pairing or moving between environments can reuse the pairing code
+    // while starting the server revision counter again. Only an authoritative
+    // registration response supplies this scope; ordinary MQTT settings may
+    // not reset replay protection. Preserve desired values so unchanged
+    // controls do not flicker while adopting the new record's revision.
+    if (registrationScope != null &&
+        registrationScope.isNotEmpty &&
+        registrationScope != _registrationScope) {
+      _registrationScope = registrationScope;
+      revision = 0;
+    }
     final incoming = (settings['configuration_revision'] as num?)?.toInt() ?? 0;
     if (incoming > 0 && incoming <= revision) return acknowledgement;
     final orderedKeys = [
