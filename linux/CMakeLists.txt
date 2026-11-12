@@ -154,6 +154,31 @@ endforeach()
 set_property(TARGET webview_cef_plugin PROPERTY SOURCES "${CEF_SAFE_SOURCES}")
 target_include_directories(webview_cef_plugin PRIVATE "${CEF_PLUGIN_SOURCE_DIR}")
 
+# Optional native video frame timings avoid intrusive screenshot sampling.
+get_target_property(FVP_PLUGIN_SOURCE_DIR fvp_plugin SOURCE_DIR)
+execute_process(
+  COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/cef_safety/prepare_video_stats.py"
+          "${FVP_PLUGIN_SOURCE_DIR}" "${CEF_SAFE_DIR}"
+  RESULT_VARIABLE VIDEO_STATS_RESULT
+)
+if(NOT VIDEO_STATS_RESULT EQUAL 0)
+  message(FATAL_ERROR "Could not prepare video timing diagnostics")
+endif()
+get_target_property(FVP_PLUGIN_SOURCES fvp_plugin SOURCES)
+set(FVP_TIMED_SOURCES)
+foreach(FVP_SOURCE IN LISTS FVP_PLUGIN_SOURCES)
+  get_filename_component(FVP_SOURCE_NAME "${FVP_SOURCE}" NAME)
+  if(FVP_SOURCE_NAME STREQUAL "fvp_plugin.cc")
+    list(APPEND FVP_TIMED_SOURCES "${CEF_SAFE_DIR}/fvp_plugin.cc")
+  else()
+    get_filename_component(FVP_SOURCE_ABS "${FVP_SOURCE}" ABSOLUTE
+                           BASE_DIR "${FVP_PLUGIN_SOURCE_DIR}")
+    list(APPEND FVP_TIMED_SOURCES "${FVP_SOURCE_ABS}")
+  endif()
+endforeach()
+set_property(TARGET fvp_plugin PROPERTY SOURCES "${FVP_TIMED_SOURCES}")
+target_include_directories(fvp_plugin PRIVATE "${FVP_PLUGIN_SOURCE_DIR}")
+
 
 # === Installation ===
 # By default, "installing" just makes a relocatable bundle in the build

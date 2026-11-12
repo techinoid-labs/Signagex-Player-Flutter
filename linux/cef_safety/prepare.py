@@ -122,6 +122,12 @@ app = replace_once(app, '\tif (process_type.empty())\n\t{', '''\tif (process_typ
         // campaigns may start media with sound (as Android's WebView does with
         // mediaPlaybackRequiresUserGesture = false).
         command_line->AppendSwitchWithValue("autoplay-policy", "no-user-gesture-required");''')
+# V8 native extension declarations must not declare formal parameters.
+# Arguments are supplied at invocation time and read by the native handler.
+for parameters in ('functionName, arg1', 'functionName, jsonString, arg2',
+                   'functionName, jsonString, arg2, arg3'):
+    app = replace_once(app, f'native function jsCmd({parameters});',
+                       'native function jsCmd();')
 (output / "webview_app.cc").write_text(app)
 handler = texts["../common/webview_handler.cc"]
 handler = replace_once(handler, '#include "webview_handler.h"',
