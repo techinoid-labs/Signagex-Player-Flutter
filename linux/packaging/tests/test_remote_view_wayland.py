@@ -57,6 +57,33 @@ class WaylandRemoteTests(unittest.TestCase):
             run.assert_not_called()
         self.assertEqual(self.result(),'executed')
 
+    def test_rotated_screen_is_sent_turned_and_clicks_are_turned_back(self):
+        listing='eDP-1 "Panel"
+  Enabled: yes
+  Transform: 270
+'
+        def capture(*arguments):
+            if arguments[0] == 'grim':
+                image=agent.Image.new('RGB',(1920,1080),(255,255,255))
+                image.putpixel((0,0),(255,0,0))  # upright top-left
+                image.save(arguments[-1])
+            return listing if arguments[0] == 'wlr-randr' else ''
+        self.remote.receive(self.command())
+        with patch.object(agent,'run',side_effect=capture), patch.object(agent.wayland_input,'missing',return_value=None):
+            self.remote.capture()
+            frame=self.open(self.output[-1]['payload'])
+            self.assertEqual((frame['input_width'],frame['input_height']),(1080,1920))
+            self.assertEqual(frame['geometry'],'1080x1920:wayland:270')
+            self.remote.receive(self.command(revision=2,command_id='command-2',input={'action':'click','x':1.0,'y':0.0,'frame_id':frame['frame_id']}))
+        # CMS 90 (clockwise) is Wayland 270: the upright top-left shows top-right.
+        self.remote.input.tap.assert_called_once_with(0.0,0.0)
+        self.assertEqual(agent.upright_point(0.25,0.75,'180'),(0.75,0.25))
+        self.assertEqual(agent.upright_point(0.0,1.0,'90'),(0.0,0.0))
+        self.assertEqual(agent.output_transform('HDMI-A-1 "x"
+  Enabled: no
+  Transform: 90
+'+listing),'270')
+
     def test_frame_comes_from_grim_with_the_output_size(self):
         self.remote.receive(self.command())
         calls=[]
@@ -66,10 +93,10 @@ class WaylandRemoteTests(unittest.TestCase):
             return ''
         with patch.object(agent,'run',side_effect=capture), patch.object(agent.wayland_input,'missing',return_value='no uinput'):
             self.remote.capture()
-        self.assertEqual(calls,['grim'])
+        self.assertEqual(calls,['grim','wlr-randr'])
         frame=self.open(self.output[-1]['payload'])
         self.assertEqual((frame['input_width'],frame['input_height']),(1920,1080))
-        self.assertEqual(frame['geometry'],'1920x1080:wayland')
+        self.assertEqual(frame['geometry'],'1920x1080:wayland:normal')
         self.assertTrue(frame['player_foreground'])
         self.assertFalse(frame['can_tap'])
 

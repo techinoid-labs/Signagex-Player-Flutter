@@ -21,9 +21,9 @@ void main() {
   test('CMS values map to wlr-randr transforms', () {
     expect(waylandTransform('0'), 'normal');
     expect(waylandTransform('landscape'), 'normal');
-    expect(waylandTransform('90'), '90');
+    expect(waylandTransform('90'), '270', reason: 'CMS is clockwise, Wayland counter-clockwise');
     expect(waylandTransform('180'), '180');
-    expect(waylandTransform(' 270 '), '270');
+    expect(waylandTransform(' 270 '), '90');
     expect(waylandTransform('45'), isNull);
     expect(waylandTransform('90; reboot'), isNull);
   });
@@ -50,14 +50,14 @@ void main() {
 
     test('apply turns the enabled output and remembers it', () async {
       expect(await rotation.apply('90'), contains('eDP-1'));
-      expect(calls.last, ['--output', 'eDP-1', '--transform', '90']);
+      expect(calls.last, ['--output', 'eDP-1', '--transform', '270']);
       expect((await SharedPreferences.getInstance()).getString('linux_wayland_rotation'), '90');
     });
 
     test('restore applies the saved rotation without saving again', () async {
       SharedPreferences.setMockInitialValues({'linux_wayland_rotation': '270'});
       await rotation.restore();
-      expect(calls.last, ['--output', 'eDP-1', '--transform', '270']);
+      expect(calls.last, ['--output', 'eDP-1', '--transform', '90']);
     });
 
     test('a bad rotation is refused before anything runs', () async {

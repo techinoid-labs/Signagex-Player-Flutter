@@ -89,12 +89,14 @@ String? normaliseRotation(String rotation) {
   return const {'0', '90', '180', '270'}.contains(r) ? r : null;
 }
 
-/// wlr-randr --transform value for a clockwise CMS rotation.
+/// wlr-randr --transform value for a CMS rotation. The CMS (like xrandr
+/// --rotate right on X11 and Android) counts clockwise; Wayland transforms
+/// count counter-clockwise, so 90 and 270 swap.
 String? waylandTransform(String rotation) => switch (normaliseRotation(rotation)) {
       '0' => 'normal',
-      '90' => '90',
+      '90' => '270',
       '180' => '180',
-      '270' => '270',
+      '270' => '90',
       _ => null,
     };
 
