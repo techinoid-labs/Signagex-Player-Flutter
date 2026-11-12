@@ -37,6 +37,7 @@ class _FakeProcess implements Process {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late List<_FakeProcess> started;
   late KioskSpeech speech;
 

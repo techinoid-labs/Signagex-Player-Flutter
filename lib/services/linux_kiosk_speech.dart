@@ -26,6 +26,11 @@ class KioskSpeech {
   final Future<Process> Function(String, List<String>) _start;
   final List<({String text, String lang, double rate})> _queue = [];
   Process? _current;
+  // Set synchronously while one item is starting or speaking, so a second
+  // request can never start a second voice while the first is launching.
+  bool _busy = false;
+  // Bumped by cancel(), so a voice still launching is stopped once it starts.
+  int _generation = 0;
   bool _reportedMissing = false;
 
   /// A message from the page: {"a":"speak","text","lang","rate"} or {"a":"cancel"}.
@@ -49,30 +54,44 @@ class KioskSpeech {
       lang: '${message['lang'] ?? ''}',
       rate: rate is num && rate.isFinite ? rate.toDouble() : 1.0,
     ));
-    if (_current == null) unawaited(_next());
+    unawaited(_next());
   }
 
   /// Stops speaking and drops anything queued (new screen, session end).
   void cancel() {
     _queue.clear();
+    _generation++;
     final current = _current;
     _current = null;
     current?.kill();
   }
 
   Future<void> _next() async {
-    if (_current != null || _queue.isEmpty) return;
+    if (_busy || _queue.isEmpty) return;
+    _busy = true;
+    final generation = _generation;
     final item = _queue.removeAt(0);
     final Process process;
     try {
       process = await _start('espeak-ng', espeakArguments(item.lang, item.rate));
     } on ProcessException catch (e) {
       _queue.clear();
+      _busy = false;
       if (!_reportedMissing) {
         _reportedMissing = true;
         unawaited(debug.debugLog('Kiosk',
             'read-aloud needs espeak-ng (sudo apt install espeak-ng): ${e.message}'));
       }
+      return;
+    } catch (_) {
+      _busy = false;
+      return;
+    }
+    if (generation != _generation) {
+      // Cancelled while it was launching.
+      process.kill();
+      _busy = false;
+      unawaited(_next());
       return;
     }
     _current = process;
@@ -84,10 +103,9 @@ class KioskSpeech {
       await process.stdin.close();
     } catch (_) {}
     await process.exitCode;
-    if (identical(_current, process)) {
-      _current = null;
-      unawaited(_next());
-    }
+    if (identical(_current, process)) _current = null;
+    _busy = false;
+    unawaited(_next());
   }
 }
 
