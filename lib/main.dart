@@ -3,6 +3,7 @@ import 'dart:async';
 import 'services/linux_configuration.dart';
 import 'utils/linux_video_options.dart';
 import 'services/linux_diagnostics.dart';
+import 'services/linux_kiosk_campaign.dart';
 // Prefixed: dart:ui re-declares several names (Color, Offset, Size, Rect,
 // TextDirection...) that flutter/material.dart also exports with its own
 // versions -- only PlatformDispatcher is actually needed from here.
@@ -66,6 +67,9 @@ void main() async {
     await LinuxConfiguration.instance.start();
     fvp.registerWith(options: {...linuxVideoOptions(Platform.environment), if (LinuxConfiguration.instance.safeVideo) 'video.decoders': ['FFmpeg']});
     await cef.WebviewManager().initialize();
+    // A kiosk campaign that was running before the restart comes back at
+    // once, before MQTT reconnects.
+    unawaited(KioskCampaignService.instance.restore());
   }
 
   // Certificate validation is bypassed ONLY in debug builds (e.g. a local

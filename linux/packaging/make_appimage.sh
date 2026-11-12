@@ -83,6 +83,7 @@ cp "$(command -v xdotool)" "$APPDIR/usr/bin/xdotool"
 command -v scrot >/dev/null || { echo "error: install scrot before packaging" >&2; exit 1; }
 cp "$(command -v scrot)" "$APPDIR/usr/bin/scrot"
 cp -R linux/packaging/kiosk "$APPDIR/usr/bin/kiosk"
+cp -R linux/packaging/wayland-kiosk "$APPDIR/usr/bin/wayland-kiosk"
 cp linux/packaging/49-signagex-reboot.rules "$APPDIR/usr/bin/kiosk/"
 
 desktop="$APPDIR/usr/share/applications/ai.signagex.player.desktop"

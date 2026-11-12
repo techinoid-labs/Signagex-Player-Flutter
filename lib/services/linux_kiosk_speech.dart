@@ -1,0 +1,238 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+
+import '../utils/debug_log.dart' as debug;
+
+/// Read-aloud for kiosk pages on Linux.
+///
+/// Kiosk pages read a screen with the browser's speechSynthesis. The embedded
+/// browser (CEF) has that API but no speech engine on Linux, so it accepts
+/// the text and stays silent. [kioskSpeechShim] replaces the API in the page
+/// with one that hands the text to the player, and this speaks it with
+/// espeak-ng through the normal sound output (PipeWire/PulseAudio).
+class KioskSpeech {
+  KioskSpeech({Future<Process> Function(String, List<String>)? start})
+      : _start = start ?? _startWithSound;
+
+  /// espeak-ng finds the sound server through XDG_RUNTIME_DIR; without it it
+  /// exits 0 having played nothing ("Host is down"). A kiosk session started
+  /// by systemd may not pass it on, so the usual /run/user/<uid> is filled in.
+  static Future<Process> _startWithSound(String exe, List<String> args) {
+    final environment = <String, String>{};
+    final runtime = Platform.environment['XDG_RUNTIME_DIR'] ?? '';
+    if (runtime.isEmpty) {
+      final dir = userRuntimeDir();
+      if (dir != null) environment['XDG_RUNTIME_DIR'] = dir;
+    }
+    return Process.start(exe, args, environment: environment);
+  }
+
+  /// /run/user/<uid> for this process, when it exists.
+  static String? userRuntimeDir() {
+    try {
+      final uid = (Process.runSync('id', ['-u']).stdout as String).trim();
+      if (!RegExp(r'^\d+$').hasMatch(uid)) return null;
+      final dir = '/run/user/$uid';
+      return Directory(dir).existsSync() ? dir : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  static final instance = KioskSpeech();
+
+  /// Page titles starting with this carry a read-aloud message.
+  static const titlePrefix = 'sxk-say:';
+
+  /// Takes a read-aloud message out of a page title; false for any other title.
+  bool handleTitle(String title) {
+    if (!title.startsWith(titlePrefix)) return false;
+    handle(title.substring(titlePrefix.length));
+    return true;
+  }
+
+  /// Longest text spoken in one go (a whole screen is far shorter).
+  static const maxChars = 4000;
+
+  final Future<Process> Function(String, List<String>) _start;
+  final List<({String text, String lang, double rate})> _queue = [];
+  Process? _current;
+  // Set synchronously while one item is starting or speaking, so a second
+  // request can never start a second voice while the first is launching.
+  bool _busy = false;
+  // Bumped by cancel(), so a voice still launching is stopped once it starts.
+  int _generation = 0;
+  bool _reportedMissing = false;
+
+  /// A message from the page: {"a":"speak","text","lang","rate"} or {"a":"cancel"}.
+  void handle(String raw) {
+    Map? message;
+    try {
+      final value = jsonDecode(raw);
+      if (value is Map) message = value;
+    } catch (_) {}
+    if (message == null) return;
+    if (message['a'] == 'ready') {
+      log('read-aloud hook is live on the page (speech replaced: ${message['replaced']})');
+      return;
+    }
+    if (message['a'] == 'cancel') {
+      if (_busy || _queue.isNotEmpty) log('read-aloud: stopped by the page');
+      cancel();
+      return;
+    }
+    if (message['a'] != 'speak') return;
+    final text = '${message['text'] ?? ''}'.trim();
+    if (text.isEmpty) return;
+    // Length and language only: the text may hold what a customer typed.
+    log('read-aloud: ${text.length} characters (${message['lang'] ?? ''})');
+    final rate = message['rate'];
+    _queue.add((
+      text: text.length > maxChars ? text.substring(0, maxChars) : text,
+      lang: '${message['lang'] ?? ''}',
+      rate: rate is num && rate.isFinite ? rate.toDouble() : 1.0,
+    ));
+    unawaited(_next());
+  }
+
+  void log(String message) => unawaited(debug.debugLog('Kiosk', message));
+
+  /// Stops speaking and drops anything queued (new screen, session end).
+  void cancel() {
+    _queue.clear();
+    _generation++;
+    final current = _current;
+    _current = null;
+    current?.kill();
+  }
+
+  Future<void> _next() async {
+    if (_busy || _queue.isEmpty) return;
+    _busy = true;
+    final generation = _generation;
+    final item = _queue.removeAt(0);
+    final Process process;
+    try {
+      process = await _start('espeak-ng', espeakArguments(item.lang, item.rate));
+    } on ProcessException catch (e) {
+      _queue.clear();
+      _busy = false;
+      if (!_reportedMissing) {
+        _reportedMissing = true;
+        unawaited(debug.debugLog('Kiosk',
+            'read-aloud needs espeak-ng (sudo apt install espeak-ng): ${e.message}'));
+      }
+      return;
+    } catch (_) {
+      _busy = false;
+      return;
+    }
+    if (generation != _generation) {
+      // Cancelled while it was launching.
+      process.kill();
+      _busy = false;
+      unawaited(_next());
+      return;
+    }
+    _current = process;
+    unawaited(process.stdout.drain<void>());
+    // espeak-ng's own complaint (no sound server, unknown voice), for the log.
+    final complaint = StringBuffer();
+    unawaited(process.stderr
+        .transform(utf8.decoder)
+        .listen((s) { if (complaint.length < 300) complaint.write(s); })
+        .asFuture<void>()
+        .catchError((_) {}));
+    // The text goes on stdin, never on the command line.
+    try {
+      process.stdin.write(item.text);
+      await process.stdin.close();
+    } catch (_) {}
+    final code = await process.exitCode;
+    final said = complaint.toString().trim();
+    if (said.isNotEmpty || (code != 0 && identical(_current, process))) {
+      log('read-aloud: espeak-ng exit $code${said.isEmpty ? '' : ': $said'}');
+    }
+    if (identical(_current, process)) _current = null;
+    _busy = false;
+    unawaited(_next());
+  }
+}
+
+/// espeak-ng arguments: voice from the page's language, speed from its rate.
+List<String> espeakArguments(String lang, double rate) => [
+      '-v',
+      espeakVoice(lang),
+      '-s',
+      '${(175 * rate).clamp(80, 450).round()}',
+      '--stdin',
+    ];
+
+/// The espeak-ng voice for a BCP 47 language code ('en', 'es-MX', 'fr-CA'...).
+String espeakVoice(String lang) {
+  final code = lang.trim().toLowerCase().replaceAll('_', '-');
+  if (!RegExp(r'^[a-z]{2,3}(-[a-z0-9]{2,8})*$').hasMatch(code)) return 'en-us';
+  final primary = code.split('-').first;
+  switch (primary) {
+    case 'en':
+      return const {'en-gb', 'en-ie', 'en-au', 'en-nz', 'en-za', 'en-in'}.any(code.startsWith)
+          ? 'en-gb'
+          : 'en-us';
+    case 'es':
+      return code == 'es-es' ? 'es' : 'es-419';
+    case 'pt':
+      return code == 'pt-pt' ? 'pt' : 'pt-br';
+    default:
+      return primary;
+  }
+}
+
+/// Replaces the page's speechSynthesis with one that posts to the player.
+/// Safe to run more than once.
+const kioskSpeechShim = r'''
+(function () {
+  if (window.__sxKioskSpeech) return;
+  window.__sxKioskSpeech = true;
+  // The page title is the one route this player already reads from kiosk
+  // pages (their state), so messages go the same way and the title is put
+  // back right after, unless the page has changed it meanwhile.
+  // The page's own title (never one of these messages): a cancel followed at
+  // once by a speak must not "restore" the cancel message afterwards.
+  var pageTitle = null, sent = 0;
+  function post(m) {
+    try {
+      var current = document.title;
+      if (current.indexOf('sxk-say:') !== 0) pageTitle = current;
+      m.n = ++sent; // every message is a new title, so repeats still arrive
+      var mine = 'sxk-say:' + JSON.stringify(m);
+      document.title = mine;
+      setTimeout(function () {
+        if (document.title === mine && pageTitle !== null) document.title = pageTitle;
+      }, 60);
+    } catch (e) {}
+  }
+  function Utterance(text) {
+    this.text = text == null ? '' : String(text);
+    this.lang = ''; this.rate = 1; this.pitch = 1; this.volume = 1; this.voice = null;
+    this.onstart = null; this.onend = null; this.onerror = null;
+    this.onpause = null; this.onresume = null; this.onboundary = null; this.onmark = null;
+  }
+  Utterance.prototype.addEventListener = function () {};
+  Utterance.prototype.removeEventListener = function () {};
+  var synth = {
+    speaking: false, pending: false, paused: false, onvoiceschanged: null,
+    speak: function (u) {
+      if (!u) return;
+      post({ a: 'speak', text: String(u.text || ''), lang: u.lang || document.documentElement.lang || '', rate: Number(u.rate) || 1 });
+    },
+    cancel: function () { post({ a: 'cancel' }); },
+    pause: function () {}, resume: function () {},
+    getVoices: function () { return []; },
+    addEventListener: function () {}, removeEventListener: function () {}
+  };
+  try { Object.defineProperty(window, 'SpeechSynthesisUtterance', { value: Utterance, configurable: true, writable: true }); } catch (e) { window.SpeechSynthesisUtterance = Utterance; }
+  try { Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true }); } catch (e) { window.speechSynthesis = synth; }
+  post({ a: 'ready', replaced: window.speechSynthesis === synth });
+})();
+''';

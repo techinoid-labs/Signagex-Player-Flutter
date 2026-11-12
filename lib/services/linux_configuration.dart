@@ -9,7 +9,10 @@ import 'package:flutter/painting.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import '../utils/configuration_policy.dart';
+import 'linux_remote_backend.dart'
+    show linuxDisplaySession, LinuxDisplaySession, LinuxRemoteBackend;
 import '../utils/transitions.dart';
+import 'linux_wayland_rotation.dart';
 
 typedef LinuxCommand = Future<String> Function(
     String executable, List<String> arguments);
@@ -63,12 +66,35 @@ class LinuxConfiguration extends ChangeNotifier {
   /// boot itself and runs no XDG autostart, so "Launch on boot" cannot apply there.
   static bool get kiosk => Platform.environment['SIGNAGEX_KIOSK'] == '1';
 
+  /// Brightness is applied with xrandr, which only drives X11 outputs, so on
+  /// the Wayland (cage) kiosk it is reported as unsupported. Rotation works
+  /// there through wlr-randr when it is installed (WaylandRotation).
+  static bool get wayland =>
+      debugWaylandOverride ??
+      linuxDisplaySession() == LinuxDisplaySession.wayland;
+
+  /// Tests set this so they don't depend on the session they run in
+  /// (a developer's desktop is often Wayland).
+  @visibleForTesting
+  static bool? debugWaylandOverride;
+  static const _x11OnlyKeys = {'brightness'};
+
+  /// wlr-randr is installed, so rotation works on the Wayland kiosk.
+  bool waylandRotation = false;
+
+  /// Remote-view input works here. X11 always has xdotool (a package
+  /// dependency); Wayland needs python3-evdev and a writable /dev/uinput.
+  bool remoteInput = true;
+
   Map<String, dynamic> get capabilities => {
         'protocol': 1,
         'platform': 'linux',
         'settings': {
           for (final key in linuxConfigurationKeys)
-            key: key == 'use_html5_webview' || (key == 'launch_on_boot' && kiosk)
+            key: key == 'use_html5_webview' ||
+                    (key == 'launch_on_boot' && kiosk) ||
+                    (wayland && _x11OnlyKeys.contains(key)) ||
+                    (wayland && key == 'screen_rotation' && !waylandRotation)
                 ? 'unsupported'
                 : key == 'apply_app_updates' &&
                         (!File('/usr/lib/signagex-player/update-player')
@@ -87,6 +113,8 @@ class LinuxConfiguration extends ChangeNotifier {
           'recurring': true
         },
         'brightness_kind': 'software',
+        'display_session': wayland ? 'wayland' : 'x11',
+        'remote_input': remoteInput,
         'schedule_timezone': 'device-local',
       };
 
@@ -98,6 +126,8 @@ class LinuxConfiguration extends ChangeNotifier {
           .split(RegExp(r'\s+'))
           .contains('signagex-updates');
     } catch (_) {}
+    if (wayland) remoteInput = await LinuxRemoteBackend.instance.inputAvailable();
+    if (wayland) waylandRotation = await WaylandRotation.instance.available();
     final prefs = await SharedPreferences.getInstance();
     try {
       final stored =
@@ -128,10 +158,17 @@ class LinuxConfiguration extends ChangeNotifier {
       if (values.containsKey(key)) {
         try {
           await _validateAndApply(key, values[key]);
+        } on UnsupportedError catch (error) {
+          results[key] = {'status': 'unsupported', 'message': error.message};
         } catch (error) {
           results[key] = {'status': 'failed', 'message': error.toString()};
         }
       }
+    }
+    // A rotation sent the older way (settings message), or ROTATE from the
+    // kiosk settings: the compositor forgot it when it restarted.
+    if (wayland && waylandRotation && !values.containsKey('screen_rotation')) {
+      await WaylandRotation.instance.restore();
     }
     _timer =
         Timer.periodic(const Duration(seconds: 15), (_) => unawaited(tick()));
@@ -249,6 +286,13 @@ class LinuxConfiguration extends ChangeNotifier {
   }
 
   Future<void> _validateAndApply(String key, dynamic value) async {
+    if (wayland && _x11OnlyKeys.contains(key)) {
+      throw UnsupportedError('Brightness control needs an X11 session');
+    }
+    if (wayland && key == 'screen_rotation' && !waylandRotation) {
+      throw UnsupportedError(
+          'Rotation on the Wayland kiosk needs wlr-randr (sudo apt install wlr-randr)');
+    }
     const booleanKeys = {
       'launch_on_boot',
       'apply_app_updates',
@@ -291,6 +335,8 @@ class LinuxConfiguration extends ChangeNotifier {
             !_updatePermission)) {
       throw UnsupportedError(
           'Install the managed updater and ask an administrator to enable update permission first');
+    } else if (key == 'screen_rotation' && wayland) {
+      await WaylandRotation.instance.apply(value.toString());
     } else if (key == 'screen_rotation') {
       final direction = {
         '0': 'normal',
@@ -483,7 +529,7 @@ class LinuxConfiguration extends ChangeNotifier {
         await _persist();
       }
       final brightness = values['brightness'] as Map?;
-      if (brightness != null) {
+      if (brightness != null && !wayland) {
         final expired =
             _brightnessUntil != null && !now.isBefore(_brightnessUntil!);
         final percent = expired ? 100 : _brightness(brightness, now);

@@ -22,6 +22,9 @@ class MqttClientService {
 
   Function(String)? onMessageReceived;
   void Function(String, String, bool)? onRemoteMessageReceived;
+  /// Kiosk campaign messages ({playerCode}/kiosk). Kept out of the legacy
+  /// content handler, which would not know these actions.
+  void Function(String)? onKioskMessageReceived;
 
   /// Guards against overlapping connect() calls racing each other and
   /// opening two live connections with two different client IDs — every
@@ -372,6 +375,10 @@ class MqttClientService {
     // Signed remote commands have their own retained/replay-aware dispatcher.
     // Do not feed them into the legacy handler or general diagnostic logging.
     final receivedTopic = messages[0].topic ?? '';
+    if (receivedTopic.endsWith('/kiosk')) {
+      onKioskMessageReceived?.call(payload);
+      return;
+    }
     if (receivedTopic.endsWith('/remote/v2/command')) {
       onRemoteMessageReceived?.call(receivedTopic, payload, recMess.header?.retain == true);
       return;

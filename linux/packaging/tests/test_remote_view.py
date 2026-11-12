@@ -15,6 +15,7 @@ class RemoteProtocolTests(unittest.TestCase):
         self.temporary=tempfile.TemporaryDirectory(); self.output=[]
         self.remote=agent.Remote('0607c6',self.temporary.name,self.output.append,self.signer.public_key(),clock=lambda:1000,monotonic=lambda:100)
         self.remote.enabled=True
+        self.remote.wayland=False  # X11 path; Wayland is covered in test_remote_view_wayland.py
         self.key=os.urandom(32)
     def tearDown(self): self.temporary.cleanup()
     def command(self,**changes):

@@ -27,6 +27,9 @@ import '../utils/transitions.dart';
 import '../views/no_content_view.dart';
 import '../widgets/center_image_widget.dart';
 import '../widgets/text_widget.dart';
+import '../services/linux_pop.dart';
+import '../services/data_feed_binding.dart';
+import '../widgets/feed_bound.dart';
 
 bool _isNetworkMediaUrl(String url) =>
     url.startsWith('http://') || url.startsWith('https://');
@@ -335,7 +338,8 @@ class _CampaignViewState extends State<CampaignView> {
 
     bool campaignCanPlay = false;
 
-    if (campaignSchedule?.alwaysPlay ?? false) {
+    if ((campaignSchedule?.alwaysPlay ?? false) ||
+        mqttViewModel.isOnDemandNow(campaign.campaignId)) {
       campaignCanPlay = true;
       if (kDebugMode) print('$green✅ CAMPAIGN: alwaysPlay = true → Campaign can play$reset');
     } else {
@@ -493,6 +497,9 @@ class VideoPlaylistWidget extends StatefulWidget {
 
 class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   int _currentMediaIndex = 0;
+
+  /// When the current item went on screen, for its proof of play.
+  DateTime _popStartedAt = DateTime.now();
   Timer? _timer;
   Timer? _restrictionCheckTimer;
   Timer? _adSlotRecheckTimer;
@@ -1375,8 +1382,48 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
   bool _isDisposed = false;
 
+  /// A composition element bound to a data feed shows the live value;
+  /// anything else is built with its saved [fallback].
+  Widget _feedBound(MediaItem media, String fallback, Widget Function(String) builder) {
+    final binding = FeedBinding.fromJson(media.dataFeed);
+    if (binding == null) return builder(fallback);
+    return FeedBound(
+      binding: binding,
+      elementId: media.id ?? '',
+      fallback: fallback,
+      builder: builder,
+    );
+  }
+
+  /// Proof of play (Reports) for the item that just finished. Only library
+  /// content (item_id) counts, as on Android.
+  void _reportPlay() {
+    if (!Platform.isLinux) return;
+    final started = _popStartedAt;
+    _popStartedAt = DateTime.now();
+    if (widget.mediaItems.isEmpty) return;
+    final id = _resolvedMediaAt(_currentMediaIndex).itemId;
+    if (id == null || id.isEmpty) return;
+    final campaignId = widget.campaignId;
+    var reason = 'scheduled';
+    if (campaignId?.startsWith('trigger:') ?? false) {
+      reason = 'interactivity';
+    } else if (Provider.of<MqttViewModel>(context, listen: false).isOnDemandNow(campaignId)) {
+      reason = 'on_demand';
+    }
+    unawaited(LinuxPop.instance.record(PopPlay(
+      contentId: id,
+      playedAt: started,
+      seconds: DateTime.now().difference(started).inSeconds,
+      reason: reason,
+      campaignId: campaignId,
+      zoneId: int.tryParse(widget.zoneId),
+    )));
+  }
+
   void _onMediaEnd() {
     if (Platform.isLinux && !(widget.campaignId?.startsWith('trigger:') ?? false)) LinuxInteractivity.instance.boundary();
+    _reportPlay();
     _timer?.cancel();
 
     if (_videoController != null) {
@@ -1888,10 +1935,10 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         _webViewWidgetBuilders[cacheKey] = () => RepaintBoundary(
               key: ValueKey(cacheKey),
               child: SizedBox.expand(
-                child: TextWidget(
+                child: _feedBound(media, media.settings?.text ?? '', (text) => TextWidget(
                   key: ValueKey(cacheKey),
-                  html: media.settings?.html ?? '',
-                  text: media.settings?.text ?? '',
+                  html: FeedBinding.fromJson(media.dataFeed) != null ? '' : media.settings?.html ?? '',
+                  text: text,
                   onTextEnd: _onMediaEnd,
                   transitionType: media.settings?.transition ?? 'none',
                   fontSize: media.settings?.fontSize,
@@ -1899,7 +1946,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
                   fill: media.settings?.fill,
                   strokeWidth: media.settings?.strokeWidth,
                   shadowBlur: media.settings?.shadowBlur,
-                ),
+                )),
               ),
             );
       }
@@ -1943,14 +1990,15 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     if (mediaType.startsWith('image')) {
       if (kDebugMode) print(
           "[LOG] _buildMediaWidget - Building ImageWidget for image type: $mediaType");
-      return ImageWidget(
-        key: ValueKey(media.id ?? ''),
-        filePath: mediaUrl,
+      // A feed-bound image takes its source from the feed (as on Android).
+      return _feedBound(media, mediaUrl, (src) => ImageWidget(
+        key: ValueKey('${media.id ?? ''}_$src'),
+        filePath: src,
         onImageEnd: () {
           _onMediaEnd();
         },
         transitionType: media.settings?.transition ?? 'none',
-      );
+      ));
     }
 
     if (mediaType.startsWith('video')) {

@@ -108,6 +108,8 @@ fi
 mkdir -p "$ROOT$INSTALL_DIR/kiosk" "$ROOT/usr/share/polkit-1/rules.d"
 find linux/packaging/kiosk -maxdepth 1 -type f -exec cp {} "$ROOT$INSTALL_DIR/kiosk/" \;
 cp linux/packaging/49-signagex-reboot.rules "$ROOT/usr/share/polkit-1/rules.d/49-$PKG-reboot.rules"
+# Optional Wayland (cage) kiosk; also administrator opt-in (wayland-kiosk/install.sh).
+cp -R linux/packaging/wayland-kiosk "$ROOT$INSTALL_DIR/wayland-kiosk"
 
 # Managed Linux configuration helpers. Update permission remains administrator opt-in.
 mkdir -p "$ROOT/usr/lib/signagex-player" "$ROOT/usr/bin"

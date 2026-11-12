@@ -1,0 +1,36 @@
+# Installed by wayland-kiosk/install.sh, which replaces @KIOSK_USER@.
+# Logs the kiosk user straight into a cage session on tty1 at boot (the
+# approach cage documents), with no display manager or desktop.
+[Unit]
+Description=SignageX Wayland kiosk (cage)
+After=systemd-user-sessions.service plymouth-quit-wait.service systemd-logind.service
+Wants=systemd-logind.service
+Conflicts=getty@tty1.service
+Before=graphical.target
+
+[Service]
+Type=simple
+User=@KIOSK_USER@
+PAMName=signagex-kiosk
+# pam_systemd needs these to put the session on seat0 / VT 1. Without them
+# (newer systemd, e.g. Ubuntu 26.04) the session gets no seat and wlroots
+# fails after 10 s with "Failed to start a DRM session".
+Environment=XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user XDG_SEAT=seat0 XDG_VTNR=1
+# Bring tty1 to the front (e.g. when restarted from another console).
+ExecStartPre=-+/usr/bin/chvt 1
+WorkingDirectory=~
+TTYPath=/dev/tty1
+TTYReset=yes
+TTYVHangup=yes
+TTYVTDisallocate=yes
+StandardInput=tty-fail
+StandardOutput=journal
+StandardError=journal
+UtmpIdentifier=tty1
+UtmpMode=user
+ExecStart=/usr/local/libexec/signagex-wayland-session
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=graphical.target

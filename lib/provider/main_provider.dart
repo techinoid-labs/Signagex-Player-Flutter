@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../widgets/linux_configured_surface.dart';
 import '../widgets/linux_trigger_surface.dart';
+import '../widgets/linux_kiosk_surface.dart';
 import '../services/linux_interactivity.dart';
 import '../services/linux_setup_hotspot.dart';
 import 'dart:io';
@@ -21,6 +22,7 @@ import '../views/no_internet_view.dart';
 import '../views/play_list_view.dart';
 import '../views/player_stopped_view.dart';
 import '../views/setup_hotspot_view.dart';
+import '../widgets/linux_plugin_host.dart';
 
 class MqttProvider extends StatefulWidget {
   final Widget child;
@@ -72,7 +74,7 @@ class _MqttProviderState extends State<MqttProvider> {
             onKeyEvent: (_,event) => Platform.isLinux && event is KeyDownEvent && LinuxInteractivity.instance.key(event.logicalKey.keyLabel,consumeOnly:true) ? KeyEventResult.handled : KeyEventResult.ignored,
             child: GestureDetector(
               onTapUp: _onTap,
-              child: LinuxConfiguredSurface(applySchedule: [MqttState.campaignScreen,MqttState.playlistScreen,MqttState.noContent].contains(viewModel.state),child: Platform.isLinux ? LinuxTriggerSurface(child: _linuxScreen(viewModel.state)) : _getScreenForState(viewModel.state)),
+              child: LinuxConfiguredSurface(applySchedule: [MqttState.campaignScreen,MqttState.playlistScreen,MqttState.noContent].contains(viewModel.state),child: Platform.isLinux ? LinuxPluginHost(child: LinuxKioskSurface(state: viewModel.state, child: LinuxTriggerSurface(child: _linuxScreen(viewModel.state)))) : _getScreenForState(viewModel.state)),
             ),
           );
         },
