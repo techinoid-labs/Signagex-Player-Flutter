@@ -870,6 +870,41 @@ class KioskCampaignService extends ChangeNotifier {
   /// Bumped to ask the page to end its session (before a forced swap).
   final ValueNotifier<int> endSessionRequests = ValueNotifier(0);
 
+  /// Bumped to make the page go one screen back (remote view's Back).
+  final ValueNotifier<int> backRequests = ValueNotifier(0);
+
+  /// A campaign approved on this screen switches as soon as it is due, even
+  /// mid-session: the person who tapped Approve is the one at the screen.
+  String? _switchNowCampaign;
+  DateTime? _switchNowUntil;
+  static const _switchNowWindow = Duration(minutes: 2);
+
+  /// True once, when the campaign just approved on this screen is the one
+  /// waiting: the page's session is ended and it switches now.
+  bool _switchNowNow(DateTime now) {
+    final until = _switchNowUntil;
+    if (until == null) return false;
+    if (now.isAfter(until)) {
+      _switchNowCampaign = null;
+      _switchNowUntil = null;
+      return false;
+    }
+    final pending = _pending;
+    if (pending == null || pending.campaignId != _switchNowCampaign) return false;
+    _switchNowCampaign = null;
+    _switchNowUntil = null;
+    if (_state == KioskPageState.session) endSessionRequests.value++;
+    _log('${pending.label} was approved on this screen; switching now');
+    return true;
+  }
+
+  /// Remote view's Back, for the kiosk page; false when no kiosk is showing.
+  bool requestBack() {
+    if (_disposed || !showing) return false;
+    backRequests.value++;
+    return true;
+  }
+
   Timer? _timer;
   Timer? _reloadTimer;
   bool _started = false;
@@ -1258,6 +1293,10 @@ class KioskCampaignService extends ChangeNotifier {
       switch (approvalOutcome(status)) {
         case KioskApprovalSend.sent:
           _answered.add(approval.requestId);
+          if (approve) {
+            _switchNowCampaign = approval.campaignId;
+            _switchNowUntil = _clock().add(_switchNowWindow);
+          }
           _log('approval ${approval.requestId} $word');
           _updatePrompt();
           return KioskApprovalSend.sent;
@@ -1335,7 +1374,8 @@ class KioskCampaignService extends ChangeNotifier {
     }
 
     if (_pending == null && !_pendingClear) return;
-    final decision = KioskSwapPolicy.decide(
+    final switchNow = _switchNowNow(now);
+    final decision = switchNow ? KioskSwapDecision.apply : KioskSwapPolicy.decide(
       state: _state,
       waitingSince: _waitingSince ?? now,
       now: now,
@@ -1416,6 +1456,7 @@ class KioskCampaignService extends ChangeNotifier {
     _reloadTimer?.cancel();
     reloadRequests.dispose();
     endSessionRequests.dispose();
+    backRequests.dispose();
     approvalPrompt.dispose();
     super.dispose();
   }

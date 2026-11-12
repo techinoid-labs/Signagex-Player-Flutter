@@ -84,6 +84,7 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
     ));
     widget.kiosk.reloadRequests.addListener(_reload);
     widget.kiosk.endSessionRequests.addListener(_endSession);
+    widget.kiosk.backRequests.addListener(_back);
     unawaited(_initialize());
   }
 
@@ -128,6 +129,22 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
     }
   }
 
+  void _back() {
+    unawaited(_runBack());
+  }
+
+  /// One screen back inside the kiosk (the page has no browser history, so
+  /// the Alt+Left key remote view also sends does nothing there).
+  Future<void> _runBack() async {
+    try {
+      await _controller.ready;
+      await _controller.executeJavaScript(
+          'window.__sxKioskBack && window.__sxKioskBack()');
+    } catch (_) {
+      // An older page without the hook: nothing to go back to.
+    }
+  }
+
   @override
   void didUpdateWidget(covariant LinuxKioskView oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -138,6 +155,7 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
   void dispose() {
     widget.kiosk.reloadRequests.removeListener(_reload);
     widget.kiosk.endSessionRequests.removeListener(_endSession);
+    widget.kiosk.backRequests.removeListener(_back);
     _controller.dispose();
     super.dispose();
   }

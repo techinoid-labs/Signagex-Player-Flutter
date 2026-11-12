@@ -15,6 +15,10 @@ class LinuxRemoteView {
   bool Function()? allowed;
   void Function(String topic, String payload, bool retained)? publish;
   Future<void> Function(String, String)? event;
+
+  /// Remote view's Back (the adapter also sends Alt+Left, which a kiosk page
+  /// with no browser history ignores).
+  void Function()? onBack;
   DateTime? _lastAttempt;
   final Map<int, (String, Completer<OtaReply>)> _otaPending = {};
   int _otaRequestId = 0;
@@ -52,6 +56,8 @@ class LinuxRemoteView {
             _publicKey = value['device_key'] as String;
             _enabled();
             announce();
+          } else if (value['navigate'] == 'back') {
+            if (allowed?.call() == true) onBack?.call();
           } else if (allowed?.call() == true && value['payload'] is Map) {
             final suffix = value['topic'] == 'frame'
                 ? 'remote'

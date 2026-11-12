@@ -186,6 +186,9 @@ class Remote:
                 if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in (x,y)):
                     raise ValueError('Invalid coordinates')
                 return str(min(width-1,int(x*width))),str(min(height-1,int(y*height)))
+            # The player also gets Back, so a kiosk page (no browser history) goes
+            # one screen back; the key below still covers everything else.
+            if action == 'press_back': self.emit({'navigate':'back'})
             if self.wayland:
                 self.ack(command,self.execute_wayland(action, item)); return
             if action == 'click': run('xdotool','mousemove','--sync',*point(item),'click','1')

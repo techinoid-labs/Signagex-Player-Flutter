@@ -129,6 +129,7 @@ class MqttViewModel extends ChangeNotifier {
       else { _mqttClientService.publish(topic,payload,retain:retained); }
     };
     _secureRemote.event = config.event;
+    _secureRemote.onBack = () => KioskCampaignService.instance.requestBack();
     LinuxOta.instance.event = config.event;
     LinuxOta.instance.onChange = () => unawaited(_publishLinuxOtaReport(force: true));
     unawaited(LinuxOta.instance.load());

@@ -41,6 +41,7 @@ class WaylandRemoteTests(unittest.TestCase):
             self.remote.receive(self.command(revision=2,command_id='command-2',input={'action':'press_back'}))
         self.remote.input.type.assert_called_once_with(text)
         self.remote.input.key.assert_called_once_with('alt+Left')
+        self.assertIn({'navigate':'back'},self.output)  # the player sends it to a kiosk page
         self.assertNotIn(text,json.dumps(self.output))
 
     def test_missing_uinput_is_reported_not_faked(self):
