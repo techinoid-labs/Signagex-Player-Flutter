@@ -70,7 +70,7 @@ frees the screen, and `start` brings it back.
 | Key | Values | Notes |
 |---|---|---|
 | `PLAYER` | absolute path | set by the installer |
-| `GDK_BACKEND` | `wayland` (default), `x11` | `x11` runs the player under XWayland inside cage. Use it if web pages, web apps or kiosk campaigns misbehave on native Wayland (see below). |
+| `GDK_BACKEND` | `x11` (default), `wayland` | `x11` runs the player under XWayland inside cage. Use it if web pages, web apps or kiosk campaigns misbehave on native Wayland (see below). |
 | `ROTATE` | `0`, `90`, `180`, `270` | clockwise, via `cage -r`; needs a cage build with `-r` |
 
 Apply with `sudo systemctl restart signagex-wayland-kiosk`. CMS rotation and
