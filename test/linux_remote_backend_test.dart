@@ -116,6 +116,29 @@ void main() {
       expect(calls.single.$1, 'grim');
     });
 
+    test('grim without JPEG support falls back to PNG and stays on PNG', () async {
+      final b = LinuxRemoteBackend(
+        environment: {'WAYLAND_DISPLAY': 'wayland-0'},
+        executable: '${temp.path}/signagex-player',
+        screenSize: () => const ui.Size(1920, 1080),
+        run: (exe, args, {stdinText}) async {
+          calls.add((exe, args, stdinText));
+          if (args.contains('jpeg')) {
+            return ProcessResult(1, 1, '', 'jpeg support disabled\n');
+          }
+          await File(args.last).writeAsBytes([9, 8, 7]);
+          return ProcessResult(1, 0, '', '');
+        },
+      );
+      final path = '${temp.path}/frame.jpg';
+      expect(await b.capture(path), [9, 8, 7]);
+      expect(calls.map((c) => c.$2[1]), ['jpeg', 'png']);
+      calls.clear();
+      expect(await b.capture(path), [9, 8, 7]);
+      expect(calls.single.$2, grimPngArguments(path));
+      expect(grimLacksJpeg('other error'), isFalse);
+    });
+
     test('a missing helper is reported as an error', () async {
       await File('${temp.path}/kiosk/wayland_input.py').delete();
       final b = LinuxRemoteBackend(
