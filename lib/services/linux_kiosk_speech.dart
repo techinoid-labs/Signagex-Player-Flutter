@@ -48,6 +48,8 @@ class KioskSpeech {
     if (message['a'] != 'speak') return;
     final text = '${message['text'] ?? ''}'.trim();
     if (text.isEmpty) return;
+    // Length and language only: the text may hold what a customer typed.
+    log('read-aloud: ${text.length} characters (${message['lang'] ?? ''})');
     final rate = message['rate'];
     _queue.add((
       text: text.length > maxChars ? text.substring(0, maxChars) : text,
@@ -56,6 +58,8 @@ class KioskSpeech {
     ));
     unawaited(_next());
   }
+
+  void log(String message) => unawaited(debug.debugLog('Kiosk', message));
 
   /// Stops speaking and drops anything queued (new screen, session end).
   void cancel() {

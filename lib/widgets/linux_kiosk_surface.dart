@@ -145,8 +145,10 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
         ),
       });
       await _controller.executeJavaScript(kioskSpeechShim);
-    } catch (_) {
+      KioskSpeech.instance.log('read-aloud ready on the page');
+    } catch (error) {
       // The page still works; it just stays silent.
+      KioskSpeech.instance.log('read-aloud could not be set up: $error');
     }
   }
 
