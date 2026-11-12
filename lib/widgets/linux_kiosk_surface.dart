@@ -5,6 +5,7 @@ import 'package:webview_cef/webview_cef.dart' as cef;
 
 import '../services/linux_kiosk_campaign.dart';
 import '../utils/mqtt_state.dart';
+import 'linux_kiosk_approval.dart';
 
 /// Puts the running kiosk campaign over scheduled signage (Linux only).
 ///
@@ -38,6 +39,10 @@ class LinuxKioskSurface extends StatelessWidget {
                 kiosk: kiosk,
               ),
             ),
+          // A clashing campaign waiting for approval, over signage or the
+          // kiosk (never during a customer session; the service holds it).
+          if (state != MqttState.playerStopped && state != MqttState.pairedScreen)
+            Positioned.fill(child: LinuxKioskApprovalOverlay(kiosk: kiosk)),
         ]);
       },
     );

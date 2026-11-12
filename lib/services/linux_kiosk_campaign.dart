@@ -317,12 +317,122 @@ class KioskScheduleEntry {
       };
 }
 
+/// A campaign the screen already runs that an approved request would replace.
+class KioskApprovalReplace {
+  final String campaignId;
+  final String name;
+  final KioskSchedule schedule;
+  const KioskApprovalReplace({required this.campaignId, required this.name, required this.schedule});
+
+  Map<String, dynamic> toJson() =>
+      {'campaign_id': campaignId, 'name': name, 'schedule': schedule.toJson()};
+}
+
+/// A kiosk campaign waiting for someone at the screen to approve it, because
+/// its times clash with what this screen already runs (`data.approvals` on
+/// `kiosk_schedule`). It is not in the schedule and never plays before the
+/// backend accepts an approval and sends the schedule again.
+class KioskApproval {
+  final String requestId;
+  final String campaignId;
+  final String name;
+  final String versionId;
+  final int versionNo;
+  final KioskSchedule schedule;
+  final List<KioskApprovalReplace> replaces;
+
+  /// UTC; null when the request has no end.
+  final DateTime? expiresAt;
+  final String url;
+  final String playerUrl;
+
+  const KioskApproval({
+    required this.requestId,
+    required this.campaignId,
+    required this.name,
+    required this.versionId,
+    required this.versionNo,
+    required this.schedule,
+    required this.replaces,
+    required this.expiresAt,
+    required this.url,
+    required this.playerUrl,
+  });
+
+  /// The request id goes into a URL path: letters, digits, - and _ only.
+  static final RegExp _safeId = RegExp(r'^[A-Za-z0-9_-]{1,80}$');
+
+  /// Null for anything without a usable request id.
+  static KioskApproval? fromJson(Object? json) {
+    if (json is! Map) return null;
+    String text(String key) => (json[key] ?? '').toString().trim();
+    final id = text('request_id');
+    if (!_safeId.hasMatch(id)) return null;
+    final replaces = <KioskApprovalReplace>[];
+    final raw = json['replaces'];
+    if (raw is List) {
+      for (final item in raw) {
+        if (item is! Map) continue;
+        final name = '${item['name'] ?? ''}'.trim();
+        replaces.add(KioskApprovalReplace(
+          campaignId: '${item['campaign_id'] ?? ''}'.trim(),
+          name: name.isEmpty ? 'Another kiosk campaign' : name,
+          schedule: KioskSchedule.fromJson(item['schedule']),
+        ));
+      }
+    }
+    final no = json['version_no'];
+    final name = text('name');
+    return KioskApproval(
+      requestId: id,
+      campaignId: text('campaign_id'),
+      name: name.isEmpty ? 'Kiosk campaign' : name,
+      versionId: text('version_id'),
+      versionNo: no is num ? no.toInt() : int.tryParse('$no') ?? 0,
+      schedule: KioskSchedule.fromJson(json['schedule']),
+      replaces: replaces,
+      expiresAt: DateTime.tryParse(text('expires_at'))?.toUtc(),
+      url: text('url'),
+      playerUrl: text('player_url'),
+    );
+  }
+
+  Map<String, dynamic> toJson() => {
+        'request_id': requestId,
+        'campaign_id': campaignId,
+        'name': name,
+        'version_id': versionId,
+        'version_no': versionNo,
+        'schedule': schedule.toJson(),
+        'replaces': [for (final r in replaces) r.toJson()],
+        'expires_at': expiresAt?.toIso8601String(),
+        'url': url,
+        'player_url': playerUrl,
+      };
+
+  bool expiredAt(DateTime now) => expiresAt != null && !now.toUtc().isBefore(expiresAt!);
+
+  /// "Expires in 23 h", "Expires in 40 min"; null without an expiry.
+  String? expiresIn(DateTime now) {
+    final end = expiresAt;
+    if (end == null) return null;
+    final left = end.difference(now.toUtc());
+    if (left.inMinutes < 1) return 'Expires in less than a minute';
+    if (left.inMinutes < 60) return 'Expires in ${left.inMinutes} min';
+    if (left.inHours < 48) return 'Expires in ${left.inHours} h';
+    return 'Expires in ${left.inDays} days';
+  }
+}
+
 /// Everything scheduled on this screen, as last received.
 class KioskScheduleSet {
   /// IANA zone of the screen's clock (null: the device's own zone).
   final String? timeZone;
   final List<KioskScheduleEntry> entries;
-  const KioskScheduleSet(this.timeZone, this.entries);
+
+  /// Clashing campaigns waiting for approval on this screen (not scheduled).
+  final List<KioskApproval> approvals;
+  const KioskScheduleSet(this.timeZone, this.entries, [this.approvals = const []]);
 
   static const empty = KioskScheduleSet(null, []);
 
@@ -331,6 +441,7 @@ class KioskScheduleSet {
   Map<String, dynamic> toJson() => {
         'time_zone': timeZone,
         'campaigns': [for (final e in entries) e.toJson()],
+        'approvals': [for (final a in approvals) a.toJson()],
       };
 
   static KioskScheduleSet fromJson(Object? json, {String? frontendBase}) {
@@ -346,7 +457,16 @@ class KioskScheduleSet {
         if (entry != null && seen.add(entry.payload.campaignId)) entries.add(entry);
       }
     }
-    return KioskScheduleSet(zone.isEmpty ? null : zone, entries);
+    final approvals = <KioskApproval>[];
+    final requests = <String>{};
+    final rawApprovals = json['approvals'];
+    if (rawApprovals is List) {
+      for (final item in rawApprovals) {
+        final approval = KioskApproval.fromJson(item);
+        if (approval != null && requests.add(approval.requestId)) approvals.add(approval);
+      }
+    }
+    return KioskScheduleSet(zone.isEmpty ? null : zone, entries, approvals);
   }
 }
 
@@ -736,6 +856,14 @@ class KioskCampaignService extends ChangeNotifier {
   int _failures = 0;
   DateTime? _fallbackUntil;
 
+  /// The approval to show on screen now: null when none is pending, or while
+  /// a customer is in a session (the prompt never interrupts one).
+  final ValueNotifier<KioskApproval?> approvalPrompt = ValueNotifier(null);
+
+  /// Requests answered from this screen, hidden until the backend's next
+  /// schedule (which drops them) arrives.
+  final Set<String> _answered = {};
+
   /// Bumped to make the page reload (health recovery).
   final ValueNotifier<int> reloadRequests = ValueNotifier(0);
 
@@ -780,8 +908,14 @@ class KioskCampaignService extends ChangeNotifier {
   Future<void> restore() async {
     if (_active != null) return;
     final saved = await _cache.readSchedule();
-    if (saved == null || saved.entries.isEmpty) return;
+    if (saved == null || (saved.entries.isEmpty && saved.approvals.isEmpty)) return;
     _schedule = saved;
+    // A prompt that was waiting before the restart comes back.
+    _updatePrompt();
+    if (saved.entries.isEmpty) {
+      _startTimer();
+      return;
+    }
     for (final id in saved.versionIds) {
       if (await _cache.hasDocument(id)) _ready.add(id);
     }
@@ -810,6 +944,12 @@ class KioskCampaignService extends ChangeNotifier {
     _lastHandledRaw = raw;
     _schedule = message.schedule;
     _lastSummary = '';
+    // Answers the backend has taken out of the list are done.
+    _answered.retainAll({for (final a in _schedule.approvals) a.requestId});
+    if (_schedule.approvals.isNotEmpty) {
+      _log('${_schedule.approvals.length} campaign(s) waiting for approval on this screen');
+    }
+    _updatePrompt();
     _log(message.clear
         ? 'schedule cleared: no kiosk campaigns on this screen'
         : 'schedule received: ${message.schedule.entries.length} campaign(s)');
@@ -859,6 +999,8 @@ class KioskCampaignService extends ChangeNotifier {
       final keep = {..._schedule.versionIds, if (_active != null) _active!.versionId};
       if (_schedule.entries.isEmpty && _active == null) {
         await _cache.clear();
+        // Requests waiting for approval still need to survive a restart.
+        if (_schedule.approvals.isNotEmpty) await _cache.saveSchedule(_schedule);
       } else {
         await _cache.prune(keep);
       }
@@ -1035,8 +1177,127 @@ class KioskCampaignService extends ChangeNotifier {
     });
   }
 
+  /// Empties the cache, but keeps requests waiting for approval on disk.
+  Future<void> _clearKeepingApprovals() async {
+    await _cache.clear();
+    if (_schedule.approvals.isNotEmpty) {
+      try {
+        await _cache.saveSchedule(_schedule);
+      } catch (_) {}
+    }
+  }
+
+  // ─── On-screen approval ──────────────────────────────────────────────────
+
+  /// Requests still waiting: not answered here, not expired. Oldest first
+  /// (the order the backend sent them).
+  List<KioskApproval> get pendingApprovals {
+    final now = _clock();
+    return [
+      for (final a in _schedule.approvals)
+        if (!_answered.contains(a.requestId) && !a.expiredAt(now)) a,
+    ];
+  }
+
+  /// Whether a prompt may cover the screen now: never in front of a
+  /// customer. While the kiosk is in a session it waits; once the page is
+  /// idle/ready, or the screen shows signage (also after a fallback), it can.
+  static bool promptAllowed({required bool kioskShowing, required KioskPageState state}) =>
+      !(kioskShowing && state == KioskPageState.session);
+
+  void _updatePrompt() {
+    if (_disposed) return;
+    final allowed = promptAllowed(kioskShowing: showing, state: _state);
+    final pending = pendingApprovals;
+    final current = approvalPrompt.value;
+    // Keep the one on screen while it is still pending (e.g. while sending).
+    final KioskApproval? next;
+    if (!allowed || pending.isEmpty) {
+      next = null;
+    } else if (current != null && pending.any((a) => a.requestId == current.requestId)) {
+      next = pending.firstWhere((a) => a.requestId == current.requestId);
+    } else {
+      next = pending.first;
+    }
+    if (next?.requestId == current?.requestId) return;
+    if (next != null) {
+      _log('approval ${next.requestId} shown: ${next.name} (${next.schedule.describe()})');
+    } else if (current != null && !allowed) {
+      _log('approval ${current.requestId} waits for the customer session to end');
+    }
+    approvalPrompt.value = next;
+  }
+
+  /// POST {baseurl}kiosk-runtime/approvals/{request}?player={code}.
+  static Uri approvalDecisionUri(String base, String requestId, String playerCode) => Uri.parse(
+      '${base}kiosk-runtime/approvals/${Uri.encodeComponent(requestId)}?player=${Uri.encodeQueryComponent(playerCode)}');
+
+  static String approvalDecisionBody({required bool approve}) =>
+      jsonEncode({'decision': approve ? 'approve' : 'decline'});
+
+  /// 2xx: recorded. 404/409: not for this screen, or already decided or
+  /// expired; nothing to send again. Anything else (or no answer): try again.
+  static KioskApprovalSend approvalOutcome(int? status) {
+    if (status == null) return KioskApprovalSend.failed;
+    if (status >= 200 && status < 300) return KioskApprovalSend.sent;
+    if (status == 404 || status == 409) return KioskApprovalSend.gone;
+    return KioskApprovalSend.failed;
+  }
+
+  /// Sends the answer from the screen. Nothing is applied here: the backend
+  /// decides and sends the schedule again (approved: the campaign is in it).
+  /// One retry on a network problem or server error; 15 s per attempt.
+  Future<KioskApprovalSend> decideApproval(KioskApproval approval, {required bool approve}) async {
+    final word = approve ? 'approve' : 'decline';
+    if (_playerCode.isEmpty) {
+      _log('approval ${approval.requestId} $word not sent: the screen is not paired yet');
+      return KioskApprovalSend.failed;
+    }
+    for (var attempt = 0; attempt < 2; attempt++) {
+      final status = await _postDecision(approval.requestId, approve);
+      switch (approvalOutcome(status)) {
+        case KioskApprovalSend.sent:
+          _answered.add(approval.requestId);
+          _log('approval ${approval.requestId} $word');
+          _updatePrompt();
+          return KioskApprovalSend.sent;
+        case KioskApprovalSend.gone:
+          _answered.add(approval.requestId);
+          _log('approval ${approval.requestId} $word not applied: '
+              '${status == 409 ? 'already decided or expired' : 'not for this screen'} (HTTP $status)');
+          _updatePrompt();
+          return KioskApprovalSend.gone;
+        case KioskApprovalSend.failed:
+          break;
+      }
+    }
+    _log('approval ${approval.requestId} $word could not be sent; the prompt stays');
+    return KioskApprovalSend.failed;
+  }
+
+  Future<int?> _postDecision(String requestId, bool approve) async {
+    final client = _httpClient()..connectionTimeout = const Duration(seconds: 15);
+    try {
+      final request = await client
+          .postUrl(approvalDecisionUri(baseurl, requestId, _playerCode))
+          .timeout(const Duration(seconds: 15));
+      request.headers.contentType = ContentType.json;
+      request.write(approvalDecisionBody(approve: approve));
+      final response = await request.close().timeout(const Duration(seconds: 15));
+      await response.drain<void>().timeout(const Duration(seconds: 15));
+      return response.statusCode;
+    } catch (_) {
+      return null;
+    } finally {
+      client.close(force: true);
+    }
+  }
+
   void _tick() {
     if (_disposed) return;
+    // An expired request disappears; a prompt held back by a session shows
+    // once the session ends.
+    _updatePrompt();
     final now = _clock();
     final retry = _retryAt;
     if (retry != null && now.isAfter(retry)) {
@@ -1104,7 +1365,7 @@ class KioskCampaignService extends ChangeNotifier {
       _fallbackUntil = null;
       if (_schedule.entries.isEmpty) {
         _ready.clear();
-        unawaited(_cache.clear());
+        unawaited(_clearKeepingApprovals());
       }
       notifyListeners();
       return;
@@ -1155,6 +1416,19 @@ class KioskCampaignService extends ChangeNotifier {
     _reloadTimer?.cancel();
     reloadRequests.dispose();
     endSessionRequests.dispose();
+    approvalPrompt.dispose();
     super.dispose();
   }
+}
+
+/// What happened to an answer sent from the screen.
+enum KioskApprovalSend {
+  /// Recorded by the backend; it sends the schedule again.
+  sent,
+
+  /// Already decided, expired, or not for this screen: nothing to resend.
+  gone,
+
+  /// No answer (offline, timeout) or a server error: the prompt stays.
+  failed,
 }
