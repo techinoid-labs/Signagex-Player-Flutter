@@ -38,7 +38,12 @@ GLib work source was attached but never run; CEF now runs the loop itself.
   optional Intel video/display preset. Existing decoder and size limits retained.
 - Production publication uses api.signagex.ai, retaining source-run, version and
   checksum verification. No unrelated Windows/macOS feature branches merged.
-- Not published or hardware-validated yet. Assign version/checksum from CI when built.
+- Byte preflight found Twin Lake GPU 8086:46d4 unsupported by the installed
+  non-free 24.1.0 driver. Ubuntu's 24.1.0+dfsg1-1ubuntu0.2 free driver passed
+  VA-API initialization/codec checks; optional Intel preset now selects it and
+  validates real decoding/VideoProc before changing service settings.
+- Linux no longer requests unsupported mobile GPS/location permission channels.
+- Not published yet. Assign version/checksum from CI when built.
 
 ## v15 — 2026-10-23 — staging
 

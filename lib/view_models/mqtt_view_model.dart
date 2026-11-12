@@ -868,6 +868,7 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> checkAndRequestPermissions() async {
+    if (Platform.isLinux) return; // permission_handler has no Linux backend.
     final status = await Permission.location.status;
     if (!status.isGranted) {
       await Permission.location.request();
@@ -1156,6 +1157,9 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> _fetchCurrentLocation() async {
+    // Linux appliances use CMS-configured location. These mobile permission/GPS
+    // channels have no Linux implementation and otherwise fail at every startup.
+    if (Platform.isLinux) return;
     try {
       await _getLocation();
 
