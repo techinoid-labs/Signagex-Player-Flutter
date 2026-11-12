@@ -145,8 +145,10 @@ class Remote:
             return False
 
     def wayland_frame(self, path):
-        """One full-output grim JPEG at path; returns its (width, height)."""
-        run('grim','-t','jpeg','-q','75',str(path))
+        """One full-output grim frame at path; returns its (width, height).
+        PNG (fastest level): some grim builds have no JPEG (Ubuntu 26.04:
+        "jpeg support disabled"). Pillow reads it and re-encodes the JPEG."""
+        run('grim','-t','png','-l','1',str(path))
         with Image.open(path) as image: size = image.size
         self.last_size = size
         return size
