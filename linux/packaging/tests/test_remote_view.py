@@ -125,8 +125,9 @@ class RemoteProtocolTests(unittest.TestCase):
             self.remote.transform='180'
             return (1920,1080,'geometry')
         with patch.object(self.remote,'geometry',side_effect=geometry),patch.object(agent,'run') as run:
+            self.remote.receive(self.command())  # join the session first
             self.remote.frames['frame']=(100,'geometry')
-            self.remote.receive(self.command(input={'action':'click','x':0.25,'y':0.25,'frame_id':'frame'}))
+            self.remote.receive(self.command(revision=2,command_id='command-2',input={'action':'click','x':0.25,'y':0.25,'frame_id':'frame'}))
             run.assert_called_once_with('xdotool','mousemove','--sync','1440','810','click','1')
     def test_input_requires_controller_and_recent_frame_geometry(self):
         with patch.object(self.remote,'geometry',return_value=(1024,600,'geometry')),patch.object(agent,'run') as run:
