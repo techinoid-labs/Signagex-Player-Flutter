@@ -144,7 +144,7 @@ jobs:
           fi
           # Strict, unlike the staging publish: if this fails, nothing reached
           # the fleet and the run must say so.
-          curl --fail-with-body --silent --show-error -X POST "https://signagexai.com/v1/player-releases/upload" \
+          curl --fail-with-body --silent --show-error -X POST "https://api.signagex.ai/v1/player-releases/upload" \
             -H "x-release-key: $RELEASE_KEY" \
             -F "platform=linux" \
             -F "version=$version" \

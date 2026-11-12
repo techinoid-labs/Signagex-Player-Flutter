@@ -1,6 +1,6 @@
 # Local device maintenance
 
-Status: implemented on `feat/linux-local-maintenance`; not a production release.
+Status: integrated into `linux`; release validation is recorded in LINUX-RELEASES.md.
 Public player v81 does not gain these controls until a new Debian package and
 the appliance provisioning change are installed. Do not assign a release ID by
 hand; record the CI build ID and package checksum when a build is produced.

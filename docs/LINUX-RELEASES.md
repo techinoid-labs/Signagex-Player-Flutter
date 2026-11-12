@@ -22,7 +22,7 @@ pairing or content screen must not hold a core (`top -H`: the main thread well
 under 10 %). Before v58 the GTK loop spun at 100 % of one core because Chromium's
 GLib work source was attached but never run; CEF now runs the loop itself.
 
-## Unreleased — local maintenance console
+## Unreleased — consolidated Linux production candidate
 
 - Independent offline Wi-Fi console, including relocation with an old SSID saved.
 - Openbox Ctrl+Alt+M entry; focused-player 9700 entry.
@@ -31,7 +31,14 @@ GLib work source was attached but never run; CEF now runs the loop itself.
 - Debian packaging and tests added for amd64/ARM64. Administrator opt-in and
   per-device PIN provisioning are required; the USB-image repository still needs
   offline dependencies and provisioning integration. See `LINUX-LOCAL-MAINTENANCE.md`.
-- Not published or hardware-validated. Assign version/checksum from CI when built.
+- Includes the previously merged Linux parity, hotspot, OTA, responsive pairing,
+  kiosk campaigns and Fiza's Wayland kiosk/session fixes (PR #64).
+- Reconciled the older first-frame branch with newer browser load/frame gating;
+  repaired V8 native declarations, added opt-in video timing diagnostics and an
+  optional Intel video/display preset. Existing decoder and size limits retained.
+- Production publication uses api.signagex.ai, retaining source-run, version and
+  checksum verification. No unrelated Windows/macOS feature branches merged.
+- Not published or hardware-validated yet. Assign version/checksum from CI when built.
 
 ## v15 — 2026-10-23 — staging
 
