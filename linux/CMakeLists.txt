@@ -201,6 +201,13 @@ install(CODE "
 install(DIRECTORY "${PROJECT_BUILD_DIR}/${FLUTTER_ASSET_DIR_NAME}"
   DESTINATION "${INSTALL_BUNDLE_DATA_DIR}" COMPONENT Runtime)
 
+# Remote-view adapter and Wayland input helper next to the player, so a plain
+# `flutter build linux` bundle has them too (the bundle is wiped on each build).
+install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/packaging/kiosk/"
+  DESTINATION "${CMAKE_INSTALL_PREFIX}/kiosk"
+  COMPONENT Runtime
+  FILES_MATCHING PATTERN "*.py")
+
 # Install the AOT library on non-Debug builds only.
 if(NOT CMAKE_BUILD_TYPE MATCHES "Debug")
   install(FILES "${AOT_LIBRARY}" DESTINATION "${INSTALL_BUNDLE_LIB_DIR}"
