@@ -71,7 +71,11 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
       loading: const ColoredBox(color: Colors.black),
     );
     _controller.setWebviewListener(cef.WebviewEventsListener(
-      onTitleChanged: (title) => widget.kiosk.onPageTitle(title),
+      onTitleChanged: (title) {
+        // Read-aloud messages ride on the title too; they aren't page states.
+        if (KioskSpeech.instance.handleTitle(title)) return;
+        widget.kiosk.onPageTitle(title);
+      },
       onLoadEnd: (_, url) {
         // The Linux safety override reports a failed main frame this way
         // (see LinuxWebView).
@@ -133,17 +137,11 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
   }
 
   /// Read-aloud: CEF on Linux has speechSynthesis but no engine, so the page
-  /// hands the text to the player (KioskSpeech). Every load replaces the page,
-  /// so the channel and the shim go in again each time.
+  /// hands the text to the player (KioskSpeech) through the page title. Every
+  /// load replaces the page, so the shim goes in again each time.
   Future<void> _installSpeech() async {
     try {
       await _controller.ready;
-      await _controller.setJavaScriptChannels({
-        cef.JavascriptChannel(
-          name: KioskSpeech.channel,
-          onMessageReceived: (message) => KioskSpeech.instance.handle(message.message),
-        ),
-      });
       await _controller.executeJavaScript(kioskSpeechShim);
       KioskSpeech.instance.log('read-aloud ready on the page');
     } catch (error) {

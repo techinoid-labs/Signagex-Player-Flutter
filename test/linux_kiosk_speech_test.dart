@@ -100,6 +100,14 @@ void main() {
     expect(started, isEmpty);
   });
 
+  test('only titles with the read-aloud prefix are taken', () async {
+    expect(speech.handleTitle('sxk:session'), isFalse);
+    expect(speech.handleTitle('sxk-say:{"a":"ready","replaced":true}'), isTrue);
+    expect(speech.handleTitle('${KioskSpeech.titlePrefix}${speak('hi')}'), isTrue);
+    await pumpEventQueue();
+    expect(started.single.spoken.toString(), 'hi');
+  });
+
   test('missing espeak-ng does not throw', () async {
     final missing = KioskSpeech(
         start: (exe, args) async => throw const ProcessException('espeak-ng', [], 'not found'));

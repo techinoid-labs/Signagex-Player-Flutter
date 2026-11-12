@@ -17,8 +17,15 @@ class KioskSpeech {
 
   static final instance = KioskSpeech();
 
-  /// The JavaScript channel the page posts to.
-  static const channel = 'SxKioskSpeech';
+  /// Page titles starting with this carry a read-aloud message.
+  static const titlePrefix = 'sxk-say:';
+
+  /// Takes a read-aloud message out of a page title; false for any other title.
+  bool handleTitle(String title) {
+    if (!title.startsWith(titlePrefix)) return false;
+    handle(title.substring(titlePrefix.length));
+    return true;
+  }
 
   /// Longest text spoken in one go (a whole screen is far shorter).
   static const maxChars = 4000;
@@ -41,6 +48,10 @@ class KioskSpeech {
       if (value is Map) message = value;
     } catch (_) {}
     if (message == null) return;
+    if (message['a'] == 'ready') {
+      log('read-aloud hook is live on the page (speech replaced: ${message['replaced']})');
+      return;
+    }
     if (message['a'] == 'cancel') {
       cancel();
       return;
@@ -147,8 +158,16 @@ const kioskSpeechShim = r'''
 (function () {
   if (window.__sxKioskSpeech) return;
   window.__sxKioskSpeech = true;
+  // The page title is the one route this player already reads from kiosk
+  // pages (their state), so messages go the same way and the title is put
+  // back right after, unless the page has changed it meanwhile.
   function post(m) {
-    try { SxKioskSpeech(JSON.stringify(m)); } catch (e) {}
+    try {
+      var previous = document.title;
+      var mine = 'sxk-say:' + JSON.stringify(m);
+      document.title = mine;
+      setTimeout(function () { if (document.title === mine) document.title = previous; }, 60);
+    } catch (e) {}
   }
   function Utterance(text) {
     this.text = text == null ? '' : String(text);
@@ -171,5 +190,6 @@ const kioskSpeechShim = r'''
   };
   try { Object.defineProperty(window, 'SpeechSynthesisUtterance', { value: Utterance, configurable: true, writable: true }); } catch (e) { window.SpeechSynthesisUtterance = Utterance; }
   try { Object.defineProperty(window, 'speechSynthesis', { value: synth, configurable: true }); } catch (e) { window.speechSynthesis = synth; }
+  post({ a: 'ready', replaced: window.speechSynthesis === synth });
 })();
 ''';
