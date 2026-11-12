@@ -22,7 +22,16 @@ pairing or content screen must not hold a core (`top -H`: the main thread well
 under 10 %). Before v58 the GTK loop spun at 100 % of one core because Chromium's
 GLib work source was attached but never run; CEF now runs the loop itself.
 
-## Unreleased — consolidated Linux production candidate
+## v87 — 2026-11-12 — production (amd64)
+
+- Source: `e5799ed92882f17937b468e75f1366960d35078b`, branch `linux`.
+- [Build/test run](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/43324702592)
+  and [production promotion](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/43327980306) passed.
+- Exact production artifact installed and tested on **MPM-LAB-LNX-03 | Azulle
+  Byte 91A2B2** before promotion. Paired kiosk and configuration retained.
+- Download: https://norwin.sfo3.digitaloceanspaces.com/player-releases/production/linux/signagex-player-production-87_amd64.deb
+- SHA-256: `11262632b9aa3161c8f064ff84e6fcb220d04a1fd94382af9edd1b44277a29a1`.
+- [Validation evidence and remaining acceptance](LINUX-QA-2026-11-12.md).
 
 - Independent offline Wi-Fi console, including relocation with an old SSID saved.
 - Openbox Ctrl+Alt+M entry; focused-player 9700 entry.
@@ -49,7 +58,10 @@ GLib work source was attached but never run; CEF now runs the loop itself.
   registration ID. Migrated or re-paired disks no longer ignore portrait and
   other settings because an older registration had a higher revision. Stale
   commands within the current registration remain rejected.
-- Not published yet. Assign version/checksum from CI when built.
+- Native ARM64-v52 CI passed from the same source; not promoted in this run.
+  Physical Pi, AppImage and Wayland acceptance remain separate from this
+  AMD64/X11 Byte validation. The full live CMS orientation cycle and physical
+  cold-boot acceptance also remain open as detailed in the validation report.
 
 ## v15 — 2026-10-23 — staging
 

@@ -1,6 +1,6 @@
 # SignageX — Linux Deployment Strategy
 
-_Last updated: 2026-10-23_
+_Last updated: 2026-11-12_
 
 How we get the SignageX Flutter player onto Linux signage devices, keep it
 updated, and scale from one unit to a fleet. Reference hardware for bring-up is
@@ -22,8 +22,10 @@ pushed on different cadences by different mechanisms. Don't conflate them.
 | **3. Content / config** | campaigns, playlists, screen settings | Continuous, live | ✅ player's MQTT + CMS sync |
 
 **Layer 3 is implemented** through player MQTT/CMS sync. Staging and production
-use separate environments. Byte content delivery, offline recovery and pairing
-still need end-to-end validation; implementation alone is not hardware proof.
+use separate environments. Byte pairing and current kiosk rendering have now
+been observed on hardware. Long offline playback and broader acceptance remain
+separate tests; implementation alone is not hardware proof. See the
+[v87 validation record](LINUX-QA-2026-11-12.md).
 
 ---
 
@@ -106,7 +108,9 @@ player all at once.
 
 ## 5. Linux readiness checklist
 
-Updated 2026-10-23 against source, the v15 CI run and live staging download.
+Updated 2026-11-12 against consolidated `linux` source, v87/ARM64-v52 CI and
+the lab Byte. Historical v15 evidence below remains valid for its stated scope;
+the [current validation matrix](LINUX-QA-2026-11-12.md) records newer checks and limits.
 **Owner assignments have not been agreed.** Every owner below is unassigned;
 the role in parentheses identifies the proposed responsibility, not a commitment.
 Checked boxes mean the stated deliverable is complete at the evidence level
@@ -130,26 +134,30 @@ needed to close them. See [release history](LINUX-RELEASES.md) and
 
 | Done | Deliverable | Owner | Status | Validation evidence / acceptance needed |
 |---|---|---|---|---|
-| [x] | amd64 .deb/AppImage build and packaging | Unassigned (release engineering) | CI verified for v15 | [v15 CI](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/40011248815): analysis/tests, production/staging builds, packaging and Debian installation passed. This does not prove playback. |
+| [x] | amd64 .deb/AppImage build and packaging | Unassigned (release engineering) | CI verified for v87; .deb installed on Byte | [v87 CI](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/43324702592); 204 Flutter tests passed. Paired Byte upgrade 85 → 87 passed; AppImage hardware acceptance remains pending. |
 | [x] | Code/QR pairing and enrollment implementation | Unassigned (player/CMS engineering) | Already built; Linux end-to-end validation pending | Player `lib/view_models/mqtt_view_model.dart` and `lib/views/digivision_view.dart`; CMS `ClassicSetupPlayerModal.tsx`; backend `players.resolver.ts` createPlayer flow. Not a missing implementation. |
 | [x] | Device registry and licence enforcement implementation | Unassigned (backend engineering) | Already built; lifecycle validation pending | Backend `players.service.ts`: organization licence-pool checks and player licence status; player entities/creation flow. Not a missing implementation. |
 | [x] | Publish v15 staging package | Unassigned (release engineering) | Live staging verified | Publication job passed. Nginx upload route and backend allow 512 MB; route timeouts raised. Backend upload-limit commit `24aab62`. |
 | [x] | Versioned .deb download filename and retained version links | Unassigned (backend engineering) | Live staging verified | Backend commit `6e50568`; [pinned v15 download](https://norwin.sfo3.digitaloceanspaces.com/player-releases/staging/linux/signagex-player-staging-v15_amd64.deb) returned HTTP 200 and Content-Disposition filename `signagex-player-staging-v15_amd64.deb`. Latest metadata reports v15 and SHA-256 `7e09cffaf5d868077ac81d362bb1de9f8e0d973340d2d5de87f14ce6d97a5e0b`. |
 | [x] | Version-specific install/test runbook and release history | Unassigned (documentation/release engineering) | Written; Byte execution pending | [LINUX-INSTALL.md](LINUX-INSTALL.md), [LINUX-RELEASES.md](LINUX-RELEASES.md); player commit `647daff`. Includes checksum, package-version check and remaining tests. |
 | [ ] | Account, enrollment and licence lifecycle acceptance | Unassigned (QA/CMS engineering) | Linux end-to-end validation pending | Fresh account/code claim, organization ownership, persistence, unpair/re-pair, capacity exhaustion and revocation; save results against release version. |
-| [ ] | Byte playback and recovery acceptance | Unassigned (QA/device engineering) | No completed Byte validation record in this session | Follow v15 runbook: image/video/audio, cached playback offline, reconnect, remote control, restart and reboot. Requires on-screen/audio confirmation and physical power-cycle testing. Do not infer that Linux has never run on any hardware. |
+| [ ] | Byte playback and recovery acceptance | Unassigned (QA/device engineering) | Partial hardware validation recorded | [v87 report](LINUX-QA-2026-11-12.md): paired kiosk rendering, silent MQTT outage/recovery without restart, four X11 rotations and application restart persistence passed. Sustained video/audio, full CMS input, long offline playback and physical power recovery remain open. |
 | [ ] | Public website downloads and supported-platform/support pages | Unassigned (website/product) | Not verified as delivered | Staging endpoint and repository docs exist. Provide customer-facing pages, tested OS/architecture matrix, pairing instructions and support contact before closing. |
 | [ ] | One-line installer | Unassigned (release engineering) | Planned; not delivered in this work | Detect supported hosts; verify release integrity; prove clean-host install. `get.signagex.ai` remains a proposed endpoint. |
 | [ ] | Sanitized, repeatable golden image | Unassigned (device engineering) | Pending proven unit | Reset pairing/cache, credentials, machine identity and SSH host keys. Record image version/checksum and demonstrate independent enrollment on two cloned units. |
 | [ ] | Azulle appliance specification and commercial process | Unassigned (business operations/device engineering) | Terms and outreach status unverified | Confirm RAM/storage, imaging, pricing, minimum order, fulfillment and warranty in vendor evidence. No sent-email claim is established here. |
-| [ ] | ARM64 / Raspberry Pi | Unassigned (product/player engineering) | Scope decision and feasibility pending; not shipped | Confirm CI scaffold status from source before claiming it exists. Prove ARM64 CEF/video dependencies, CI artifacts and real Pi operation before support claims. |
+| [x] | ARM64 build and packages | Unassigned (release engineering) | Built; native ARM64-v52 CI green | [Native run](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/43324702644), browser/video native dependencies and packaging passed. A public ARM64 feed already exists; v52 physical Pi acceptance is pending. |
+| [ ] | Raspberry Pi release acceptance | Unassigned (QA/device engineering) | Separate hardware validation pending | Record Pi model, 64-bit OS/session, pairing, content/video, offline recovery, input and power-cycle evidence per version. Native CI is not on-device proof. |
+| [x] | Offline maintenance console implementation | Unassigned (player/device engineering) | Included in v87; per-device provisioning required | [Maintenance guide](LINUX-LOCAL-MAINTENANCE.md), packaged Wi-Fi/PIN/SSH/terminal helpers and GTK smoke tests. Byte shortcut/direct PIN authentication checked; full operator flow remains open. |
+| [x] | Network relocation and registration revision fixes | Unassigned (player engineering) | v87 built and live Byte regression checked | [v87 report](LINUX-QA-2026-11-12.md): response deadline recovers a stranded MQTT socket; authoritative registration scope prevents old revisions blocking current settings. |
 
 ### Tier 2 — reach and scale
 
 | Done | Deliverable | Owner | Status | Validation evidence / acceptance needed |
 |---|---|---|---|---|
-| [ ] | OS/app OTA with recovery and fleet visibility | Unassigned (platform engineering/product) | Evaluation pending; no vendor selected | Select an approach, demonstrate upgrade/rollback and recovery on hardware. Content sync and release publication already exist; neither establishes OS-level OTA. |
-| [ ] | Wayland remote input | Unassigned (player engineering) | Not implemented in the current xdotool input path | Demonstrate input/control under a named Wayland compositor. This limitation does not establish that all player rendering is X11-only. |
+| [x] | Managed player app update implementation | Unassigned (player/release engineering) | Built; administrator opt-in | Packaged updater, signed device status, integrity/version checks and retry backoff exist. Automatic updates remain off on this Byte. Fleet rollback acceptance remains separate. |
+| [ ] | OS-level OTA with recovery and fleet visibility | Unassigned (platform engineering/product) | Evaluation pending; no vendor selected | App updates and content sync exist; select and validate an OS image update/rollback mechanism separately. |
+| [x] | Wayland kiosk and remote input implementation | Unassigned (player engineering) | Merged into linux; hardware acceptance pending | [Wayland guide](LINUX-WAYLAND-KIOSK.md): cage, grim, uinput and wlr-randr paths. This run tested X11 only; native CEF caveats and compositor requirements remain documented. |
 | [ ] | Additional package formats | Unassigned (release engineering/product) | Demand-driven backlog | RPM/Snap/Flatpak/Docker need explicit scope and validated artifacts; current verified formats are amd64 .deb and AppImage. |
 
 ### Evidence and ownership maintenance
@@ -174,7 +182,9 @@ systems to build. Kiosk provisioning is optional on a customer's desktop.
 The initial validation target is Ubuntu 22.04/24.04 amd64 with an X11 desktop.
 Debian and other AppImage hosts need explicit validation before being advertised
 as supported. AppImage still depends on compatible glibc, graphics drivers and
-a graphical session; it does not mean every distro. ARM64/Pi is not shipped.
+a graphical session; it does not mean every distro. ARM64 packages are built
+separately and Pi support must retain its test-build qualification until the
+version-specific hardware matrix is accepted.
 
 ### Pipeline B — Azulle pre-imaged appliance
 
