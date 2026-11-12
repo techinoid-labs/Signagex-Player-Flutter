@@ -1,0 +1,286 @@
+#!/usr/bin/python3
+"""Offline GTK console. Runs as the kiosk user, separately from Flutter/CEF."""
+import json
+import os
+import pathlib
+import socket
+import subprocess
+import threading
+import time
+
+
+def helper_request(request):
+    try:
+        result = subprocess.run(['pkexec', '--disable-internal-agent',
+                                 '/usr/lib/signagex-player/maintenance-helper'],
+                                input=json.dumps(request), capture_output=True, text=True, timeout=190)
+        lines = [line for line in result.stdout.splitlines() if line.startswith('{')]
+        return json.loads(lines[-1]) if lines else {
+            'phase': 'failed', 'detail': 'Maintenance is not enabled for this account. Contact your administrator.'}
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        return {'phase': 'failed', 'detail': 'Maintenance helper did not respond. Retry or contact support.'}
+
+
+def connections():
+    try:
+        result = subprocess.run(['nmcli', '-f', 'DEVICE,TYPE,STATE,CONNECTION', 'device'],
+                                capture_output=True, text=True, timeout=10)
+        addresses = subprocess.run(['hostname', '-I'], capture_output=True, text=True, timeout=5)
+        return f'{socket.gethostname()}\n{addresses.stdout.strip()}\n{result.stdout.strip()}'
+    except (OSError, subprocess.TimeoutExpired):
+        return socket.gethostname() + '\nNetworkManager is unavailable.'
+
+
+def nearby_networks():
+    try:
+        result = subprocess.run(['nmcli', '-g', 'SSID', 'device', 'wifi', 'list', '--rescan', 'yes'],
+                                capture_output=True, text=True, timeout=20)
+        # nmcli -g still escapes backslashes and colons.
+        return list(dict.fromkeys(s.replace('\\:', ':').replace('\\\\', '\\')
+                                  for s in result.stdout.splitlines() if s))
+    except (OSError, subprocess.TimeoutExpired):
+        return []
+
+
+def main():
+    import gi
+    gi.require_version('Gtk', '3.0')
+    gi.require_version('Gdk', '3.0')
+    from gi.repository import Gdk, Gio, GLib, Gtk
+
+    class Console(Gtk.Application):
+        def __init__(self):
+            super().__init__(application_id='ai.signagex.Maintenance', flags=Gio.ApplicationFlags.FLAGS_NONE)
+            self.window = None
+            self.pin = ''
+            self.touched = time.monotonic()
+            self.busy = False
+
+        def do_activate(self):
+            if self.window:
+                self.window.present()
+                return
+            self.window = Gtk.ApplicationWindow(application=self, title='SignageX Device Maintenance')
+            self.window.set_default_size(960, 720)
+            self.window.set_keep_above(True)
+            self.window.fullscreen()
+            self.window.connect('key-press-event', self.on_key)
+            self.window.connect('button-press-event', self.touch)
+            self.window.connect('destroy', self.on_destroy)
+            css = Gtk.CssProvider()
+            css.load_from_data(b'window { background: #111827; color: #f9fafb; } '
+                               b'label { font-size: 20px; } button, entry { font-size: 22px; padding: 12px; } '
+                               b'entry { color: #111827; background: #ffffff; }')
+            Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css,
+                                                     Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
+            scroll = Gtk.ScrolledWindow()
+            outer = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18)
+            outer.set_border_width(32)
+            scroll.add(outer)
+            self.window.add(scroll)
+
+            title = Gtk.Label(label='SignageX · Device maintenance')
+            outer.pack_start(title, False, False, 0)
+            self.overview = Gtk.Label(label=socket.gethostname(), xalign=0)
+            self.overview.set_selectable(True)
+            self.overview.set_line_wrap(True)
+            outer.pack_start(self.overview, False, False, 0)
+            outer.pack_start(self.button('Refresh network status', self.refresh), False, False, 0)
+
+            self.auth = Gtk.Box(spacing=12)
+            self.pin_entry = Gtk.Entry()
+            self.pin_entry.set_visibility(False)
+            self.pin_entry.set_max_length(12)
+            self.pin_entry.set_input_purpose(Gtk.InputPurpose.PIN)
+            self.pin_entry.set_placeholder_text('Device maintenance PIN')
+            self.pin_entry.connect('activate', self.unlock)
+            self.auth.pack_start(self.pin_entry, True, True, 0)
+            self.auth.pack_start(self.button('Unlock', self.unlock), False, False, 0)
+            outer.pack_start(self.auth, False, False, 0)
+
+            self.controls = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=14)
+            self.controls.set_no_show_all(True)
+            outer.pack_start(self.controls, False, False, 0)
+            self.controls.pack_start(Gtk.Label(label='Connect this player to a different Wi-Fi network', xalign=0), False, False, 0)
+            self.ssid = Gtk.ComboBoxText.new_with_entry()
+            self.ssid.get_child().set_placeholder_text('Wi-Fi name (SSID)')
+            self.controls.pack_start(self.ssid, False, False, 0)
+            self.controls.pack_start(self.button('Scan nearby networks', self.scan), False, False, 0)
+            self.password = Gtk.Entry()
+            self.password.set_visibility(False)
+            self.password.set_placeholder_text('Wi-Fi password (leave empty for an open network)')
+            self.password.connect('activate', self.connect_wifi)
+            self.controls.pack_start(self.password, False, False, 0)
+            self.hidden = Gtk.CheckButton(label='Hidden Wi-Fi network')
+            self.controls.pack_start(self.hidden, False, False, 0)
+            self.controls.pack_start(self.button('Save and connect to Wi-Fi', self.connect_wifi), False, False, 0)
+            hint = Gtk.Label(label='A failed connection restores the previous network. Saved networks and pairing are kept.', xalign=0)
+            hint.set_line_wrap(True)
+            self.controls.pack_start(hint, False, False, 0)
+            self.support = Gtk.Label(label='Local SSH status: refresh to check', xalign=0)
+            self.support.set_line_wrap(True)
+            self.controls.pack_start(self.support, False, False, 0)
+            self.controls.pack_start(self.button('Refresh support status', lambda *_: self.action('status')), False, False, 0)
+            self.controls.pack_start(self.button('Enable local SSH for 15 minutes', lambda *_: self.action('ssh_on')), False, False, 0)
+            self.controls.pack_start(self.button('Turn local SSH off', lambda *_: self.confirm_ssh_off()), False, False, 0)
+            self.controls.pack_start(self.button('Open protected terminal (kiosk account, 15 minutes)', self.terminal), False, False, 0)
+            note = Gtk.Label(label='SSH keeps existing key/password rules. Tailscale SSH is separate. The terminal does not grant administrator access.', xalign=0)
+            note.set_line_wrap(True)
+            self.controls.pack_start(note, False, False, 0)
+            self.controls.pack_start(self.button('Lock maintenance', self.lock), False, False, 0)
+
+            self.message = Gtk.Label(label='Use the device-specific maintenance PIN, not your Wi-Fi or Ubuntu password.', xalign=0)
+            self.message.set_line_wrap(True)
+            self.message.set_selectable(True)
+            outer.pack_start(self.message, False, False, 0)
+            outer.pack_start(self.button('Return to player (Esc)', lambda *_: self.window.destroy()), False, False, 0)
+            self.window.show_all()
+            self.controls.hide()
+            self.pin_entry.grab_focus()
+            GLib.timeout_add_seconds(5, self.expire)
+            self.refresh()
+
+        def button(self, text, callback):
+            button = Gtk.Button(label=text)
+            button.connect('clicked', callback)
+            return button
+
+        def on_destroy(self, *_):
+            self.pin = ''
+            self.window = None
+            self.quit()
+
+        def touch(self, *_):
+            self.touched = time.monotonic()
+            return False
+
+        def on_key(self, _window, event):
+            self.touch()
+            if event.keyval == Gdk.KEY_Escape and not self.busy:
+                self.window.destroy()
+                return True
+            return False
+
+        def expire(self):
+            if not self.window:
+                return False
+            if self.pin and not self.busy and time.monotonic() - self.touched > 120:
+                self.lock()
+                self.message.set_text('Maintenance locked after two minutes without input.')
+            return True
+
+        def work(self, task, callback):
+            if self.busy:
+                return
+            self.busy = True
+            self.message.set_text('Working… Please keep the player powered on.')
+            self.controls.set_sensitive(False)
+            self.auth.set_sensitive(False)
+
+            def finished(answer):
+                self.busy = False
+                if self.window:
+                    self.controls.set_sensitive(True)
+                    self.auth.set_sensitive(True)
+                    self.touch()
+                    callback(answer)
+                return False
+
+            def run():
+                try:
+                    answer = task()
+                except Exception:
+                    answer = {'phase': 'failed', 'detail': 'Operation failed. Retry or contact support.'}
+                GLib.idle_add(finished, answer)
+            threading.Thread(target=run, daemon=True).start()
+
+        def unlock(self, *_):
+            pin = self.pin_entry.get_text()
+            self.pin_entry.set_text('')
+
+            def unlocked(answer):
+                self.result(answer)
+                if answer.get('phase') == 'applied':
+                    self.pin = pin
+                    self.auth.hide()
+                    self.controls.set_no_show_all(False)
+                    self.controls.show_all()
+                    self.ssid.get_child().grab_focus()
+            self.work(lambda: helper_request({'op': 'unlock', 'pin': pin}), unlocked)
+
+        def lock(self, *_):
+            self.pin = ''
+            self.password.set_text('')
+            self.controls.hide()
+            self.auth.show_all()
+            self.pin_entry.grab_focus()
+
+        def result(self, answer):
+            self.message.set_text(answer.get('detail', 'No result'))
+            if 'ssh_active' in answer:
+                state = 'running' if answer['ssh_active'] else 'off'
+                expiry = answer.get('ssh_expires')
+                lease = f' · lease ends {time.strftime("%H:%M:%S", time.localtime(expiry))}' if expiry else ''
+                self.support.set_text(f'Local SSH: {state}{lease}')
+
+        def action(self, op, **values):
+            if not self.pin:
+                self.lock()
+                return
+            request = {'op': op, 'pin': self.pin, **values}
+            self.work(lambda: helper_request(request), self.result)
+
+        def refresh(self, *_):
+            def show(text):
+                self.overview.set_text(text if isinstance(text, str) else 'Could not read network status')
+                self.message.set_text('Network status refreshed.')
+            self.work(connections, show)
+
+        def scan(self, *_):
+            def show(names):
+                previous = self.ssid.get_child().get_text()
+                self.ssid.remove_all()
+                for name in names if isinstance(names, list) else []:
+                    self.ssid.append_text(name)
+                self.ssid.get_child().set_text(previous)
+                self.message.set_text('Choose a network, or type its name.')
+            self.work(nearby_networks, show)
+
+        def connect_wifi(self, *_):
+            password = self.password.get_text()
+            self.password.set_text('')
+            self.action('wifi_connect', ssid=self.ssid.get_child().get_text(),
+                        password=password, hidden=self.hidden.get_active())
+
+        def confirm_ssh_off(self):
+            dialog = Gtk.MessageDialog(transient_for=self.window, modal=True,
+                                       message_type=Gtk.MessageType.WARNING,
+                                       buttons=Gtk.ButtonsType.OK_CANCEL,
+                                       text='Stop local SSH? Remote support may disconnect.')
+            answer = dialog.run()
+            dialog.destroy()
+            if answer == Gtk.ResponseType.OK:
+                self.action('ssh_off')
+
+        def terminal(self, *_):
+            request = {'op': 'terminal', 'pin': self.pin}
+
+            def launch(answer):
+                self.result(answer)
+                if answer.get('phase') == 'applied':
+                    try:
+                        subprocess.Popen(['/usr/bin/xterm', '-T', 'SignageX kiosk terminal · 15 minutes',
+                                          '-e', '/usr/bin/timeout', '--signal=HUP', '--kill-after=5s',
+                                          '15m', '/bin/bash', '--noprofile', '--norc'], start_new_session=True)
+                        self.window.set_keep_above(False)
+                        self.lock()
+                    except OSError:
+                        self.message.set_text('Terminal is unavailable; install the maintenance package dependencies.')
+            if self.pin:
+                self.work(lambda: helper_request(request), launch)
+
+    Console().run([])
+
+
+if __name__ == '__main__':
+    main()

@@ -1,0 +1,8 @@
+polkit.addRule(function(action, subject) {
+    if (action.id === "org.freedesktop.policykit.exec" &&
+        action.lookup("program") === "/usr/lib/signagex-player/maintenance-helper" &&
+        subject.local && subject.active && subject.isInGroup("signagex-maintenance")) {
+        // Every operation also verifies the device-specific PIN in the helper.
+        return polkit.Result.YES;
+    }
+});

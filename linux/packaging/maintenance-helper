@@ -1,0 +1,191 @@
+#!/usr/bin/python3
+"""Narrow local maintenance operations, authenticated independently of Ubuntu login.
+
+Installed root-owned; pkexec permits only the opted-in signagex-maintenance group.
+PINs and Wi-Fi passwords arrive on stdin, never argv, environment or the journal.
+There is deliberately no arbitrary command or root-shell operation.
+"""
+import fcntl
+import getpass
+import hashlib
+import hmac
+import json
+import os
+import pathlib
+import pwd
+import re
+import secrets
+import subprocess
+import sys
+import time
+
+CONFIG = pathlib.Path('/etc/signagex-player/maintenance.json')
+STATE = pathlib.Path('/var/lib/signagex-maintenance')
+NETWORK = '/usr/lib/signagex-player/network-helper'
+SELF = '/usr/lib/signagex-player/maintenance-helper'
+SSH_UNITS = ('ssh.socket', 'ssh.service')
+SSH_TIMER = 'signagex-maintenance-ssh-expire'
+
+
+def write_private(path, value):
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    temporary = path.with_suffix('.tmp')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    os.fchmod(fd, 0o600)
+    with os.fdopen(fd, 'w') as output:
+        json.dump(value, output)
+    temporary.replace(path)
+
+
+def pin_hash(pin, salt):
+    return hashlib.scrypt(pin.encode(), salt=bytes.fromhex(salt), n=16384, r=8, p=1).hex()
+
+
+def configure(user, pin):
+    account = pwd.getpwnam(user)
+    if account.pw_uid < 1000:
+        raise ValueError('Choose an ordinary kiosk user')
+    if not re.fullmatch(r'[0-9]{8,12}', pin):
+        raise ValueError('Use a separate 8–12 digit maintenance PIN')
+    salt = secrets.token_hex(16)
+    write_private(CONFIG, {'uid': account.pw_uid, 'salt': salt, 'hash': pin_hash(pin, salt)})
+    (STATE/'attempts.json').unlink(missing_ok=True)
+
+
+def authenticate(pin, uid):
+    if not CONFIG.exists():
+        raise ValueError('Maintenance is not configured. An administrator must enable it first.')
+    config = json.loads(CONFIG.read_text())
+    if uid != config['uid']:
+        raise ValueError('This account is not the configured kiosk user')
+    attempt_file = STATE/'attempts.json'
+    attempts = json.loads(attempt_file.read_text()) if attempt_file.exists() else {}
+    now = time.time()
+    # Persist across helper invocations/reboots; serialize callers in main().
+    if attempts.get('until', 0) > now:
+        raise ValueError('Too many attempts. Try again in five minutes.')
+    valid_shape = isinstance(pin, str) and re.fullmatch(r'[0-9]{8,12}', pin)
+    if not valid_shape or not hmac.compare_digest(pin_hash(pin, config['salt']), config['hash']):
+        failures = attempts.get('failures', 0) + 1
+        write_private(attempt_file, {'failures': 0 if failures >= 5 else failures,
+                                    'until': now + 300 if failures >= 5 else 0})
+        raise ValueError('Incorrect maintenance PIN')
+    attempt_file.unlink(missing_ok=True)
+
+
+def command(args, **kwargs):
+    return subprocess.run(args, capture_output=True, text=True, timeout=20, **kwargs)
+
+
+def active(unit):
+    return command(['systemctl', 'is-active', '--quiet', unit]).returncode == 0
+
+
+def expire_ssh():
+    lease = STATE/'ssh-lease.json'
+    if not lease.exists():
+        return
+    original = json.loads(lease.read_text())
+    # Stop only units we started; an existing administrator SSH service survives.
+    for unit in SSH_UNITS:
+        if not original['active'][unit] and active(unit):
+            result = command(['systemctl', 'stop', unit])
+            if result.returncode:
+                raise RuntimeError('Could not restore SSH state')
+    lease.unlink(missing_ok=True)
+
+
+def ssh_on():
+    lease = STATE/'ssh-lease.json'
+    original = json.loads(lease.read_text()) if lease.exists() else {
+        'active': {unit: active(unit) for unit in SSH_UNITS}}
+    # Stop an old countdown while holding the operation lock, then replace it.
+    command(['systemctl', 'stop', SSH_TIMER + '.timer', SSH_TIMER + '.service'])
+    original['expires'] = time.time() + 900
+    write_private(lease, original)
+    result = command(['systemd-run', '--unit=' + SSH_TIMER, '--on-active=15m', '--collect',
+                      '--timer-property=AccuracySec=1s', SELF, '--expire-ssh'])
+    if result.returncode:
+        expire_ssh()
+        raise RuntimeError('Could not schedule SSH expiry; access was not enabled')
+    result = command(['systemctl', 'start', 'ssh.service'])
+    if result.returncode:
+        expire_ssh()
+        raise RuntimeError('OpenSSH is unavailable; an administrator must install/configure it')
+    return 'SSH enabled for 15 minutes. Existing SSH authentication rules still apply.'
+
+
+def dispatch(request, uid):
+    if not isinstance(request, dict) or request.get('op') not in (
+            'unlock', 'status', 'wifi_connect', 'ssh_on', 'ssh_off', 'terminal'):
+        raise ValueError('Unsupported maintenance operation')
+    authenticate(request.get('pin'), uid)
+    op = request['op']
+    if op in ('status', 'unlock'):
+        lease = STATE/'ssh-lease.json'
+        return {'phase': 'applied', 'detail': 'Maintenance unlocked', 'ssh_active': any(active(u) for u in SSH_UNITS),
+                'ssh_expires': json.loads(lease.read_text())['expires'] if lease.exists() else None}
+    if op == 'wifi_connect':
+        # Reuse the existing validator, transient job and rollback, without PIN
+        # material in the network request. No shell interpolation, including SSIDs.
+        network_request = {'job': 'local-' + secrets.token_hex(8), 'op': 'wifi_add',
+                           'ssid': request.get('ssid'), 'password': request.get('password', ''),
+                           'hidden': request.get('hidden') is True, 'connect': True}
+        result = subprocess.run([NETWORK], input=json.dumps(network_request), capture_output=True,
+                                text=True, timeout=180, env={**os.environ, 'PKEXEC_UID': str(uid)})
+        if result.returncode:
+            raise RuntimeError('Network helper unavailable or another change is running')
+        lines = [line for line in result.stdout.splitlines() if line.startswith('{')]
+        if not lines:
+            raise RuntimeError('Network helper did not report a result')
+        answer = json.loads(lines[-1])
+        return {'phase': answer['phase'], 'detail': answer.get('detail', '')}
+    if op == 'ssh_on':
+        return {'phase': 'applied', 'detail': ssh_on()}
+    if op == 'ssh_off':
+        command(['systemctl', 'stop', SSH_TIMER + '.timer'])
+        # Explicit OFF also stops SSH that was already enabled, at operator request.
+        for unit in SSH_UNITS:
+            if active(unit) and command(['systemctl', 'stop', unit]).returncode:
+                raise RuntimeError('Could not stop SSH completely')
+        (STATE/'ssh-lease.json').unlink(missing_ok=True)
+        return {'phase': 'applied', 'detail': 'Local OpenSSH stopped. Tailscale SSH is managed separately.'}
+    return {'phase': 'applied', 'detail': 'Unlocked' if op == 'unlock' else 'Kiosk-user terminal authorized'}
+
+
+def main():
+    if os.geteuid() != 0:
+        raise ValueError('Use the installed maintenance policy')
+    os.umask(0o077)
+    STATE.mkdir(mode=0o700, parents=True, exist_ok=True)
+    with open(STATE/'lock', 'a') as handle:
+        fcntl.flock(handle, fcntl.LOCK_EX)
+        if sys.argv[1:2] == ['--configure'] and len(sys.argv) == 3 and 'PKEXEC_UID' not in os.environ:
+            pin = getpass.getpass('New device maintenance PIN (8–12 digits): ')
+            if pin != getpass.getpass('Repeat PIN: '):
+                raise ValueError('PINs did not match')
+            configure(sys.argv[2], pin)
+            print('Device PIN saved. Ubuntu and SSH passwords were not changed.')
+            return
+        if sys.argv[1:] == ['--expire-ssh'] and 'PKEXEC_UID' not in os.environ:
+            expire_ssh()
+            return
+        if sys.argv[1:]:
+            raise ValueError('Arguments are not permitted')
+        uid = int(os.environ.get('PKEXEC_UID', '0'))
+        if uid < 1000:
+            raise ValueError('No kiosk user')
+        raw = sys.stdin.read(8193)
+        if len(raw) > 8192:
+            raise ValueError('Request too large')
+        answer = dispatch(json.loads(raw), uid)
+        print(json.dumps(answer))
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except Exception as error:
+        # Never print requests, PINs, Wi-Fi passwords or subprocess stderr.
+        print(json.dumps({'phase': 'failed', 'detail': str(error)[:240]}))
+        sys.exit(1)

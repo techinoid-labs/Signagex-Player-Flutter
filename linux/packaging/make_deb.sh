@@ -120,6 +120,9 @@ install -m 644 linux/packaging/50-signagex-update.rules "$ROOT/usr/share/polkit-
 # CMS Wi-Fi management (linux_network_v1); also administrator opt-in (signagex-network group).
 install -m 755 linux/packaging/network-helper "$ROOT/usr/lib/signagex-player/network-helper"
 install -m 644 linux/packaging/51-signagex-network.rules "$ROOT/usr/share/polkit-1/rules.d/51-signagex-network.rules"
+install -m 755 linux/packaging/maintenance-helper "$ROOT/usr/lib/signagex-player/maintenance-helper"
+install -m 755 linux/packaging/maintenance-console "$ROOT/usr/bin/signagex-maintenance"
+install -m 644 linux/packaging/52-signagex-maintenance.rules "$ROOT/usr/share/polkit-1/rules.d/52-signagex-maintenance.rules"
 install -m 755 linux/packaging/kiosk/start-supervised.sh "$ROOT/usr/bin/signagex-player-start-supervised"
 channel_api=https://api.signagex.ai
 if [ "$SUFFIX" = staging ]; then channel_api=https://stage.signagexai.com; fi
@@ -154,7 +157,7 @@ Architecture: $DEB_ARCH
 Maintainer: SignageX <support@signagex.ai>
 Installed-Size: $INSTALLED_KB
 Conflicts: $CONFLICTING_PACKAGE
-Depends: xdotool, scrot, polkitd | policykit-1, pkexec, wireplumber, x11-xserver-utils, python3, python3-cryptography, python3-pil, curl, libva2, libva-drm2, libva-x11-2, libvdpau1,
+Depends: xdotool, scrot, polkitd | policykit-1, pkexec, wireplumber, x11-xserver-utils, python3, python3-gi, gir1.2-gtk-3.0, xterm, python3-cryptography, python3-pil, curl, libva2, libva-drm2, libva-x11-2, libvdpau1,
  libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,
  libxkbcommon0, libgbm1, libdrm2, libxcomposite1, libxdamage1, libxrandr2,
  libatk1.0-0, libatk-bridge2.0-0, libpango-1.0-0, libcairo2,
@@ -173,6 +176,7 @@ cat > "$ROOT/DEBIAN/postinst" <<'POSTINST'
 set -e
 getent group signagex-updates >/dev/null || groupadd --system signagex-updates
 getent group signagex-network >/dev/null || groupadd --system signagex-network
+getent group signagex-maintenance >/dev/null || groupadd --system signagex-maintenance
 if command -v systemctl >/dev/null; then
   systemctl daemon-reload 2>/dev/null || true
   systemctl enable signagex-update-recover.service 2>/dev/null || true

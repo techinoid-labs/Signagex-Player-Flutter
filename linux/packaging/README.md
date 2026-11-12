@@ -178,6 +178,23 @@ player also closes it as soon as a default route appears (cable, saved Wi-Fi).
 Needs `dnsmasq-base` (NetworkManager shared mode) and `wpasupplicant`. While the
 player is online the cost is one read of `/proc/net/route` per 30 s tick.
 
+## Offline local maintenance
+
+The Debian package includes an independent native console for changing Wi-Fi
+after moving a paired player, plus protected local SSH and kiosk-user terminal
+controls. An administrator must configure a unique device PIN and enable it:
+
+```sh
+sudo python3 /opt/signagex-player/kiosk/enable-maintenance.py <graphical-player-user>
+```
+
+After signing out/in, **Ctrl+Alt+M** opens it through Openbox even if the player
+has crashed. **9700** also opens it while the updated player has keyboard focus.
+These only open the console; operations require the device PIN. There is no
+default PIN or change to Ubuntu passwords. See
+[local maintenance and image provisioning](../../docs/LINUX-LOCAL-MAINTENANCE.md)
+for prerequisites, security boundaries, Wayland limitations and validation.
+
 ## Optional dedicated kiosk session
 
 On Ubuntu/Debian, after installing the .deb, run:

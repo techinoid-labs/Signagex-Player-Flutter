@@ -4,6 +4,7 @@ import '../widgets/linux_trigger_surface.dart';
 import '../widgets/linux_kiosk_surface.dart';
 import '../services/linux_interactivity.dart';
 import '../services/linux_setup_hotspot.dart';
+import '../services/linux_maintenance_shortcut.dart';
 import 'dart:io';
 import 'package:flutter/services.dart';
 
@@ -35,10 +36,12 @@ class MqttProvider extends StatefulWidget {
 
 class _MqttProviderState extends State<MqttProvider> {
   late FocusNode _focusNode;
+  final _maintenance = LinuxMaintenanceShortcut();
 
   @override
   void initState() {
     super.initState();
+    _maintenance.attach();
     _focusNode = FocusNode();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _focusNode.requestFocus();
@@ -47,6 +50,7 @@ class _MqttProviderState extends State<MqttProvider> {
 
   @override
   void dispose() {
+    _maintenance.dispose();
     _focusNode.dispose();
     super.dispose();
   }

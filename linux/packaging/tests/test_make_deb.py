@@ -29,11 +29,22 @@ class PackageContractTests(unittest.TestCase):
                     self.assertIn('stage.signagexai.com' if suffix else 'api.signagex.ai',manifest['manifest'])
                     helper=archive.getmember('./usr/lib/signagex-player/update-player')
                     self.assertEqual((helper.uid,helper.gid,helper.mode),(0,0,0o755))
+                    for name in ('./usr/lib/signagex-player/maintenance-helper', './usr/bin/signagex-maintenance',
+                                 f'./opt/{pkg}/kiosk/enable-maintenance.py'):
+                        entry = archive.getmember(name)
+                        self.assertEqual((entry.uid, entry.gid), (0, 0))
+                    self.assertEqual(archive.getmember('./usr/lib/signagex-player/maintenance-helper').mode, 0o755)
+                    self.assertEqual(archive.getmember('./usr/bin/signagex-maintenance').mode, 0o755)
+                    self.assertIn('./usr/share/polkit-1/rules.d/52-signagex-maintenance.rules', archive.getnames())
+                    self.assertNotIn('./etc/signagex-player/maintenance.json', archive.getnames(), 'No cloned/shared PIN in a package')
                     service=archive.extractfile(f'./opt/{pkg}/kiosk/signagex-player.service').read().decode()
                     self.assertIn('ExecStart=/usr/bin/'+pkg+'\n',service)
                     self.assertIn('WatchdogSec=75',service)
                 dependencies=subprocess.check_output(['dpkg-deb','-f',str(output),'Depends'],text=True)
                 self.assertIn('polkitd | policykit-1',dependencies)
+                self.assertIn('python3-gi', dependencies)
+                self.assertIn('gir1.2-gtk-3.0', dependencies)
+                self.assertIn('xterm', dependencies)
 
 @unittest.skipUnless(shutil.which('dpkg-deb') and shutil.which('patchelf') and shutil.which('readelf'), 'requires dpkg-deb, patchelf and readelf')
 class BundledRunpathTests(unittest.TestCase):

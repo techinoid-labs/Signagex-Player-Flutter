@@ -22,6 +22,17 @@ pairing or content screen must not hold a core (`top -H`: the main thread well
 under 10 %). Before v58 the GTK loop spun at 100 % of one core because Chromium's
 GLib work source was attached but never run; CEF now runs the loop itself.
 
+## Unreleased — local maintenance console
+
+- Independent offline Wi-Fi console, including relocation with an old SSID saved.
+- Openbox Ctrl+Alt+M entry; focused-player 9700 entry.
+- Device-specific PIN, persistent attempt lockout, timed local OpenSSH access,
+  and a protected kiosk-account terminal. No root shell or shared default PIN.
+- Debian packaging and tests added for amd64/ARM64. Administrator opt-in and
+  per-device PIN provisioning are required; the USB-image repository still needs
+  offline dependencies and provisioning integration. See `LINUX-LOCAL-MAINTENANCE.md`.
+- Not published or hardware-validated. Assign version/checksum from CI when built.
+
 ## v15 — 2026-10-23 — staging
 
 - Added xdotool dependency to Debian packaging and bundled it in AppImage.
