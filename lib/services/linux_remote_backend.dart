@@ -31,6 +31,15 @@ LinuxDisplaySession linuxDisplaySession([Map<String, String>? environment]) {
 List<String> grimArguments(String path, {int quality = 60}) =>
     ['-t', 'jpeg', '-q', '${quality.clamp(1, 100)}', path];
 
+/// `grim` arguments for one PNG frame, for builds without JPEG support
+/// (Ubuntu 26.04's grim: "jpeg support disabled"). Level 1 is the fastest
+/// compression; the caller decodes any format and re-encodes a small JPEG.
+List<String> grimPngArguments(String path) => ['-t', 'png', '-l', '1', path];
+
+/// True when grim's output says this build can't write JPEG.
+bool grimLacksJpeg(Object? stderr) =>
+    '$stderr'.toLowerCase().contains('jpeg support disabled');
+
 /// A screen-pixel point as a 0..1 fraction of the screen. Remote-view clicks
 /// arrive in the player's reported resolution (Flutter's physical size, which
 /// on a fullscreen kiosk window is the output's pixel size); the virtual
@@ -127,6 +136,8 @@ class LinuxRemoteBackend {
   final ui.Size Function() _screenSize;
   bool _reportedMissingGrim = false;
   bool _reportedMissingHelper = false;
+  // Set once grim reports it can't write JPEG; PNG from then on.
+  bool _grimPngOnly = false;
 
   bool get isWayland => session == LinuxDisplaySession.wayland;
 
@@ -171,7 +182,13 @@ class LinuxRemoteBackend {
     try {
       final file = File(path);
       if (await file.exists()) await file.delete();
-      final result = await _run('grim', grimArguments(path));
+      var result = await _run(
+          'grim', _grimPngOnly ? grimPngArguments(path) : grimArguments(path));
+      if (result.exitCode != 0 && !_grimPngOnly && grimLacksJpeg(result.stderr)) {
+        _grimPngOnly = true;
+        debugPrint('MQTT_LOGS:: grim has no JPEG support; capturing PNG instead');
+        result = await _run('grim', grimPngArguments(path));
+      }
       if (result.exitCode != 0) {
         debugPrint('MQTT_LOGS:: grim failed (exit ${result.exitCode}): '
             '${result.stderr}');

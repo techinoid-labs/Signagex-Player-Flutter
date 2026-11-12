@@ -20,7 +20,7 @@ mkdir -p "$state"
 
 echo '== Packages'
 apt-get update
-apt-get install -y cage grim xwayland pipewire wireplumber pipewire-pulse \
+apt-get install -y cage grim wlr-randr xwayland pipewire wireplumber pipewire-pulse espeak-ng \
   python3 python3-evdev python3-cryptography python3-pil
 
 echo '== Remote-view helpers next to the player'
@@ -40,9 +40,11 @@ if [[ ! -f /etc/signagex-kiosk.conf ]]; then
 # SignageX Wayland kiosk. KEY=VALUE lines only (read, never executed).
 # Absolute path of the player executable.
 PLAYER=$player
-# wayland (default) or x11: run the player under XWayland inside cage if the
-# embedded browser misbehaves on native Wayland.
-GDK_BACKEND=wayland
+# x11 (default): the player runs under XWayland inside cage. cage 0.2.1
+# (Ubuntu 26.04) aborts on the native Wayland window ("wlr_xdg_surface_schedule_configure:
+# Assertion surface->initialized failed"); remote view and input still use
+# grim and uinput. wayland: native client, for cage builds without that bug.
+GDK_BACKEND=x11
 # 0, 90, 180 or 270 (clockwise). Applied at the next session start.
 ROTATE=0
 CONF
@@ -108,7 +110,9 @@ fi
 systemctl set-default graphical.target
 systemctl daemon-reload
 systemctl enable signagex-wayland-kiosk.service
-systemctl restart systemd-logind || true
+# Not restarting systemd-logind here: that ends the desktop session the
+# installer is running in (blank console). The new logind settings apply at
+# the reboot below.
 
 echo
 echo "Done. Reboot to start the kiosk: sudo reboot"

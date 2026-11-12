@@ -12,6 +12,12 @@ Before=graphical.target
 Type=simple
 User=@KIOSK_USER@
 PAMName=signagex-kiosk
+# pam_systemd needs these to put the session on seat0 / VT 1. Without them
+# (newer systemd, e.g. Ubuntu 26.04) the session gets no seat and wlroots
+# fails after 10 s with "Failed to start a DRM session".
+Environment=XDG_SESSION_TYPE=wayland XDG_SESSION_CLASS=user XDG_SEAT=seat0 XDG_VTNR=1
+# Bring tty1 to the front (e.g. when restarted from another console).
+ExecStartPre=-+/usr/bin/chvt 1
 WorkingDirectory=~
 TTYPath=/dev/tty1
 TTYReset=yes

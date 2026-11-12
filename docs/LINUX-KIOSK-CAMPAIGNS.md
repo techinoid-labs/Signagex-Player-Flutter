@@ -131,3 +131,43 @@ minutes ahead so the edges can be watched.
 | S10 | Add the screen's group to campaign C at a time that clashes with A | The CMS warns before publishing; the screen never shows two at once |
 
 Record the player build, campaign version and results in `LINUX-RELEASES.md`.
+
+## On-screen approval
+
+When someone publishes a kiosk campaign whose times clash with what a screen
+already runs, the backend can ask the screen instead of replacing silently.
+The retained `kiosk_schedule` message then carries `data.approvals`:
+
+```json
+{"request_id":"r-1","campaign_id":"…","name":"Lunch kiosk","version_id":"…","version_no":1,
+ "schedule":{"startTime":"11:00","endTime":"15:00","days":[1,2,3,4,5]},
+ "replaces":[{"campaign_id":"…","name":"Breakfast kiosk","schedule":null}],
+ "expires_at":"2026-11-13T10:00:00Z","url":"…","player_url":"…"}
+```
+
+The requested campaign is **not** in `campaigns` and never plays before it is
+approved.
+
+- **Prompt:** "New kiosk campaign", the name, its schedule in plain words, what it would replace, and "Expires in 23 h". There are two buttons: **Approve** (focused) and **Decline**. Touch, mouse, keyboard (Tab, Enter; Esc moves to Decline) and remote view all work.
+- **Never in front of a customer:** while the kiosk page reports `session`, the prompt waits. It shows when the page is idle or ready, or when the screen is on signage (including after a fallback). One prompt at a time, oldest first.
+- **Answer:** the player POSTs `{baseurl}kiosk-runtime/approvals/{request_id}?player={code}` with `{"decision":"approve"|"decline"}`. Each attempt waits 15 s, and a network problem or server error is retried once.
+  - **200:** the prompt closes; log `[Kiosk] approval r-1 approve`.
+  - **404 / 409:** the prompt closes; the log says why.
+  - **No answer:** the prompt stays with "Could not send. Try again."
+
+  Nothing is applied on the screen: the backend decides and sends the schedule again. Once approved, the campaign is in `campaigns` and plays in its window.
+- **Restart and expiry:** pending requests are saved with the schedule, so a restart shows the prompt again. Expired ones disappear.
+
+### Approval test plan
+
+| # | Do | Expect |
+|---|---|---|
+| A1 | Campaign A runs; publish B with clashing times, choose "ask the screen" | Prompt on the screen with B's name, schedule and "It would replace: A" |
+| A2 | Press **Approve** | Prompt closes; B plays now if its window is open (otherwise at its start); log `approval … approve` |
+| A3 | Repeat with **Decline** | Prompt closes; A keeps running |
+| A4 | Start using the kiosk, then publish a clashing campaign | No prompt until the session ends (idle reset), then it appears |
+| A5 | While the prompt shows, restart the player | The prompt comes back |
+| A6 | Let a request expire | The prompt disappears by itself |
+| A7 | Approve it from the CMS instead | The prompt disappears on the screen |
+| A8 | Network off, press Approve | "Could not send. Try again."; works once the network is back |
+| A9 | Use Tab / Enter / Esc, and remote view clicks | Both buttons reachable and usable |

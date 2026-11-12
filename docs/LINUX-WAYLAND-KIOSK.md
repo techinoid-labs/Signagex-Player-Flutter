@@ -32,7 +32,7 @@ What the installer does:
 
 | Area | Change |
 |---|---|
-| Packages | `cage grim xwayland pipewire wireplumber pipewire-pulse python3-evdev python3-cryptography python3-pil` |
+| Packages | `cage grim xwayland pipewire wireplumber pipewire-pulse espeak-ng python3-evdev python3-cryptography python3-pil` |
 | Boot | `signagex-wayland-kiosk.service` logs the user into cage on tty1 (PAM `signagex-kiosk`, a real logind session). The display manager (GDM) is disabled and remembered for uninstall. |
 | Session | `/usr/local/libexec/signagex-wayland-session` runs `cage -d` (no `-s`, so Ctrl+Alt+F1..F12 can't switch away). `signagex-wayland-player` restarts the player 3 s after it exits. |
 | Settings | `/etc/signagex-kiosk.conf`: `PLAYER`, `GDK_BACKEND`, `ROTATE`. Read as `KEY=VALUE`, never executed. |
@@ -70,12 +70,16 @@ frees the screen, and `start` brings it back.
 | Key | Values | Notes |
 |---|---|---|
 | `PLAYER` | absolute path | set by the installer |
-| `GDK_BACKEND` | `wayland` (default), `x11` | `x11` runs the player under XWayland inside cage. Use it if web pages, web apps or kiosk campaigns misbehave on native Wayland (see below). |
-| `ROTATE` | `0`, `90`, `180`, `270` | clockwise, via `cage -r`; needs a cage build with `-r` |
+| `GDK_BACKEND` | `x11` (default), `wayland` | `x11` runs the player under XWayland inside cage. Use it if web pages, web apps or kiosk campaigns misbehave on native Wayland (see below). |
+| `ROTATE` | `0`, `90`, `180`, `270` | clockwise; the start-up rotation until the CMS sets one. `cage -r` where cage has it, otherwise the player applies it with `wlr-randr` |
 
-Apply with `sudo systemctl restart signagex-wayland-kiosk`. CMS rotation and
-brightness are reported as **unsupported** on this kiosk: they use `xrandr`,
-which only drives X11 outputs.
+Apply with `sudo systemctl restart signagex-wayland-kiosk`.
+
+**Rotation from the CMS** works on this kiosk through `wlr-randr` (installed by
+`install.sh`): the whole output turns, remote view and remote clicks follow it,
+and the last rotation is applied again after a restart or reboot. Without
+`wlr-randr` the player reports rotation as unsupported. **Brightness** stays
+unsupported here: it uses `xrandr`, which only drives X11 outputs.
 
 ## Remote view on Wayland
 
@@ -117,8 +121,8 @@ relative moves are bent by pointer acceleration, which cage can't turn off.
   only been run on X11. If anything misbehaves, use `GDK_BACKEND=x11`.
 - **Touch on a real touchscreen** is handled by cage and GTK. Check that the
   player and kiosk campaign pages react to touch, not only to a mouse.
-- **cage `-r`** availability varies by version; without it `ROTATE` is
-  ignored (logged).
+- **cage `-r`** is gone in cage 0.2 (Ubuntu 26.04); rotation then goes
+  through `wlr-randr` (CMS and `ROTATE`).
 - The kiosk user can create input devices (uinput). That's needed for remote
   input, and acceptable on a single-purpose kiosk.
 

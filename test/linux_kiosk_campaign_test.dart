@@ -504,4 +504,140 @@ void main() {
       service.dispose();
     });
   });
+
+  group('on-screen approval', () {
+    late Directory temp;
+    setUp(() async => temp = await Directory.systemTemp.createTemp('kiosk-approval-'));
+    tearDown(() async {
+      if (await temp.exists()) await temp.delete(recursive: true);
+    });
+
+    final later = DateTime.now().toUtc().add(const Duration(hours: 23, minutes: 30));
+    Map<String, dynamic> approval(String id, {DateTime? expires, String name = 'Lunch kiosk'}) => {
+          'request_id': id,
+          'campaign_id': 'c-lunch',
+          'name': name,
+          'version_id': 'l-1',
+          'version_no': 1,
+          'schedule': {'startTime': '11:00', 'endTime': '15:00', 'days': [1, 2, 3, 4, 5]},
+          'replaces': [
+            {'campaign_id': 'c-1', 'name': 'Breakfast kiosk', 'schedule': null},
+          ],
+          'expires_at': (expires ?? later).toIso8601String(),
+          'url': 'https://api.example.com/v1/kiosk-runtime/l-1?player=ABC123',
+          'player_url': 'https://app.example.com/kiosk-play?runtime=l-1',
+        };
+
+    String message({List<Map<String, dynamic>> campaigns = const [], List<Object?> approvals = const []}) =>
+        jsonEncode({
+          'action': 'kiosk_schedule',
+          'data': {'campaigns': campaigns, 'approvals': approvals},
+        });
+
+    test('approvals are read from the schedule; bad ids are skipped, duplicates kept once', () {
+      final parsed = KioskMessage.parse(message(approvals: [
+        approval('req-1'),
+        approval('req-1', name: 'Duplicate'),
+        {'request_id': '../etc', 'name': 'Unsafe id'},
+        {'name': 'No id'},
+        'not an object',
+      ]))!;
+      final list = parsed.schedule.approvals;
+      expect(list.map((a) => a.requestId), ['req-1']);
+      final a = list.single;
+      expect(a.name, 'Lunch kiosk');
+      expect(a.schedule.describe(), isNot('always'));
+      expect(a.replaces.single.name, 'Breakfast kiosk');
+      expect(a.replaces.single.schedule.describe(), 'always');
+      expect(parsed.schedule.entries, isEmpty, reason: 'a waiting campaign is not scheduled');
+      expect(a.expiresIn(DateTime.now()), 'Expires in 23 h');
+    });
+
+    test('expired requests are not pending', () async {
+      final service = KioskCampaignService(cache: KioskCache(temp));
+      await service.handleMessage(message(approvals: [
+        approval('old', expires: DateTime.now().toUtc().subtract(const Duration(minutes: 1))),
+        approval('new'),
+      ]));
+      expect(service.pendingApprovals.map((a) => a.requestId), ['new']);
+      expect(service.approvalPrompt.value!.requestId, 'new');
+      service.dispose();
+    });
+
+    test('a waiting request survives a restart', () async {
+      final cache = KioskCache(temp);
+      final first = KioskCampaignService(cache: cache);
+      await first.handleMessage(message(approvals: [approval('req-1')]));
+      first.dispose();
+
+      final restarted = KioskCampaignService(cache: cache);
+      await restarted.restore();
+      expect(restarted.approvalPrompt.value?.requestId, 'req-1');
+      restarted.dispose();
+    });
+
+    test('the prompt waits for a customer session to end, then shows', () async {
+      final cache = KioskCache(temp);
+      final running = KioskMessage.parse(jsonEncode(publish(version: 'v-1', no: 1)))!.publish!;
+      await cache.save(running, document('v-1'));
+      final service = KioskCampaignService(cache: cache);
+      await service.restore();
+      expect(service.showing, isTrue);
+
+      service.debugSetState(KioskPageState.session);
+      await service.handleMessage(message(
+        campaigns: [
+          {...running.toJson(), 'schedule': null, 'source': 'player'},
+        ],
+        approvals: [approval('req-1')],
+      ));
+      expect(service.approvalPrompt.value, isNull, reason: 'never in front of a customer');
+
+      service.onPageTitle('sxk:idle');
+      expect(service.approvalPrompt.value?.requestId, 'req-1');
+      service.dispose();
+    });
+
+    test('prompt gating rule', () {
+      expect(KioskCampaignService.promptAllowed(kioskShowing: true, state: KioskPageState.session), isFalse);
+      expect(KioskCampaignService.promptAllowed(kioskShowing: true, state: KioskPageState.idle), isTrue);
+      expect(KioskCampaignService.promptAllowed(kioskShowing: true, state: KioskPageState.ready), isTrue);
+      // Fallen back to signage: nobody can be mid-purchase.
+      expect(KioskCampaignService.promptAllowed(kioskShowing: false, state: KioskPageState.session), isTrue);
+    });
+
+    test('the decision request and how each answer is handled', () {
+      expect(
+        KioskCampaignService.approvalDecisionUri('https://signagexai.com/v1/', 'req-1', 'AB 12').toString(),
+        'https://signagexai.com/v1/kiosk-runtime/approvals/req-1?player=AB+12',
+      );
+      expect(jsonDecode(KioskCampaignService.approvalDecisionBody(approve: true)), {'decision': 'approve'});
+      expect(jsonDecode(KioskCampaignService.approvalDecisionBody(approve: false)), {'decision': 'decline'});
+      expect(KioskCampaignService.approvalOutcome(200), KioskApprovalSend.sent);
+      expect(KioskCampaignService.approvalOutcome(204), KioskApprovalSend.sent);
+      expect(KioskCampaignService.approvalOutcome(409), KioskApprovalSend.gone);
+      expect(KioskCampaignService.approvalOutcome(404), KioskApprovalSend.gone);
+      expect(KioskCampaignService.approvalOutcome(500), KioskApprovalSend.failed);
+      expect(KioskCampaignService.approvalOutcome(null), KioskApprovalSend.failed);
+    });
+
+    test('an unpaired screen does not send, and the prompt stays', () async {
+      final service = KioskCampaignService(cache: KioskCache(temp));
+      await service.handleMessage(message(approvals: [approval('req-1')]));
+      final shown = service.approvalPrompt.value!;
+      expect(await service.decideApproval(shown, approve: true), KioskApprovalSend.failed);
+      expect(service.approvalPrompt.value?.requestId, 'req-1');
+      service.dispose();
+    });
+
+    test('a request the backend has dropped disappears from the screen', () async {
+      final service = KioskCampaignService(cache: KioskCache(temp));
+      await service.handleMessage(message(approvals: [approval('req-1')]));
+      expect(service.approvalPrompt.value, isNotNull);
+      // Approved from the CMS (or expired there): the next schedule no longer lists it.
+      await service.handleMessage(message());
+      expect(service.approvalPrompt.value, isNull);
+      service.dispose();
+    });
+  });
 }

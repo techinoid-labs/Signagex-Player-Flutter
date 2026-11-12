@@ -27,6 +27,34 @@ def un64(value): return base64.b64decode(value, validate=True)
 def compact(value): return json.dumps(value, separators=(',', ':')).encode()
 def run(*arguments): return subprocess.check_output(arguments, timeout=5, stderr=subprocess.DEVNULL).decode().strip()
 
+# wlr-randr transforms are counter-clockwise (the Wayland convention), and so
+# is Pillow's rotate(): the upright capture turned by this many degrees is
+# what the rotated screen physically shows.
+PHYSICAL_TURN = {'90':90, '180':180, '270':270}
+
+def output_transform(listing):
+    """'normal', '90', '180' or '270' for the enabled output in wlr-randr's listing."""
+    enabled, transform, first = False, None, None
+    for line in listing.splitlines():
+        if line and not line.startswith(' '):
+            if enabled and transform: return transform
+            enabled, transform = False, None
+            continue
+        item = line.strip()
+        if item == 'Enabled: yes': enabled = True
+        elif item.startswith('Transform:'):
+            transform = item.split(':',1)[1].strip()
+            if first is None: first = transform
+    value = transform if enabled and transform else first
+    return value if value in ('normal','90','180','270') else 'normal'
+
+def upright_point(x, y, transform):
+    """A 0..1 point on the turned picture, as a 0..1 point on the upright layout."""
+    if transform == '180': return 1-x, 1-y
+    if transform == '90': return 1-y, x
+    if transform == '270': return y, 1-x
+    return x, y
+
 class Remote:
     def __init__(self, code, directory, emit, signing_key=None, clock=time.time, monotonic=time.monotonic):
         self.code, self.directory, self.emit = code, pathlib.Path(directory), emit
@@ -53,6 +81,8 @@ class Remote:
         self.wayland = bool(os.environ.get('WAYLAND_DISPLAY', '').strip())
         self.input = None
         self.last_size = None
+        # Screen rotation (wlr-randr transform) and when it was last read.
+        self.transform, self.transform_at = 'normal', None
 
     def atomic(self, path, data):
         temporary = path.with_suffix('.tmp')
@@ -144,10 +174,26 @@ class Remote:
             # Never log the command, encrypted keys, or typed text.
             return False
 
+    def wayland_transform(self):
+        """The output's rotation (read at most every 2 s; 'normal' if unknown)."""
+        now = self.monotonic()
+        if self.transform_at is None or now - self.transform_at > 2:
+            self.transform_at = now
+            try: self.transform = output_transform(run('wlr-randr'))
+            except Exception: self.transform = 'normal'
+        return self.transform
+
     def wayland_frame(self, path):
-        """One full-output grim JPEG at path; returns its (width, height)."""
-        run('grim','-t','jpeg','-q','75',str(path))
-        with Image.open(path) as image: size = image.size
+        """One full-output grim frame at path; returns the (width, height) of
+        the picture as the screen physically shows it.
+        PNG (fastest level): some grim builds have no JPEG (Ubuntu 26.04:
+        "jpeg support disabled"). Pillow reads it and re-encodes the JPEG.
+        grim captures the upright layout; a rotated screen shows it turned,
+        so the CMS gets it turned the same way (like the Android player)."""
+        run('grim','-t','png','-l','1',str(path))
+        with Image.open(path) as image: width, height = image.size
+        transform = self.wayland_transform()
+        size = (height, width) if transform in ('90','270') else (width, height)
         self.last_size = size
         return size
 
@@ -158,7 +204,7 @@ class Remote:
                     self.wayland_frame(pathlib.Path(directory)/'size.jpg')
             width, height = self.last_size
             if not (0 < width <= 16384 and 0 < height <= 16384): raise ValueError('Invalid display')
-            return width, height, f'{width}x{height}:wayland'
+            return width, height, f'{width}x{height}:wayland:{self.transform}'
         width, height = map(int, run('xdotool','getdisplaygeometry').split())
         if not (0 < width <= 16384 and 0 < height <= 16384): raise ValueError('Invalid display')
         # Include rotation so a square or identically-sized output is fenced too.
@@ -184,6 +230,9 @@ class Remote:
                 if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in (x,y)):
                     raise ValueError('Invalid coordinates')
                 return str(min(width-1,int(x*width))),str(min(height-1,int(y*height)))
+            # The player also gets Back, so a kiosk page (no browser history) goes
+            # one screen back; the key below still covers everything else.
+            if action == 'press_back': self.emit({'navigate':'back'})
             if self.wayland:
                 self.ack(command,self.execute_wayland(action, item)); return
             if action == 'click': run('xdotool','mousemove','--sync',*point(item),'click','1')
@@ -219,7 +268,8 @@ class Remote:
             x,y = value['x'],value['y']
             if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in (x,y)):
                 raise ValueError('Invalid coordinates')
-            return x,y
+            # The CMS clicked on the turned picture; the pointer works upright.
+            return upright_point(x,y,self.transform)
         if action in ('click','scroll','long_press','send_text','press_back'):
             if wayland_input.missing(): return 'unsupported_or_invalid'
             if self.input is None: self.input = wayland_input.WaylandInput()
@@ -308,9 +358,10 @@ class Remote:
             path = pathlib.Path(directory)/'frame.jpg'
             if self.wayland:
                 width,height = self.wayland_frame(path)
-                geometry = f'{width}x{height}:wayland'
+                geometry = f'{width}x{height}:wayland:{self.transform}'
             else: run('scrot','-z','-q','75',str(path))
             with Image.open(path) as image:
+                if self.wayland and PHYSICAL_TURN.get(self.transform): image = image.rotate(PHYSICAL_TURN[self.transform], expand=True)
                 image.thumbnail((1280,1280) if self.high else (800,800))
                 output = io.BytesIO(); image.convert('RGB').save(output,format='JPEG',quality=78 if self.high else 60)
         if not self.active or self.monotonic() >= self.deadline: return

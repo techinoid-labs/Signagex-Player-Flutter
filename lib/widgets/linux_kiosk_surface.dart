@@ -4,7 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:webview_cef/webview_cef.dart' as cef;
 
 import '../services/linux_kiosk_campaign.dart';
+import '../services/linux_kiosk_speech.dart';
 import '../utils/mqtt_state.dart';
+import 'linux_kiosk_approval.dart';
 
 /// Puts the running kiosk campaign over scheduled signage (Linux only).
 ///
@@ -38,6 +40,10 @@ class LinuxKioskSurface extends StatelessWidget {
                 kiosk: kiosk,
               ),
             ),
+          // A clashing campaign waiting for approval, over signage or the
+          // kiosk (never during a customer session; the service holds it).
+          if (state != MqttState.playerStopped && state != MqttState.pairedScreen)
+            Positioned.fill(child: LinuxKioskApprovalOverlay(kiosk: kiosk)),
         ]);
       },
     );
@@ -65,7 +71,11 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
       loading: const ColoredBox(color: Colors.black),
     );
     _controller.setWebviewListener(cef.WebviewEventsListener(
-      onTitleChanged: (title) => widget.kiosk.onPageTitle(title),
+      onTitleChanged: (title) {
+        // Read-aloud messages ride on the title too; they aren't page states.
+        if (KioskSpeech.instance.handleTitle(title)) return;
+        widget.kiosk.onPageTitle(title);
+      },
       onLoadEnd: (_, url) {
         // The Linux safety override reports a failed main frame this way
         // (see LinuxWebView).
@@ -74,11 +84,14 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
           // offline...) or an HTTP status (404, 502...).
           widget.kiosk.onPageLoadFailed(
               'code ${url.substring('signagex-load-failed:'.length)} at ${_where(widget.url)}');
+          return;
         }
+        unawaited(_installSpeech());
       },
     ));
     widget.kiosk.reloadRequests.addListener(_reload);
     widget.kiosk.endSessionRequests.addListener(_endSession);
+    widget.kiosk.backRequests.addListener(_back);
     unawaited(_initialize());
   }
 
@@ -123,16 +136,51 @@ class _LinuxKioskViewState extends State<LinuxKioskView> {
     }
   }
 
+  /// Read-aloud: CEF on Linux has speechSynthesis but no engine, so the page
+  /// hands the text to the player (KioskSpeech) through the page title. Every
+  /// load replaces the page, so the shim goes in again each time.
+  Future<void> _installSpeech() async {
+    try {
+      await _controller.ready;
+      await _controller.executeJavaScript(kioskSpeechShim);
+      KioskSpeech.instance.log('read-aloud ready on the page');
+    } catch (error) {
+      // The page still works; it just stays silent.
+      KioskSpeech.instance.log('read-aloud could not be set up: $error');
+    }
+  }
+
+  void _back() {
+    unawaited(_runBack());
+  }
+
+  /// One screen back inside the kiosk (the page has no browser history, so
+  /// the Alt+Left key remote view also sends does nothing there).
+  Future<void> _runBack() async {
+    try {
+      await _controller.ready;
+      await _controller.executeJavaScript(
+          'window.__sxKioskBack && window.__sxKioskBack()');
+    } catch (_) {
+      // An older page without the hook: nothing to go back to.
+    }
+  }
+
   @override
   void didUpdateWidget(covariant LinuxKioskView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.url != widget.url) unawaited(_load(widget.url));
+    if (oldWidget.url != widget.url) {
+      KioskSpeech.instance.cancel();
+      unawaited(_load(widget.url));
+    }
   }
 
   @override
   void dispose() {
     widget.kiosk.reloadRequests.removeListener(_reload);
     widget.kiosk.endSessionRequests.removeListener(_endSession);
+    widget.kiosk.backRequests.removeListener(_back);
+    KioskSpeech.instance.cancel();
     _controller.dispose();
     super.dispose();
   }
