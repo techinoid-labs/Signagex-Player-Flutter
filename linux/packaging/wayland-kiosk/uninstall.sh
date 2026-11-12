@@ -31,7 +31,8 @@ if [[ -f "$state/display-manager" ]]; then
 fi
 rm -rf "$state"
 systemctl daemon-reload
-systemctl restart systemd-logind 2>/dev/null
+# logind settings return to normal at the reboot (restarting it now would
+# end the running session).
 
 # signagex-reboot membership and its polkit rule are shared with the X11
 # Openbox kiosk (kiosk/install.sh), so they stay.

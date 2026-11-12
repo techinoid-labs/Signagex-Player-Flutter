@@ -108,7 +108,9 @@ fi
 systemctl set-default graphical.target
 systemctl daemon-reload
 systemctl enable signagex-wayland-kiosk.service
-systemctl restart systemd-logind || true
+# Not restarting systemd-logind here: that ends the desktop session the
+# installer is running in (blank console). The new logind settings apply at
+# the reboot below.
 
 echo
 echo "Done. Reboot to start the kiosk: sudo reboot"
