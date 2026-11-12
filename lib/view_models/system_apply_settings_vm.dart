@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:screen_brightness/screen_brightness.dart';
 
 import 'package:digital_signage/services/linux_remote_backend.dart';
+import 'package:digital_signage/services/linux_wayland_rotation.dart';
 import 'package:digital_signage/services/mqtt_client_service.dart';
 import 'package:digital_signage/utils/globle_variable.dart';
 
@@ -296,6 +297,18 @@ class DeviceSettingsViewModel with ChangeNotifier {
   /// on screen, with no separate Flutter-side transform/coordinate-mapping
   /// layer needed.
   Future<String> applyScreenRotationForLinux(String rotation) async {
+    // Wayland (cage kiosk): xrandr can't reach the output; wlr-randr can, and
+    // the rotation is remembered for the next start.
+    if (LinuxRemoteBackend.instance.isWayland) {
+      try {
+        final result = await WaylandRotation.instance.apply(rotation);
+        print('MQTT_LOGS:: $result');
+        return result;
+      } catch (e) {
+        print('MQTT_LOGS:: rotation failed: $e');
+        return 'Error: $e';
+      }
+    }
     final normalized = rotation == 'landscape' ? '0' : rotation;
     final direction = switch (normalized) {
       '90' => 'right',

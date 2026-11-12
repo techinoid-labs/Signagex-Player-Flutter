@@ -20,7 +20,7 @@ mkdir -p "$state"
 
 echo '== Packages'
 apt-get update
-apt-get install -y cage grim xwayland pipewire wireplumber pipewire-pulse espeak-ng \
+apt-get install -y cage grim wlr-randr xwayland pipewire wireplumber pipewire-pulse espeak-ng \
   python3 python3-evdev python3-cryptography python3-pil
 
 echo '== Remote-view helpers next to the player'

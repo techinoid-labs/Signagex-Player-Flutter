@@ -41,8 +41,10 @@ case "$ROTATE" in
   270) rotation='-r -r -r' ;;
 esac
 if [ -n "$rotation" ] && ! cage -h 2>&1 | grep -q -- '-r'; then
-  echo "signagex-kiosk: this cage build has no -r; ROTATE=$ROTATE ignored" >&2
+  # Newer cage (0.2+) has no -r: the player turns the output with wlr-randr
+  # at start instead (unless the CMS has set a rotation since).
   rotation=
+  export SIGNAGEX_ROTATE="$ROTATE"
 fi
 
 # -d: no client-side decorations. No -s: Ctrl+Alt+F<n> can't switch away to a console.
