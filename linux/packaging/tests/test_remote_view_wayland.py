@@ -58,10 +58,7 @@ class WaylandRemoteTests(unittest.TestCase):
         self.assertEqual(self.result(),'executed')
 
     def test_rotated_screen_is_sent_turned_and_clicks_are_turned_back(self):
-        listing='eDP-1 "Panel"
-  Enabled: yes
-  Transform: 270
-'
+        listing='eDP-1 "Panel"\n  Enabled: yes\n  Transform: 270\n'
         def capture(*arguments):
             if arguments[0] == 'grim':
                 image=agent.Image.new('RGB',(1920,1080),(255,255,255))
@@ -79,10 +76,7 @@ class WaylandRemoteTests(unittest.TestCase):
         self.remote.input.tap.assert_called_once_with(0.0,0.0)
         self.assertEqual(agent.upright_point(0.25,0.75,'180'),(0.75,0.25))
         self.assertEqual(agent.upright_point(0.0,1.0,'90'),(0.0,0.0))
-        self.assertEqual(agent.output_transform('HDMI-A-1 "x"
-  Enabled: no
-  Transform: 90
-'+listing),'270')
+        self.assertEqual(agent.output_transform('HDMI-A-1 "x"\n  Enabled: no\n  Transform: 90\n'+listing),'270')
 
     def test_frame_comes_from_grim_with_the_output_size(self):
         self.remote.receive(self.command())
