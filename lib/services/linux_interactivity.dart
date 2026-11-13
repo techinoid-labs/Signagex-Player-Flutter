@@ -14,6 +14,7 @@ class LinuxInteractivity extends ChangeNotifier {
   Map<String, dynamic>? active;
   final List<Map<String, dynamic>> _queue = [];
   HttpServer? _api;
+  HttpServer? _compatApi;
   String? _token;
   Timer? _clock;
   Timer? _end;
@@ -78,6 +79,56 @@ class LinuxInteractivity extends ChangeNotifier {
     } catch (error) {
       await event?.call('Local trigger API unavailable: $error', 'warning');
     }
+    await _startCompatApi();
+  }
+
+  /// The Local API address the CMS shows (and the Android player serves):
+  /// `GET|POST http://127.0.0.1:5544/trigger/{value}`, loopback only, no token.
+  /// Matching follows Android: a configured value fires when the received one
+  /// contains it (case-insensitive), or when it is a regular expression that
+  /// matches. The first allowed match plays; later ones only with `propagate`.
+  Future<void> _startCompatApi() async {
+    try {
+      _compatApi = await HttpServer.bind(InternetAddress.loopbackIPv4, 5544);
+      _compatApi!.idleTimeout = const Duration(seconds: 10);
+      _compatApi!.listen((request) async {
+        final response = request.response;
+        response.headers.contentType = ContentType.json;
+        final segments = request.uri.pathSegments;
+        var fired = 0;
+        if ((request.method == 'GET' || request.method == 'POST') &&
+            segments.length >= 2 &&
+            segments.first == 'trigger') {
+          fired = triggerLocalApi(segments.skip(1).join('/'));
+          response.statusCode = fired > 0 ? HttpStatus.ok : HttpStatus.notFound;
+        } else {
+          response.statusCode = HttpStatus.notFound;
+        }
+        try {
+          await request.drain<void>();
+        } catch (_) {}
+        response.write(jsonEncode({'success': fired > 0, 'fired': fired}));
+        await response.close();
+      });
+    } catch (error) {
+      await event?.call('Local trigger API on port 5544 unavailable: $error', 'warning');
+    }
+  }
+
+  /// Fires the items whose Local API value matches [received]; returns how
+  /// many ran.
+  int triggerLocalApi(String received) {
+    final value = received.trim();
+    if (value.isEmpty) return 0;
+    var fired = 0;
+    for (final item in items) {
+      final patterns = (item['local_api'] as List? ?? []).map((e) => '$e');
+      if (!patterns.any((p) => localApiMatches(p, value))) continue;
+      if (!activate(item['id'], source: 'local_api')) continue;
+      fired++;
+      if (item['propagate'] != true) break;
+    }
+    return fired;
   }
 
   int generation = 0;
@@ -387,5 +438,19 @@ class LinuxInteractivity extends ChangeNotifier {
     _clock?.cancel();
     _end?.cancel();
     _api?.close(force: true);
+    _compatApi?.close(force: true);
+  }
+}
+
+/// Android's Local API rule: the received value contains the configured one
+/// (ignoring case), or the configured one is a regular expression that matches.
+bool localApiMatches(String pattern, String received) {
+  final p = pattern.trim();
+  if (p.isEmpty) return false;
+  if (received.toLowerCase().contains(p.toLowerCase())) return true;
+  try {
+    return RegExp(p, caseSensitive: false).hasMatch(received);
+  } catch (_) {
+    return false;
   }
 }
