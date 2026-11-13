@@ -29,6 +29,29 @@ bool inConfigurationWindow(List<dynamic> windows, DateTime now) {
   return false;
 }
 
+/// When the next window opens after [now] (within a week), or null. Used for
+/// the "Opens today at 09:00" line outside working hours.
+DateTime? nextConfigurationStart(List<dynamic> windows, DateTime now) {
+  DateTime? best;
+  for (final raw in windows) {
+    if (raw is! Map) continue;
+    final from = RegExp(r'^(\d{2}):(\d{2})$').firstMatch(raw['from']?.toString() ?? '');
+    if (from == null) continue;
+    final days = raw['days'];
+    final mask = days is List ? (days.isEmpty ? '' : days.first.toString()) : days?.toString();
+    for (var d = 0; d <= 7; d++) {
+      final day = DateTime(now.year, now.month, now.day + d);
+      if (mask != null && RegExp(r'^[01]{7}$').hasMatch(mask) && mask[day.weekday % 7] != '1') continue;
+      final start = DateTime(day.year, day.month, day.day, int.parse(from[1]!), int.parse(from[2]!));
+      if (start.isAfter(now) && (best == null || start.isBefore(best))) best = start;
+    }
+  }
+  return best;
+}
+
+/// Outside-working-hours modes the CMS can choose (Android's WorkingHours.Mode).
+const offHoursModes = <String>{'display_off', 'black_screen', 'message', 'content', 'continue'};
+
 int configurationPercent(dynamic raw) {
   final value = num.tryParse(raw.toString());
   if (value == null || !value.isFinite || value < 0 || value > 100 || value != value.roundToDouble()) {

@@ -30,6 +30,19 @@ class LinuxConfiguration extends ChangeNotifier {
   int revision = 0;
   String? _registrationScope;
   bool working = true;
+
+  /// Outside the working schedule, what the screen shows (the CMS
+  /// "Outside working hours" choice, same rules as Android): black_screen,
+  /// display_off, message or content. "continue" keeps [working] true.
+  String offHoursMode = 'black_screen';
+  String? offHoursMessage;
+  /// The off-hours picture or video once downloaded; null shows black.
+  String? offHoursMediaPath;
+  bool offHoursVideo = false;
+  /// When the schedule next opens, for "Opens today at 09:00".
+  DateTime? opensAt;
+  String? _offHoursMediaUrl;
+  bool _displayForcedOff = false;
   bool get hideMessages => values['hide_no_campaign_messages'] == true;
   bool get touchFeedback => values['touch_feedback'] == true;
   bool get disableTransitions => values['disable_transitions'] == true;
@@ -498,6 +511,73 @@ class LinuxConfiguration extends ChangeNotifier {
     }
   }
 
+  /// The off-hours picture or video (CMS "Show content"), kept on disk so it
+  /// shows offline too. A failure leaves the screen black, never playback.
+  Future<void> _downloadOffHoursMedia(String url, Map? content) async {
+    final kind = '${content?['kind'] ?? ''}'.toLowerCase();
+    final path = Uri.tryParse(url)?.path.toLowerCase() ?? '';
+    final video = kind.contains('video') ||
+        RegExp(r'\.(mp4|webm|mov|mkv|m4v)$').hasMatch(path);
+    final dir = Directory(
+        '${Platform.environment['HOME']}/.local/share/signagex-player/off-hours');
+    final name = base64Url.encode(utf8.encode(url)).replaceAll('=', '');
+    final file = File('${dir.path}/${name.length > 120 ? name.substring(name.length - 120) : name}');
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    try {
+      if (!await file.exists() || await file.length() == 0) {
+        await dir.create(recursive: true);
+        final response = await (await client.getUrl(Uri.parse(url)))
+            .close()
+            .timeout(const Duration(seconds: 30));
+        if (response.statusCode != 200) {
+          throw StateError('HTTP ${response.statusCode}');
+        }
+        final partial = File('${file.path}.part');
+        final sink = partial.openWrite();
+        var size = 0;
+        try {
+          await for (final chunk in response) {
+            size += chunk.length;
+            if (size > 500 * 1024 * 1024) throw StateError('larger than 500 MB');
+            sink.add(chunk);
+          }
+        } finally {
+          await sink.close();
+        }
+        await partial.rename(file.path);
+      }
+      if (_offHoursMediaUrl != url) return;
+      offHoursMediaPath = file.path;
+      offHoursVideo = video;
+      notifyListeners();
+    } catch (error) {
+      await event?.call('Off-hours content could not be downloaded: $error', 'warning');
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// "Display off" outside working hours: X11 powers the screen down with
+  /// DPMS (forced again each tick, in case something woke it) and back on at
+  /// opening time. Wayland has no portable way, so the screen is black there.
+  Future<void> _applyDisplayOff(bool off) async {
+    if (wayland) return;
+    try {
+      if (off) {
+        if (!_displayForcedOff) await command('xset', ['+dpms']);
+        await command('xset', ['dpms', 'force', 'off']);
+        _displayForcedOff = true;
+      } else if (_displayForcedOff) {
+        _displayForcedOff = false;
+        await command('xset', ['dpms', 'force', 'on']);
+        // The kiosk keeps the screen from ever blanking on its own.
+        await command('xset', ['-dpms']);
+      }
+    } catch (error) {
+      await event?.call('Display power change failed: $error', 'warning');
+    }
+  }
+
   String? get logoPath => (values['logo'] as Map?)?['remove'] == true ||
           (values['logo'] as Map?)?['url'] == null
       ? null
@@ -523,14 +603,41 @@ class LinuxConfiguration extends ChangeNotifier {
     try {
       final now = clock();
       final schedule = values['working_schedule'] as Map?;
-      final active = schedule == null ||
+      final windows = schedule?['schedule'] as List? ?? [];
+      var active = schedule == null ||
           schedule['type'] == 'always' ||
-          inConfigurationWindow(schedule['schedule'] as List? ?? [], now);
-      if (working != active) {
-        working = active;
+          inConfigurationWindow(windows, now);
+      final off = schedule?['off_hours'] is Map
+          ? Map<String, dynamic>.from(schedule!['off_hours'] as Map)
+          : <String, dynamic>{};
+      var mode = offHoursModes.contains(off['mode']) ? off['mode'] as String : 'black_screen';
+      // "Keep playing" outside hours is simply never closed.
+      if (!active && mode == 'continue') active = true;
+      final message = off['message']?.toString().trim();
+      final content = off['content'] is Map ? off['content'] as Map : null;
+      final url = content?['url']?.toString() ?? '';
+      // Without a message or content to show, those modes are black, never playback.
+      if (mode == 'message' && (message == null || message.isEmpty)) mode = 'black_screen';
+      if (mode == 'content' && !url.startsWith('https://')) mode = 'black_screen';
+      final opens = active ? null : nextConfigurationStart(windows, now);
+      final changed = working != active ||
+          offHoursMode != mode ||
+          offHoursMessage != (mode == 'message' ? message : null) ||
+          opensAt != opens;
+      working = active;
+      offHoursMode = mode;
+      offHoursMessage = mode == 'message' ? message : null;
+      opensAt = opens;
+      if (!active && mode == 'content' && url != _offHoursMediaUrl) {
+        _offHoursMediaUrl = url;
+        offHoursMediaPath = null;
+        unawaited(_downloadOffHoursMedia(url, content));
+      }
+      await _applyDisplayOff(!active && mode == 'display_off');
+      if (changed) {
         notifyListeners();
         await event?.call(
-            'Working schedule ${active ? 'active' : 'inactive'}', 'info');
+            'Working schedule ${active ? 'active' : 'inactive ($mode)'}', 'info');
       }
       final mute = values['mute_audio'] == true || !working ? '1' : '0';
       if (_lastMute != mute &&
