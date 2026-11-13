@@ -60,8 +60,9 @@ GLib work source was attached but never run; CEF now runs the loop itself.
   commands within the current registration remain rejected.
 - Native ARM64-v52 CI passed from the same source; not promoted in this run.
   Physical Pi, AppImage and Wayland acceptance remain separate from this
-  AMD64/X11 Byte validation. The full live CMS orientation cycle and physical
-  cold-boot acceptance also remain open as detailed in the validation report.
+  AMD64/X11 Byte validation. The live CMS four-orientation cycle, final portrait
+  app restart, mute/restore and remote Home/Back passed on the Byte. Physical
+  cold-boot and remaining acceptance cases are listed in the validation report.
 
 ## v15 — 2026-10-23 — staging
 
