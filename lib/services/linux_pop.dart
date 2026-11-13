@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'linux_atomic_json.dart';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -390,6 +391,7 @@ class LinuxPop {
   void Function(String message)? _publishMqtt;
   bool Function()? _mqttConnected;
   Directory? _dir;
+  final LinuxAtomicJson _storage = LinuxAtomicJson();
   PopQueue _queue = PopQueue();
   bool _loaded = false;
   Timer? _timer;
@@ -605,10 +607,10 @@ class LinuxPop {
     final dir = _dir;
     if (dir == null) return;
     try {
-      await dir.create(recursive: true);
-      final tmp = File('${dir.path}/$name.part');
-      await tmp.writeAsString(jsonEncode(value), flush: true);
-      await tmp.rename('${dir.path}/$name');
-    } catch (_) {}
+      await _storage.write(File('${dir.path}/$name'), value);
+    } catch (error) {
+      // Report persistence failures without logging the signing key or payload.
+      stderr.writeln('SignageX proof-of-play persistence failed: ${error.runtimeType}');
+    }
   }
 }

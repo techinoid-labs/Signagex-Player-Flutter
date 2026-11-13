@@ -18,7 +18,7 @@ void main() {
         channelFile: '${root.path}/update-channel.json',
         pollEvery: const Duration(milliseconds: 10),
         installedVersion: (_) async => installed,
-        compareVersions: (a, op, b) async => op == 'ge' ? _compare(a, b) >= 0 : _compare(a, b) > 0,
+        compareVersions: (a, op, b) async => op == 'eq' ? _compare(a, b) == 0 : op == 'ge' ? _compare(a, b) >= 0 : _compare(a, b) > 0,
         runUpdater: (arguments) async {
           runs.add(arguments);
           return result();
@@ -30,7 +30,7 @@ void main() {
   void status(String value, {String version = '51', double timestamp = 1000005}) =>
       File('${root.path}/update-status.json').writeAsStringSync(jsonEncode({'status': value, 'version': version, 'timestamp': timestamp}));
   void persisted(String phase) => File('${root.path}/linux-ota.json').writeAsStringSync(
-      jsonEncode({'job': 'job-1', 'target': '51', 'phase': phase, 'detail': '', 'started': 1000000.0}));
+      jsonEncode({'sha256': 'a' * 64, 'job': 'job-1', 'target': '51', 'phase': phase, 'detail': '', 'started': 1000000.0}));
 
   setUp(() {
     root = Directory.systemTemp.createTempSync('signagex-ota ');
@@ -61,9 +61,9 @@ void main() {
       status('updated');
       return ProcessResult(1, 0, 'updated', '');
     };
-    await updater.run({'job': 'job-1', 'version': '51', 'issued': 5}, supported: true);
+    await updater.run({'sha256': 'a' * 64, 'job': 'job-1', 'version': '51', 'issued': 5}, supported: true);
     expect(runs, [
-      ['/usr/lib/signagex-player/update-player', '--now']
+      ['/usr/lib/signagex-player/update-player', '--now', '51', 'a' * 64]
     ]);
     expect(phases, ['downloading', 'updated']);
     final report = await updater.report('0607c6', supported: true);
@@ -79,7 +79,7 @@ void main() {
       status('rolled_back', version: '50'); // ...then failed its health check
       return ProcessResult(1, 1, '', 'Updated player did not pass its event-loop health check');
     };
-    await updater.run({'job': 'job-1', 'version': '51'}, supported: true);
+    await updater.run({'sha256': 'a' * 64, 'job': 'job-1', 'version': '51'}, supported: true);
     expect(updater.job?['phase'], 'failed');
 
     persisted('updated');
@@ -94,8 +94,27 @@ void main() {
     final updater = ota();
     installed = '51';
     result = () => ProcessResult(1, 0, 'up-to-date', '');
-    await updater.run({'job': 'job-1', 'version': '51'}, supported: true);
+    await updater.run({'sha256': 'a' * 64, 'job': 'job-1', 'version': '51'}, supported: true);
     expect(updater.job?['phase'], 'updated');
+  });
+
+  test('a different installed version cannot satisfy an approved request', () async {
+    final updater = ota();
+    installed = '52';
+    result = () => ProcessResult(1, 0, 'up-to-date', '');
+    await updater.run({'sha256': 'a' * 64, 'job': 'job-1', 'version': '51'}, supported: true);
+    expect(updater.job?['phase'], 'failed');
+  });
+
+  test('a rollback reports its actual installation stage after a restart', () async {
+    persisted('installing');
+    File('${root.path}/update-status.json').writeAsStringSync(jsonEncode({
+      'status': 'rolled_back', 'version': '50', 'timestamp': 1000005,
+      'stage': 'package_install', 'reason': 'Update failed during package install; previous package restored',
+    }));
+    final updater = ota();
+    await updater.load();
+    expect(updater.job?['detail'], 'Update failed during package install; previous package restored');
   });
 
   test('failures, unsupported devices and repeated deliveries are reported once', () async {
@@ -104,13 +123,13 @@ void main() {
       status('failed');
       return ProcessResult(1, 1, '', 'Update checksum mismatch');
     };
-    await updater.run({'job': 'job-1', 'version': '51'}, supported: true);
+    await updater.run({'sha256': 'a' * 64, 'job': 'job-1', 'version': '51'}, supported: true);
     expect(updater.job?['phase'], 'failed');
     expect(updater.job?['detail'], 'Update checksum mismatch');
-    await updater.run({'job': 'job-1', 'version': '51'}, supported: true);
+    await updater.run({'sha256': 'a' * 64, 'job': 'job-1', 'version': '51'}, supported: true);
     expect(runs.length, 1); // the same job delivered twice never runs twice
 
-    await updater.run({'job': 'job-2', 'version': '51'}, supported: false);
+    await updater.run({'sha256': 'a' * 64, 'job': 'job-2', 'version': '51'}, supported: false);
     expect(runs.length, 1);
     expect(updater.job?['phase'], 'failed');
     expect(updater.job?['detail'], 'Managed updates are not enabled on this device');
@@ -140,7 +159,7 @@ void main() {
       channelFile: '${root.path}/update-channel.json',
       pollEvery: const Duration(hours: 1), // the watcher has not looked again yet
       installedVersion: (_) async => installed,
-      compareVersions: (a, op, b) async => op == 'ge' ? _compare(a, b) >= 0 : _compare(a, b) > 0,
+      compareVersions: (a, op, b) async => op == 'eq' ? _compare(a, b) == 0 : op == 'ge' ? _compare(a, b) >= 0 : _compare(a, b) > 0,
       runUpdater: (arguments) async {
         runs.add(arguments);
         return result();
@@ -155,7 +174,7 @@ void main() {
       status('updated', version: '52', timestamp: 1000100);
       return ProcessResult(1, 0, 'updated', '');
     };
-    await updater.run({'job': 'job-2', 'version': '52'}, supported: true);
+    await updater.run({'sha256': 'a' * 64, 'job': 'job-2', 'version': '52'}, supported: true);
     expect(runs.length, 1);
     expect(updater.job?['job'], 'job-2');
     expect(updater.job?['phase'], 'updated');

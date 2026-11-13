@@ -1,6 +1,6 @@
 #!/usr/bin/python3
 """Root-owned, argument-free updater. Only the packaged release channel is trusted."""
-import hashlib, json, os, pathlib, pwd, random, shutil, subprocess, tempfile, time, urllib.parse, urllib.request
+import hashlib, json, os, pathlib, pwd, random, re, shutil, subprocess, tempfile, time, urllib.parse, urllib.request
 
 CONFIG = pathlib.Path('/usr/lib/signagex-player/update-channel.json')
 CACHE = pathlib.Path('/var/cache/signagex-player')
@@ -54,11 +54,12 @@ def healthy_release(health, current_pid, version, now):
         and 0 <= now - timestamp < 20
         and debian_version(health.get('build')) == version)
 
-def update_status(status, version=''):
+def update_status(status, version='', *, stage='', reason=''):
     directory = pathlib.Path('/var/lib/signagex-player')
     directory.mkdir(parents=True,exist_ok=True)
     temporary = directory/'update-status.json.tmp'
-    temporary.write_text(json.dumps({'version':version,'status':status,'timestamp':time.time()}))
+    temporary.write_text(json.dumps({'version':version,'status':status,'timestamp':time.time(),
+        'stage':stage, 'reason':reason[:200]}))
     temporary.replace(directory/'update-status.json')
 
 def failure_state(version):
@@ -99,13 +100,54 @@ def rollback_space_needed(candidate_bytes, installed_kb):
 def build_rollback(previous, destination):
     run('dpkg-deb', *ROLLBACK_COMPRESSION, '--build', '--root-owner-group', str(previous), str(destination))
 
+def file_digest(path):
+    digest = hashlib.sha256()
+    with path.open('rb') as source:
+        for chunk in iter(lambda: source.read(1024*1024), b''): digest.update(chunk)
+    return digest.hexdigest()
+
+def save_rollback_identity(rollback, package, architecture, version):
+    record = rollback.with_suffix('.json')
+    temporary = record.with_suffix('.json.tmp')
+    temporary.write_text(json.dumps({'package':package, 'architecture':architecture,
+        'version':version, 'sha256':file_digest(rollback)}))
+    temporary.replace(record)
+
+def verify_rollback(rollback, config):
+    record = json.loads(rollback.with_suffix('.json').read_text())
+    if record['package'] != config['package'] or record['architecture'] != config['architecture']:
+        raise ValueError('Wrong rollback identity')
+    if file_digest(rollback) != record['sha256']:
+        raise ValueError('Rollback checksum mismatch')
+    for field in ('package','architecture','version'):
+        if run('dpkg-deb','-f',str(rollback),field.capitalize()) != record[field]:
+            raise ValueError('Rollback metadata mismatch')
+    return record['version']
+
+def approved_release(arguments):
+    """Pin an operator request to the version AND checksum it approved.
+
+    These are constraints, never a package path or URL. The root-owned channel,
+    architecture checks and HTTPS allowlist remain authoritative.
+    """
+    if len(arguments) == 3 and arguments[0] == '--now':
+        version, digest = arguments[1:]
+        if re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9.+:~\-]{0,63}', version) and re.fullmatch(r'[0-9a-f]{64}', digest):
+            return debian_version(version), digest
+    if arguments in ([], ['--now']): return None
+    raise ValueError('Invalid update request')
+
+def verify_approval(approval, version, digest):
+    if approval is not None and approval != (version, digest):
+        raise ValueError('Approved release differs from the channel; request a new update from the CMS')
+
 def recover_interrupted_update():
     status = pathlib.Path('/var/lib/signagex-player/update-status.json')
     if status.exists() and json.loads(status.read_text()).get('status') == 'installing':
         rollback = CACHE/'rollback.deb'
         if not rollback.exists(): raise ValueError('Rollback installer missing')
         config = json.loads(CONFIG.read_text())
-        if run('dpkg-deb','-f',str(rollback),'Package') != config['package']: raise ValueError('Wrong rollback package')
+        verify_rollback(rollback, config)
         run('dpkg','-i',str(rollback))
         update_status('rolled_back')
 
@@ -120,8 +162,9 @@ def main():
     arguments = __import__('sys').argv[1:]
     # '--now' is the only argument: an operator asked from the CMS, so a release
     # that failed earlier is retried immediately instead of waiting out its backoff.
-    if os.geteuid() != 0 or arguments not in ([], ['--now']):
+    if os.geteuid() != 0:
         raise ValueError('Updater requires its installed policy and accepts no arguments')
+    approval = approved_release(arguments)
     uid = int(os.environ.get('PKEXEC_UID', '0'))
     if uid < 1000: raise ValueError('No graphical player user')
     # An updater launched by the player shares its systemd control group.
@@ -132,7 +175,7 @@ def main():
             '--collect', '--wait', '--property=Type=exec',
             '--setenv=PKEXEC_UID='+str(uid), '--setenv=SIGNAGEX_UPDATE_SERVICE=1']
             + (['--setenv=SIGNAGEX_UPDATE_NOW=1'] if arguments else [])
-            + ['/usr/lib/signagex-player/update-player'])
+            + ['/usr/lib/signagex-player/update-player'] + (arguments if approval else []))
         return
     user = pwd.getpwuid(uid).pw_name
     config = json.loads(CONFIG.read_text())
@@ -153,6 +196,9 @@ def main():
             # Version ("15"); compare and verify in Debian form or "v15" sorts above every number.
             version = debian_version(release.get('version'))
             if version is None: raise ValueError('Missing release version')
+            # Check before downloading or declaring "up-to-date". A later
+            # release cannot silently satisfy an earlier operator approval.
+            verify_approval(approval, version, digest)
             package = config['package']
             installed = run('dpkg-query','-W','-f=${Version}',package)
             if subprocess.call(['dpkg','--compare-versions',version,'gt',installed]) != 0:
@@ -164,6 +210,7 @@ def main():
                 print('deferred'); return
             try:
                 installing = False
+                stage = 'download'
                 update_status('downloading',version)
                 candidate = temporary/'candidate.deb'
                 actual = download(release['downloadUrl'], candidate, {'norwin.sfo3.digitaloceanspaces.com'})
@@ -172,6 +219,12 @@ def main():
                     raise ValueError('Wrong update package')
                 if run('dpkg-deb','-f',str(candidate),'Version') != version:
                     raise ValueError('Manifest/package version mismatch')
+                stage = 'dependencies'
+                # Resolve dependencies while the old player is still running.
+                # An offline ISO's invalid APT source must fail here, rather
+                # than being described as a failed new-player health check.
+                run('apt-get','--simulate','install','-y',str(candidate))
+                stage = 'rollback_backup'
                 # Build an exact rollback installer from the currently installed files.
                 installed_kb = int(run('dpkg-query','-W','-f=${Installed-Size}',package) or 0)
                 if shutil.disk_usage(CACHE).free < rollback_space_needed(candidate.stat().st_size, installed_kb): raise ValueError('Insufficient space for safe update and rollback')
@@ -193,15 +246,19 @@ def main():
                     if original.exists(): shutil.copy2(original,control/name)
                 rollback = CACHE/'rollback.deb'
                 build_rollback(previous, rollback)
+                save_rollback_identity(rollback, package, config['architecture'], installed)
                 restart = ['runuser','-u',user,'--','env',f'XDG_RUNTIME_DIR=/run/user/{uid}','systemctl','--user']
                 installing = True
                 update_status('installing',version)
                 try:
+                    stage = 'package_install'
                     run('apt-get','install','-y',str(candidate))
+                    stage = 'service_install'
                     installer = '/opt/'+package+'/kiosk/install-user-service.sh'
                     run('runuser','-u',user,'--','env',f'XDG_RUNTIME_DIR=/run/user/{uid}',installer)
                     run(*restart,'restart','signagex-player.service')
                     healthy = False
+                    stage = 'health_check'
                     health_file = pathlib.Path(pwd.getpwuid(uid).pw_dir)/'.local/share/signagex-player/health.json'
                     for attempt in range(18):
                         time.sleep(5)
@@ -213,9 +270,13 @@ def main():
                         except (OSError, ValueError, subprocess.CalledProcessError): pass
                     if not healthy: raise ValueError('Updated player did not pass its event-loop health check')
                 except Exception:
+                    verify_rollback(rollback, config)
                     run('apt-get','install','-y','--allow-downgrades',str(rollback))
                     run(*restart,'restart','signagex-player.service')
-                    update_status('rolled_back',installed)
+                    if run('dpkg-query','-W','-f=${Version}',package) != installed:
+                        raise ValueError('Rollback did not restore the previous package version')
+                    update_status('rolled_back',installed,stage=stage,
+                        reason='Update failed during '+stage.replace('_',' ')+'; previous package restored')
                     raise
                 clear_failures()
                 update_status('updated',version)
@@ -223,7 +284,8 @@ def main():
                 except BrokenPipeError: pass
             except Exception:
                 record_failure(version, time.time())
-                if not installing: update_status('failed',version)
+                if not installing: update_status('failed',version,stage=stage,
+                    reason='Update failed during '+stage.replace('_',' '))
                 raise
 
 if __name__ == '__main__':

@@ -3,6 +3,27 @@ from unittest.mock import patch
 
 updater = runpy.run_path(str(pathlib.Path(__file__).parents[1]/'update-player'))
 class UpdatePolicyTests(unittest.TestCase):
+    def test_operator_approval_pins_version_and_artifact(self):
+        approve = updater['approved_release']
+        check = updater['verify_approval']
+        approval = approve(['--now', 'v87', 'a'*64])
+        self.assertEqual(approval, ('87', 'a'*64))
+        check(approval, '87', 'a'*64)
+        for version, digest in [('88', 'a'*64), ('87', 'b'*64)]:
+            with self.assertRaises(ValueError): check(approval, version, digest)
+        for args in [['--now', '/tmp/release', 'a'*64], ['--now','87','x'], ['--now','87;reboot','a'*64]]:
+            with self.assertRaises(ValueError): approve(args)
+
+    def test_corrupt_rollback_is_rejected_before_install(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as temporary:
+            rollback = pathlib.Path(temporary)/'rollback.deb'
+            rollback.write_bytes(b'original')
+            updater['save_rollback_identity'](rollback,'signagex-player','amd64','81')
+            rollback.write_bytes(b'tampered')
+            with self.assertRaisesRegex(ValueError, 'checksum'):
+                updater['verify_rollback'](rollback, {'package':'signagex-player','architecture':'amd64'})
+
     def test_only_https_and_known_hosts(self):
         check = updater['trusted_url']
         self.assertEqual(check('https://example.com/release', {'example.com'}),'https://example.com/release')
@@ -32,12 +53,13 @@ class UpdatePolicyTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root=pathlib.Path(temporary); cache=root/'cache';cache.mkdir()
             state=root/'update-status.json';state.write_text(json.dumps({'status':'installing'}))
-            channel=root/'channel.json';channel.write_text(json.dumps({'package':'signagex-player'}))
+            channel=root/'channel.json';channel.write_text(json.dumps({'package':'signagex-player','architecture':'amd64'}))
             rollback=cache/'rollback.deb';rollback.write_bytes(b'fixture')
+            updater['save_rollback_identity'](rollback,'signagex-player','amd64','81')
             original=pathlib.Path
             def path(value):
                 return state if str(value)=='/var/lib/signagex-player/update-status.json' else original(value)
-            with patch.dict(namespace,{'CACHE':cache,'CONFIG':channel,'run':lambda *args: 'signagex-player' if args[0]=='dpkg-deb' else calls.append(args),'update_status':lambda *args:statuses.append(args)}), patch('pathlib.Path',side_effect=path):
+            with patch.dict(namespace,{'CACHE':cache,'CONFIG':channel,'run':lambda *args: {'Package':'signagex-player','Architecture':'amd64','Version':'81'}[args[-1]] if args[0]=='dpkg-deb' else calls.append(args),'update_status':lambda *args:statuses.append(args)}), patch('pathlib.Path',side_effect=path):
                 calls=[];statuses=[]
                 updater['recover_interrupted_update']()
             self.assertEqual(calls,[('dpkg','-i',str(rollback))])
@@ -57,7 +79,7 @@ class UpdatePolicyTests(unittest.TestCase):
                 return ''
             fetched.append(url); raise RuntimeError('download failed')
         with patch.dict(namespace,{'CONFIG':channel,'CACHE':root/'cache','ATTEMPTS':root/'attempts.json','download':download,'run':lambda *args: installed,
-                                   'update_status':lambda *args: self.statuses.append(args)}), \
+                                   'update_status':lambda *args, **kwargs: self.statuses.append(args)}), \
              patch('os.geteuid',return_value=0), patch('sys.argv',['update-player']), \
              patch.dict('os.environ',{'PKEXEC_UID':'1000','SIGNAGEX_UPDATE_SERVICE':'1','SIGNAGEX_UPDATE_NOW':'1' if now else ''}), \
              patch('pwd.getpwuid',return_value=types.SimpleNamespace(pw_name='player')), patch('builtins.print') as output:
@@ -98,6 +120,39 @@ class UpdatePolicyTests(unittest.TestCase):
             # "Update now" from the CMS skips only the backoff, nothing else.
             self.assertEqual(len(self.check_once(root,'14',now=True)[1]),1)
             self.assertEqual(self.check_once(root,'50',now=True),(['up-to-date'],[]))
+
+    def test_dependency_failure_never_starts_installation_or_rollback(self):
+        import json, tempfile, types
+        namespace = updater['main'].__globals__
+        with tempfile.TemporaryDirectory() as temporary:
+            root = pathlib.Path(temporary)
+            channel = root/'channel.json'
+            channel.write_text(json.dumps({'manifest':'https://api.signagex.ai/latest',
+                'package':'signagex-player','platform':'linux','architecture':'amd64'}))
+            calls, statuses = [], []
+            def download(url, destination, hosts):
+                if destination.name == 'manifest.json':
+                    destination.write_text(json.dumps({'version':'v87','platform':'linux',
+                        'sha256':'a'*64,'downloadUrl':'https://norwin.sfo3.digitaloceanspaces.com/87.deb'}))
+                else: destination.write_bytes(b'candidate')
+                return 'a'*64
+            def run(*args):
+                calls.append(args)
+                if args[0] == 'dpkg-query': return '81'
+                if args[0] == 'dpkg-deb':
+                    return {'Architecture':'amd64','Package':'signagex-player','Version':'87'}[args[-1]]
+                if args[:2] == ('apt-get','--simulate'): raise RuntimeError('No dependency candidate')
+                raise AssertionError(args)
+            with patch.dict(namespace, {'CONFIG':channel,'CACHE':root/'cache',
+                    'ATTEMPTS':root/'attempts.json','download':download,'run':run,
+                    'update_status':lambda *args, **kwargs: statuses.append((args,kwargs))}), \
+                 patch('os.geteuid',return_value=0), patch('sys.argv',['update-player']), \
+                 patch.dict('os.environ',{'PKEXEC_UID':'1000','SIGNAGEX_UPDATE_SERVICE':'1'}), \
+                 patch('pwd.getpwuid',return_value=types.SimpleNamespace(pw_name='player')):
+                with self.assertRaisesRegex(RuntimeError,'dependency'): updater['main']()
+            self.assertEqual(statuses[-1][0], ('failed','87'))
+            self.assertEqual(statuses[-1][1]['stage'], 'dependencies')
+            self.assertFalse(any(c[:2] == ('apt-get','install') for c in calls))
 
     def test_now_is_the_only_argument_and_is_forwarded_to_the_service(self):
         for argv in (['update-player','--now','x'],['update-player','--recover-now'],['update-player','--NOW']):

@@ -51,9 +51,10 @@ class LinuxOta {
 
   /// Run the root updater; the CMS request and the hourly automatic check
   /// share this lock so two transactions never overlap.
-  Future<ProcessResult> exclusiveUpdate({bool now = false}) {
+  Future<ProcessResult> exclusiveUpdate({bool now = false, String? version, String? sha256}) {
     final result = _lock.then((_) =>
-        _runUpdater(now ? ['/usr/lib/signagex-player/update-player', '--now'] : ['/usr/lib/signagex-player/update-player']));
+        _runUpdater(['/usr/lib/signagex-player/update-player',
+          if (now) '--now', if (version != null) version, if (sha256 != null) sha256]));
     _lock = result.then((_) {}, onError: (_) {});
     return result;
   }
@@ -121,7 +122,7 @@ class LinuxOta {
 
   Future<bool> _reached(String target) async {
     final installed = await _installedVersion((await channel())['package']);
-    return installed != null && await _compare(installed, 'ge', target);
+    return installed != null && await _compare(installed, 'eq', target);
   }
 
   /// Settle the job from the updater's status. 'updated' is only reported once
@@ -135,11 +136,15 @@ class LinuxOta {
     // A rollback fails this job, unless it was already settled as updated and
     // that version is still installed (the rollback then belongs to a later run).
     if (state == 'rolled_back' && !(job!['phase'] == 'updated' && await _reached(target))) {
-      return _setPhase('failed', detail: 'Update rolled back: the new version did not pass its health check');
+      return _setPhase('failed', detail: status['reason']?.toString().isNotEmpty == true
+          ? status['reason'].toString()
+          : 'Update rolled back; the previous package was restored');
     }
     if (state == 'updated' && forTarget) return _setPhase('updated');
     if (state == 'failed' && forTarget) {
-      return _setPhase('failed', detail: stderr.trim().isNotEmpty ? stderr.trim() : 'Update download or verification failed');
+      return _setPhase('failed', detail: status['reason']?.toString().isNotEmpty == true
+          ? status['reason'].toString()
+          : stderr.trim().isNotEmpty ? stderr.trim() : 'Update download or verification failed');
     }
     final stamp = (status['timestamp'] as num?)?.toDouble() ?? 0;
     if (exitCode == null && active.contains(state) && forTarget &&
@@ -208,6 +213,10 @@ class LinuxOta {
     if (!supported) {
       return _setPhase('failed', detail: 'Managed updates are not enabled on this device');
     }
+    final digest = verified['sha256']?.toString() ?? '';
+    if (!RegExp(r'^[0-9a-f]{64}$').hasMatch(digest)) {
+      return _setPhase('failed', detail: 'Approved update is missing its artifact checksum');
+    }
     await event?.call('Player update requested from the CMS: $target', 'info');
     _running = true;
     final poll = Timer.periodic(pollEvery, (_) async {
@@ -217,7 +226,7 @@ class LinuxOta {
       }
     });
     try {
-      final result = await exclusiveUpdate(now: true).timeout(const Duration(minutes: 30));
+      final result = await exclusiveUpdate(now: true, version: target, sha256: digest).timeout(const Duration(minutes: 30));
       poll.cancel();
       _running = false;
       await _resolve(exitCode: result.exitCode, stdout: result.stdout.toString(), stderr: result.stderr.toString());

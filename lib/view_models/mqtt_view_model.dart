@@ -1,3 +1,4 @@
+import '../services/linux_asset_cache.dart';
 import '../services/linux_remote_view.dart';
 import '../services/linux_remote_backend.dart' show LinuxRemoteBackend;
 import '../services/linux_ota.dart';
@@ -1816,6 +1817,12 @@ class MqttViewModel extends ChangeNotifier {
           _updateOverallProgress(completedDownloads);
           continue;
         }
+        if (Platform.isLinux) {
+          await downloadFileForPlaylist(mediaUrl, playlist.id);
+          completedDownloads++;
+          _updateOverallProgress(completedDownloads);
+          continue;
+        }
         String filename = _extractFilename(mediaUrl);
         Directory? directory = await _getDirectory();
         if (directory == null) {
@@ -1953,6 +1960,14 @@ class MqttViewModel extends ChangeNotifier {
     while (attempt < retries) {
       try {
         attempt++;
+        if (Platform.isLinux) {
+          await LinuxConfiguration.instance.waitForDownload(destination: url);
+          final path = await LinuxAssetCache.media.fetch(url, refresh: true,
+              onProgress: _updateCurrentFileProgress);
+          if (path == null) throw StateError('Media download is not currently allowed');
+          _mediaPath[playlistId]?.add(path);
+          return;
+        }
         String filename = _extractFilename(url);
         Directory? directory = await _getDirectory();
         if (directory == null) {
@@ -2250,6 +2265,14 @@ class MqttViewModel extends ChangeNotifier {
       }
       // Otherwise, it might be a relative path we couldn't resolve
       return fullUrl;
+    }
+
+    if (Platform.isLinux) {
+      await LinuxConfiguration.instance.waitForDownload(destination: fullUrl);
+      final local = await LinuxAssetCache.media.fetch(fullUrl,
+          refresh: true, onProgress: onProgress);
+      if (local == null) throw StateError('Media download is not currently allowed');
+      return local;
     }
 
     final filename = _extractFilename(fullUrl);
