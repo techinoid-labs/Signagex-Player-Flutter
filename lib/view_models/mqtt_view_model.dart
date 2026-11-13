@@ -1817,12 +1817,6 @@ class MqttViewModel extends ChangeNotifier {
           _updateOverallProgress(completedDownloads);
           continue;
         }
-        if (Platform.isLinux) {
-          await downloadFileForPlaylist(mediaUrl, playlist.id);
-          completedDownloads++;
-          _updateOverallProgress(completedDownloads);
-          continue;
-        }
         String filename = _extractFilename(mediaUrl);
         Directory? directory = await _getDirectory();
         if (directory == null) {
@@ -1831,7 +1825,7 @@ class MqttViewModel extends ChangeNotifier {
         }
 
         String filePath = '${directory.path}/$filename';
-        bool fileExists = await File(filePath).exists();
+        bool fileExists = !Platform.isLinux && await File(filePath).exists();
 
         if (fileExists) {
           _mediaPath[playlist.id]!.add(filePath);
@@ -1840,7 +1834,11 @@ class MqttViewModel extends ChangeNotifier {
         } else {
           try {
             await downloadFileForPlaylist(mediaUrl, playlist.id);
-            _mediaPath[playlist.id]!.add(filePath);
+            if (Platform.isLinux) {
+              // Assign the exact successful item's path; an earlier failed or
+              // web-only item must not shift paths onto different media.
+              media.mediaUrl = _mediaPath[playlist.id]!.last;
+            }
             completedDownloads++;
             _updateOverallProgress(completedDownloads);
           } catch (error, stackTrace) {
@@ -1898,7 +1896,7 @@ class MqttViewModel extends ChangeNotifier {
 
     if (completedDownloads == _downloadCount) {
       print("All media files for all playlists have been downloaded.");
-      _updateMediaModelForPlaylist(); // Update model with local file paths
+      if (!Platform.isLinux) _updateMediaModelForPlaylist();
       _state = MqttState.playlistScreen;
       notifyListeners();
     }
