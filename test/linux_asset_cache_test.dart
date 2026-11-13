@@ -94,5 +94,30 @@ void main() {
       expect(await File(path!).readAsBytes(), payload);
     } finally { await server.close(force: true); await directory.delete(recursive: true); }
   });
+  test('publication identity refreshes a reused URL while restart works offline', () async {
+    final directory = await Directory.systemTemp.createTemp('signagex-publication-');
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    var payload = [1, 2];
+    var requests = 0;
+    server.listen((request) async {
+      requests++;
+      request.response.add(payload);
+      await request.response.close();
+    });
+    try {
+      final cache = LinuxAssetCache(directory: directory, maxBytes: 100);
+      final url = 'http://127.0.0.1:${server.port}/reused.mp4';
+      final first = (await cache.fetch(url, revision: 'publish-1'))!;
+      payload = [3, 4];
+      final second = (await cache.fetch(url, revision: 'publish-2'))!;
+      expect(first, isNot(second));
+      expect(await File(first).readAsBytes(), [1, 2]);
+      expect(await File(second).readAsBytes(), [3, 4]);
+      expect(requests, 2);
+      await server.close(force: true);
+      final restarted = LinuxAssetCache(directory: directory, maxBytes: 100);
+      expect(await restarted.fetch(url, revision: 'publish-2'), second);
+    } finally { await server.close(force: true); await directory.delete(recursive: true); }
+  });
 
 }

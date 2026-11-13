@@ -18,10 +18,10 @@ class LinuxAssetCache {
   Directory get _root => directory ?? Directory(
       '${Platform.environment['HOME']}/.local/share/signagex-player/trigger-cache');
 
-  String _name(String url) {
+  String _name(String url, [String revision = '']) {
     final extension = RegExp(r'\.([a-zA-Z0-9]{1,8})$')
         .firstMatch(Uri.parse(url).path)?[1] ?? 'media';
-    return '${sha256.convert(utf8.encode(url))}.$extension';
+    return '${sha256.convert(utf8.encode(revision.isEmpty ? url : '$revision\n$url'))}.$extension';
   }
 
   Future<T> _exclusive<T>(Future<T> Function() action) {
@@ -44,36 +44,36 @@ class LinuxAssetCache {
   /// A new publication can request a fresh transfer even if its URL is reused.
   /// Failed refreshes preserve the previous bytes but never acknowledge them as
   /// the new content. Normal offline reads verify the saved digest first.
-  Future<String?> fetch(String url, {bool refresh = false,
+  Future<String?> fetch(String url, {bool refresh = false, String revision = '',
       void Function(int received, int total)? onProgress}) {
-    final key = '$refresh:$url';
+    final key = '$refresh:$revision:$url';
     final existing = _pending[key];
     if (existing != null) return existing;
-    final future = _exclusive(() => _fetch(url, refresh, onProgress));
+    final future = _exclusive(() => _fetch(url, refresh, onProgress, revision));
     _pending[key] = future;
     future.then<void>((_) { _pending.remove(key); },
         onError: (Object _, StackTrace __) { _pending.remove(key); });
     return future;
   }
 
-  Future<bool> _valid(File file, File metadata, String url) async {
+  Future<bool> _valid(File file, File metadata, String url, String revision) async {
     try {
       final record = jsonDecode(await metadata.readAsString()) as Map;
-      if (record['url'] != url || record['size'] != await file.length() ||
+      if (record['url'] != url || (record['revision'] ?? '') != revision || record['size'] != await file.length() ||
           record['size'] == 0) return false;
       return record['sha256'] == (await sha256.bind(file.openRead()).first).toString();
     } catch (_) { return false; }
   }
 
   Future<String?> _fetch(String url, bool refresh,
-      void Function(int received, int total)? onProgress) async {
+      void Function(int received, int total)? onProgress, String revision) async {
     final uri = Uri.tryParse(url);
     if (uri == null || !['https', 'http'].contains(uri.scheme)) return url;
     final root = _root;
     await root.create(recursive: true);
-    final file = File('${root.path}/${_name(url)}');
+    final file = File('${root.path}/${_name(url, revision)}');
     final metadata = File('${file.path}.json');
-    if (!refresh && await _valid(file, metadata, url)) return file.path;
+    if (!refresh && await _valid(file, metadata, url, revision)) return file.path;
     if (!await LinuxConfiguration.instance
         .allowsDownload(checkInterval: false, destination: url)) return null;
     final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
@@ -118,7 +118,7 @@ class LinuxAssetCache {
       }
       final digest = (await sha256.bind(temporary.openRead()).first).toString();
       await record.writeAsString(jsonEncode({
-        'url': url, 'size': total, 'sha256': digest,
+        'url': url, 'revision': revision, 'size': total, 'sha256': digest,
       }), flush: true);
       await temporary.rename(file.path);
       await record.rename(metadata.path);

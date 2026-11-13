@@ -278,6 +278,7 @@ class MqttViewModel extends ChangeNotifier {
     'wlan0': null,
     'eth0': null,
   };
+  String _linuxContentRevision = 'legacy';
   Map<String, dynamic> storedJsonObj = {};
   Map<String, dynamic>? _storedApiResponse;
   Future<void> _loadStoredJsonObj() async {
@@ -287,6 +288,7 @@ class MqttViewModel extends ChangeNotifier {
 
     if (jsonString != null) {
       storedJsonObj = jsonDecode(jsonString);
+      _linuxContentRevision = storedJsonObj['_linux_cache_revision']?.toString() ?? 'legacy';
       print('Loaded JSON Object: $storedJsonObj');
       notifyListeners();
     } else {
@@ -1765,6 +1767,7 @@ class MqttViewModel extends ChangeNotifier {
   Map<String, List<String>> get mediaPath => _mediaPath;
 
   void _startDownloadingForPlaylist() async {
+    final contentRevision = _linuxContentRevision;
     if (_state == MqttState.downloading) {
       print("Downloads are already in progress.");
       return;
@@ -1833,7 +1836,7 @@ class MqttViewModel extends ChangeNotifier {
           _updateOverallProgress(completedDownloads);
         } else {
           try {
-            await downloadFileForPlaylist(mediaUrl, playlist.id);
+            await downloadFileForPlaylist(mediaUrl, playlist.id, revision: contentRevision);
             if (Platform.isLinux) {
               // Assign the exact successful item's path; an earlier failed or
               // web-only item must not shift paths onto different media.
@@ -1953,15 +1956,14 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> downloadFileForPlaylist(String url, String playlistId,
-      {int retries = 3}) async {
+      {int retries = 3, String? revision}) async {
     int attempt = 0;
     while (attempt < retries) {
       try {
         attempt++;
         if (Platform.isLinux) {
-          await LinuxConfiguration.instance.waitForDownload(destination: url);
-          final path = await LinuxAssetCache.media.fetch(url, refresh: true,
-              onProgress: _updateCurrentFileProgress);
+          final path = await LinuxAssetCache.media.fetch(url,
+              revision: revision ?? _linuxContentRevision, onProgress: _updateCurrentFileProgress);
           if (path == null) throw StateError('Media download is not currently allowed');
           _mediaPath[playlistId]?.add(path);
           return;
@@ -2026,6 +2028,7 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<void> _downloadCampaign(List<String> failures) async {
+    final contentRevision = _linuxContentRevision;
     Map<String, dynamic> sendLog = {
       "action": "player_logs",
       "log": "Download Campaign",
@@ -2104,6 +2107,7 @@ class MqttViewModel extends ChangeNotifier {
       try {
         final localPath = await _ensureLocalMediaUrl(
           originalUrl,
+          revision: contentRevision,
           onProgress: _updateCurrentFileProgress,
         );
         // Update the appropriate URL field
@@ -2239,7 +2243,7 @@ class MqttViewModel extends ChangeNotifier {
   }
 
   Future<String> _ensureLocalMediaUrl(String url,
-      {void Function(int received, int total)? onProgress}) async {
+      {String? revision, void Function(int received, int total)? onProgress}) async {
     final trimmed = url.trim();
 
     if (trimmed.startsWith('<svg') ||
@@ -2266,9 +2270,8 @@ class MqttViewModel extends ChangeNotifier {
     }
 
     if (Platform.isLinux) {
-      await LinuxConfiguration.instance.waitForDownload(destination: fullUrl);
       final local = await LinuxAssetCache.media.fetch(fullUrl,
-          refresh: true, onProgress: onProgress);
+          revision: revision ?? _linuxContentRevision, onProgress: onProgress);
       if (local == null) throw StateError('Media download is not currently allowed');
       return local;
     }
@@ -3103,6 +3106,11 @@ class MqttViewModel extends ChangeNotifier {
         return;
       }
       config.markContentUpdate();
+      // Persist the publication identity with its source manifest. Restarts
+      // reuse verified bytes offline; a new publish with a reused URL gets a
+      // different cache entry and cannot overwrite a currently playing file.
+      _linuxContentRevision = DateTime.now().microsecondsSinceEpoch.toString();
+      jsonObj['_linux_cache_revision'] = _linuxContentRevision;
     }
     if (jsonObj["action"] == "publish_playlist" ||
         jsonObj["action"] == "publish_campaign") {
@@ -3110,6 +3118,7 @@ class MqttViewModel extends ChangeNotifier {
       bool isSaved = await prefs.setString('jsonObj', jsonEncode(jsonObj));
 
       if (isSaved) {
+        if (Platform.isLinux) storedJsonObj = Map<String, dynamic>.from(jsonObj);
         print('Data successfully saved to SharedPreferences');
       } else {
         print('Failed to save data to SharedPreferences');

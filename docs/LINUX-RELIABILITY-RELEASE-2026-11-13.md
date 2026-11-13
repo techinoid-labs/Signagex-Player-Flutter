@@ -25,8 +25,9 @@ production promotion remains gated on the outstanding checks below.
 - Linux campaign and playlist downloads use a URL-hashed cache rather than
   basenames. Transfers are serialized for quota accounting, bounded in size,
   written to temporary files, checked for length and committed by rename.
-  A sidecar digest detects altered/truncated cached files. A new publication
-  refreshes a reused URL. Failed refreshes preserve the last complete file
+  A sidecar digest detects altered/truncated cached files. A persisted publication identity
+  refreshes a reused URL on a new publish and reuses verified files on restart.
+  Each publication has separate files so it cannot overwrite active old bytes. Failed refreshes preserve the last complete file
   and do not claim that it is fresh. Trigger cache reads also verify digests.
   Digests establish local integrity, not authenticity against a publisher hash.
 - Video controllers track position progress using a monotonic clock. Stalled
