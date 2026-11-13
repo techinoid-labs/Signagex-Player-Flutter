@@ -47,7 +47,21 @@ production promotion remains gated on the outstanding checks below.
   `0007,0005,0001,0002,0003,0004,0000`. Ubuntu is first; all fallback entries
   remain. Previous values are backed up under `/var/lib/signagex-player/`.
   Kiosk service remained active, PID 22771, zero automatic restarts.
-  A cold boot has not been performed as part of this change.
+  A subsequent controlled reboot did **not** establish recovery: the user
+  reported that the Byte loaded the other OS again, with no USB connected,
+  and Tailscale did not reconnect. The saved order alone is insufficient.
+  F7 -> Ubuntu (KINGSTON ...) remains the recovery route. Persistent firmware
+  entry/disk selection must be investigated after the correct Ubuntu is online.
+  Manual recovery confirmed two internal drives: the correct Ubuntu root is
+  `/dev/nvme0n1p2` (Kingston); the old UEFI OS entry points to `/dev/mmcblk0p1`.
+  The firmware order had reverted to eMMC first. The standard inactive-entry
+  command failed despite that entry being readable. A guarded update cleared
+  only its EFI load-option active bit, backed up the original bytes to
+  `/var/lib/signagex-player/Boot0005-before-inactive.bin`, and verified readback.
+  **A second automatic reboot still loaded the other OS**, confirmed by the
+  user. BIOS boot-device/BBS priorities and another automatic-boot check are
+  required. Do not mark this finding resolved. No partitions or bootloader
+  files were erased. A power-loss cold start is also open.
 - Player `signage-x86-d1a1d8` (LNX-02): replaced the confirmed offline-ISO
   `http://127.0.0.1:9/ubuntu` source with the Ubuntu HTTPS archive and changed
   the security source to HTTPS, keeping the original source file backup.
@@ -87,6 +101,16 @@ Linux privileged-helper regression tests run in the existing isolated QA
 container. Added coverage includes approval mismatch, corrupt rollback,
 dependency failure before installation, cache collision/corruption/refresh,
 position-progress deadlines and concurrent proof-of-play snapshots.
-Full Flutter analysis/tests and AMD64/ARM64 package builds run in GitHub Actions
-on the pushed commit. Record their actual results before promotion; a push is
-not a production deployment or completion of the outstanding audit gates.
+Source commit: `03ed248dd7fc012c921937ee70407624481f9d0f`.
+
+- [AMD64 CI](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/43351031937): success, including production/staging packages and staging publication.
+- [ARM64 CI](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/43351031986): success, including native compilation, package installation and staging publication.
+- Final AMD64 test job: **214 Flutter tests passed; 93 Python tests passed**.
+  GTK maintenance smoke and browser frame ASan/UBSan checks also passed.
+- Analyzer error gate passed with **635 findings**; this is not lint-clean.
+  The production feed was separately checked and still serves v87.
+- Superseded candidates were cancelled. No new candidate was installed on
+  either audited player or promoted to production.
+
+Green CI does not complete the outstanding audit gates. The failed automatic
+boot checks remain release-blocking device evidence.
