@@ -22,6 +22,28 @@ pairing or content screen must not hold a core (`top -H`: the main thread well
 under 10 %). Before v58 the GTK loop spun at 100 % of one core because Chromium's
 GLib work source was attached but never run; CEF now runs the loop itself.
 
+## Next release — production candidate (amd64)
+
+- Includes all changes on `linux` since v87: version/checksum-bound update
+  approval, cache integrity checks, bounded download retries, playback monitoring,
+  correct handling of compressed HTTP downloads, and persisted-publication
+  scoping for safe offline restarts. See the v91 rollout evidence for the earlier
+  Byte recovery and rotation checks.
+- Adds a PIN-protected **Keep mouse cursor visible** switch for X11 interactive
+  campaigns, a packaged cursor manager/service, and the cursor-hider dependency.
+  The non-secret preference survives restarts; the PIN verifier stays private.
+- Makes maintenance keyboard focus clear with a thick yellow outline, blue
+  button/checkbox highlighting, keyboard hints, and focus retention after actions.
+- Local Linux verification: 98 packaging/helper tests, 97 passed and one skipped
+  because the local container lacks patchelf/readelf. GTK offline keyboard and
+  maintenance smoke checks passed. Flutter/native CI and exact-artifact hardware
+  acceptance are required before promotion; version/checksum will be recorded
+  after CI assigns the build ID.
+- Older appliance images that force `X -nocursor` or launch another cursor hider
+  need the documented one-time image migration. Ben's TVM lab appliance has had
+  that migration and live cursor/focus checks. This package does not rebuild USB
+  images or add Wayland cursor controls. ARM64 publication remains separate.
+
 ## v87 — 2026-11-12 — production (amd64)
 
 - Source: `e5799ed92882f17937b468e75f1366960d35078b`, branch `linux`.

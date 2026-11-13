@@ -20,6 +20,7 @@ import sys
 import time
 
 CONFIG = pathlib.Path('/etc/signagex-player/maintenance.json')
+POINTER = pathlib.Path('/var/lib/signagex-pointer/preference.json')
 STATE = pathlib.Path('/var/lib/signagex-maintenance')
 NETWORK = '/usr/lib/signagex-player/network-helper'
 SELF = '/usr/lib/signagex-player/maintenance-helper'
@@ -77,6 +78,27 @@ def command(args, **kwargs):
     return subprocess.run(args, capture_output=True, text=True, timeout=20, **kwargs)
 
 
+def pointer_visible():
+    try:
+        return json.loads(POINTER.read_text()).get('visible') is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def set_pointer(visible):
+    if not isinstance(visible, bool):
+        raise ValueError('Choose whether to keep the mouse cursor visible')
+    # Public, non-secret preference; the PIN verifier remains root-only.
+    POINTER.parent.mkdir(mode=0o755, parents=True, exist_ok=True)
+    os.chmod(POINTER.parent, 0o755)
+    temporary = POINTER.with_suffix('.tmp')
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o644)
+    os.fchmod(fd, 0o644)
+    with os.fdopen(fd, 'w') as output:
+        json.dump({'visible': visible}, output)
+    temporary.replace(POINTER)
+
+
 def active(unit):
     return command(['systemctl', 'is-active', '--quiet', unit]).returncode == 0
 
@@ -117,14 +139,19 @@ def ssh_on():
 
 def dispatch(request, uid):
     if not isinstance(request, dict) or request.get('op') not in (
-            'unlock', 'status', 'wifi_connect', 'ssh_on', 'ssh_off', 'terminal'):
+            'unlock', 'status', 'wifi_connect', 'ssh_on', 'ssh_off', 'terminal', 'pointer'):
         raise ValueError('Unsupported maintenance operation')
     authenticate(request.get('pin'), uid)
     op = request['op']
     if op in ('status', 'unlock'):
         lease = STATE/'ssh-lease.json'
-        return {'phase': 'applied', 'detail': 'Maintenance unlocked', 'ssh_active': any(active(u) for u in SSH_UNITS),
+        return {'phase': 'applied', 'detail': 'Maintenance unlocked', 'pointer_visible': pointer_visible(), 'ssh_active': any(active(u) for u in SSH_UNITS),
                 'ssh_expires': json.loads(lease.read_text())['expires'] if lease.exists() else None}
+    if op == 'pointer':
+        set_pointer(request.get('visible'))
+        return {'phase': 'applied', 'pointer_visible': pointer_visible(),
+                'detail': 'Mouse cursor stays visible. Return to the player to use it.' if request['visible']
+                else 'Mouse cursor hides after two seconds without movement. Mouse clicks still work.'}
     if op == 'wifi_connect':
         # Reuse the existing validator, transient job and rollback, without PIN
         # material in the network request. No shell interpolation, including SSIDs.

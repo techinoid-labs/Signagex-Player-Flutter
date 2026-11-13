@@ -11,6 +11,11 @@ hand; record the CI build ID and package checksum when a build is produced.
    separate native console even when Flutter/CEF has exited or another window
    has keyboard focus. While SignageX has focus, typing **9700** (less than two
    seconds between digits) opens the same console. Neither sequence is a PIN.
+   Use **Tab / Shift+Tab** to move between controls. The focused control has a
+   thick yellow outline; buttons and checkboxes also receive a blue background
+   and white text. **Enter** activates buttons; **Space** toggles options. Focus
+   returns to the selected control after background work unless the operator
+   moved elsewhere. Unlocking still moves focus into the Wi-Fi name field.
 2. Read the hostname, addresses and network status without internet access.
 3. Enter the **device maintenance PIN**. This is separate from Ubuntu, Wi-Fi,
    pairing codes and BIOS credentials. There is no shared/default PIN.
@@ -22,6 +27,12 @@ hand; record the CI build ID and package checksum when a build is produced.
    sign-in page or WPA Enterprise require a separate provisioning flow.
 5. If needed, enable **local OpenSSH for 15 minutes**, explicitly turn it off,
    or open a **kiosk-account terminal**. Return with **Esc** or the return button.
+6. For an interactive campaign, enable **Keep mouse cursor visible**, then
+   return to the player. On X11 the preference applies within a few seconds
+   and persists across player/session restarts. Turning it off restores hiding
+   after two seconds without movement; mouse input is never disabled. Changing
+   this preference requires the maintenance PIN. Wayland cursor control is not
+   included in this change.
 
 The controls relock after two minutes without input. Five wrong PIN attempts
 cause a five-minute lockout persisted by the root helper. Wi-Fi passwords and
@@ -36,6 +47,51 @@ by the lease, preserving a pre-existing administrator SSH service. Explicit OFF
 stops local `ssh.socket` and `ssh.service`; **Tailscale SSH is separate**.
 No port is opened in the firewall by these controls. A firewall may still prevent
 SSH reachability; the console does not claim a successful remote connection.
+
+## X11 cursor provisioning
+
+The Debian package includes `signagex-cursor.service`, started alongside the
+supervised player through its systemd user-service dependency. It runs the
+unprivileged cursor manager, which owns only its own `unclutter` child. The
+root helper stores the non-secret visibility preference in
+`/var/lib/signagex-pointer/preference.json` in a root-owned, readable directory;
+the separate PIN verifier and its directory remain private.
+The packaged legacy X11 session also uses this manager when installed.
+
+Older appliance images may independently start `unclutter-xfixes` and launch X
+with `-nocursor`. Their provisioning must replace the old cursor-hiding command
+with the managed service and remove `-nocursor` from the dedicated kiosk X-server
+command. Apply the X-server change with one graphical-session restart. Merely
+stopping `unclutter` cannot override `X -nocursor`. Preserve other LightDM and
+Openbox settings; do not terminate unrelated desktop processes. Refresh the user
+systemd manager after deploying the units. AppImage-only installs do not install
+this protected service.
+
+Lab validation, 2026-11-13: installed the cursor helper, GTK menu and user service
+on TVM lab device `signage-x86-91a25e` as a local patch over player v87. Backups
+are under `/var/backups/signagex/cursor-menu-20261113T170751Z`. Replaced its image's
+independent `unclutter-xfixes` startup and removed `X -nocursor`, then restarted
+LightDM once. The player returned with the same pairing. Verified the protected
+helper switches the real hiding child on/off, the saved visible setting survives
+a cursor-service restart, and a pointer appears over the player after idle.
+Left visibility enabled. No payment, print, scan or customer-journey action was
+executed; the latest CMS content message marked its campaign paused. This lab
+patch is not a newly published production package or a full power-cycle test.
+
+The Linux regression suite passed 96 checks with one unrelated runpath check
+skipped because that container lacks patchelf/readelf. The GTK virtual-display
+test passed, including the new switch. A further helper test covers a private
+administrator umask: the public pointer preference remains readable while the
+PIN verifier remains private.
+
+Keyboard-focus follow-up, 2026-11-13: the GTK test traversed the actual focus
+chain forward/backward, skipped the hidden PIN field after unlock, checked
+visible outlines and preserved checkbox focus after an authenticated operation.
+Installed the menu-only patch on `signage-x86-91a25e` and visually verified the
+highlight after a real Tab keypress on the player. Rollback copy:
+`/var/backups/signagex/focus-menu-20261113T172010Z/signagex-maintenance`.
+Playback was not restarted for this follow-up. Source/package publication is
+still pending.
 
 ## Provisioning once, as an administrator
 

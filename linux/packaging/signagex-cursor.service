@@ -1,0 +1,8 @@
+[Unit]
+Description=SignageX kiosk mouse cursor preference
+PartOf=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/lib/signagex-player/cursor-manager
+Restart=on-failure
+RestartSec=3

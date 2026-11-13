@@ -1,6 +1,7 @@
 import importlib.machinery
 import importlib.util
 import json
+import os
 import pathlib
 import subprocess
 import tempfile
@@ -20,6 +21,7 @@ def load(name, path):
 packaging = pathlib.Path(__file__).parents[1]
 helper = load('maintenance_helper', packaging/'maintenance-helper')
 installer = load('maintenance_installer', packaging/'kiosk/enable-maintenance.py')
+cursor = load('cursor_manager', packaging/'cursor-manager')
 
 
 class MaintenanceTests(unittest.TestCase):
@@ -27,6 +29,7 @@ class MaintenanceTests(unittest.TestCase):
         self.temp = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.temp.name)
         self.patches = [patch.object(helper, 'CONFIG', self.root/'etc/maintenance.json'),
+                        patch.object(helper, 'POINTER', self.root/'etc/pointer.json'),
                         patch.object(helper, 'STATE', self.root/'state'),
                         patch.object(helper.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1001))]
         for item in self.patches:
@@ -50,7 +53,7 @@ class MaintenanceTests(unittest.TestCase):
             helper.dispatch(self.request(), 1001)
 
     def test_pin_and_bound_user_required_for_every_operation(self):
-        for op in ('unlock', 'status', 'wifi_connect', 'ssh_on', 'ssh_off', 'terminal'):
+        for op in ('unlock', 'status', 'wifi_connect', 'ssh_on', 'ssh_off', 'terminal', 'pointer'):
             with self.subTest(op=op), patch.object(helper, 'command') as command:
                 with self.assertRaisesRegex(ValueError, 'Incorrect'):
                     helper.dispatch(self.request(op, pin='12345678'), 1001)
@@ -58,6 +61,59 @@ class MaintenanceTests(unittest.TestCase):
                 with self.assertRaisesRegex(ValueError, 'not the configured'):
                     helper.dispatch(self.request(op), 1002)
                 command.assert_not_called()
+
+    def test_pointer_preference_survives_reload_without_exposing_pin(self):
+        self.assertFalse(helper.pointer_visible())
+        result = helper.dispatch(self.request('pointer', visible=True), 1001)
+        self.assertTrue(result['pointer_visible'])
+        self.assertEqual(json.loads(helper.POINTER.read_text()), {'visible': True})
+        self.assertEqual(helper.POINTER.stat().st_mode & 0o777, 0o644)
+        with patch.object(cursor, 'PREFERENCE', helper.POINTER):
+            self.assertTrue(cursor.visible())
+        helper.dispatch(self.request('pointer', visible=False), 1001)
+        self.assertFalse(helper.pointer_visible())
+
+    def test_pointer_rejects_non_boolean_without_changing_state(self):
+        for value in (None, 'false', 1, [], {}):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                helper.dispatch(self.request('pointer', visible=value), 1001)
+        self.assertFalse(helper.POINTER.exists())
+
+    def test_pointer_is_readable_even_with_private_administrator_umask(self):
+        helper.POINTER = self.root/'public/preference.json'
+        previous = os.umask(0o077)
+        try:
+            helper.dispatch(self.request('pointer', visible=True), 1001)
+        finally:
+            os.umask(previous)
+        self.assertEqual(helper.POINTER.parent.stat().st_mode & 0o777, 0o755)
+        self.assertEqual(helper.POINTER.stat().st_mode & 0o777, 0o644)
+        self.assertEqual(helper.CONFIG.stat().st_mode & 0o777, 0o600)
+
+    def test_invalid_pointer_state_defaults_to_auto_hide(self):
+        with patch.object(cursor, 'PREFERENCE', helper.POINTER):
+            for value in ('broken', 'null', '{"visible":"true"}'):
+                helper.POINTER.write_text(value)
+                self.assertFalse(cursor.visible())
+                self.assertFalse(helper.pointer_visible())
+
+    def test_cursor_only_stops_its_own_child_and_restarts_if_it_exits(self):
+        from unittest.mock import Mock
+        child = Mock()
+        child.poll.return_value = None
+        with patch.object(cursor.subprocess, 'Popen', return_value=child) as start:
+            manager = cursor.Cursor()
+            manager.apply(False)
+            manager.apply(False)
+            start.assert_called_once_with(['/usr/bin/unclutter', '-idle', '2', '-root'])
+            manager.apply(True)
+            child.terminate.assert_called_once()
+            child.wait.assert_called_once_with(timeout=3)
+            self.assertIsNone(manager.process)
+            manager.apply(False)
+            child.poll.return_value = 1
+            manager.apply(False)
+            self.assertEqual(start.call_count, 3)
 
     def test_five_failed_attempts_lock_out_correct_pin_across_invocations(self):
         with patch.object(helper.time, 'time', return_value=1000):

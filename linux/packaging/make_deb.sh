@@ -122,6 +122,10 @@ install -m 755 linux/packaging/network-helper "$ROOT/usr/lib/signagex-player/net
 install -m 644 linux/packaging/51-signagex-network.rules "$ROOT/usr/share/polkit-1/rules.d/51-signagex-network.rules"
 install -m 755 linux/packaging/maintenance-helper "$ROOT/usr/lib/signagex-player/maintenance-helper"
 install -m 755 linux/packaging/maintenance-console "$ROOT/usr/bin/signagex-maintenance"
+install -m 755 linux/packaging/cursor-manager "$ROOT/usr/lib/signagex-player/cursor-manager"
+mkdir -p "$ROOT/usr/lib/systemd/user/signagex-player.service.d"
+install -m 644 linux/packaging/signagex-cursor.service "$ROOT/usr/lib/systemd/user/signagex-cursor.service"
+printf '[Unit]\nWants=signagex-cursor.service\n' > "$ROOT/usr/lib/systemd/user/signagex-player.service.d/cursor.conf"
 install -m 644 linux/packaging/52-signagex-maintenance.rules "$ROOT/usr/share/polkit-1/rules.d/52-signagex-maintenance.rules"
 install -m 755 linux/packaging/kiosk/start-supervised.sh "$ROOT/usr/bin/signagex-player-start-supervised"
 channel_api=https://api.signagex.ai
@@ -157,7 +161,7 @@ Architecture: $DEB_ARCH
 Maintainer: SignageX <support@signagex.ai>
 Installed-Size: $INSTALLED_KB
 Conflicts: $CONFLICTING_PACKAGE
-Depends: xdotool, scrot, polkitd | policykit-1, pkexec, wireplumber, x11-xserver-utils, python3, python3-gi, gir1.2-gtk-3.0, xterm, python3-cryptography, python3-pil, curl, libva2, libva-drm2, libva-x11-2, libvdpau1,
+Depends: xdotool, unclutter | unclutter-xfixes, scrot, polkitd | policykit-1, pkexec, wireplumber, x11-xserver-utils, python3, python3-gi, gir1.2-gtk-3.0, xterm, python3-cryptography, python3-pil, curl, libva2, libva-drm2, libva-x11-2, libvdpau1,
  libgtk-3-0, libglib2.0-0, libstdc++6, libnss3, libnspr4,
  libxkbcommon0, libgbm1, libdrm2, libxcomposite1, libxdamage1, libxrandr2,
  libatk1.0-0, libatk-bridge2.0-0, libpango-1.0-0, libcairo2,

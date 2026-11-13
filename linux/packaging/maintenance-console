@@ -68,9 +68,26 @@ def main():
             self.window.connect('button-press-event', self.touch)
             self.window.connect('destroy', self.on_destroy)
             css = Gtk.CssProvider()
-            css.load_from_data(b'window { background: #111827; color: #f9fafb; } '
-                               b'label { font-size: 20px; } button, entry { font-size: 22px; padding: 12px; } '
-                               b'entry { color: #111827; background: #ffffff; }')
+            css.load_from_data(b'''
+                window { background: #111827; color: #f9fafb; }
+                label { font-size: 20px; }
+                button, entry, checkbutton, label { transition-duration: 0s; }
+                button, entry { font-size: 22px; padding: 12px; border: 3px solid transparent; }
+                button { color: #111827; background-image: none; background-color: #f3f4f6; }
+                entry { color: #111827; background: #ffffff; caret-color: #111827; }
+                checkbutton { padding: 10px; border: 3px solid transparent; border-radius: 6px; }
+                button:focus, checkbutton:focus {
+                    background-image: none; background-color: #1e3a8a;
+                    color: #ffffff; border-color: #fbbf24;
+                }
+                button:focus label, checkbutton:focus label { color: #ffffff; }
+                entry:focus { border-color: #1d4ed8; }
+                button:focus, entry:focus, checkbutton:focus, label:focus {
+                    outline-color: #fbbf24; outline-style: solid;
+                    outline-width: 3px; outline-offset: 2px;
+                }
+                .keyboard-hint { font-size: 18px; color: #d1d5db; }
+            ''')
             Gtk.StyleContext.add_provider_for_screen(Gdk.Screen.get_default(), css,
                                                      Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
             scroll = Gtk.ScrolledWindow()
@@ -81,6 +98,12 @@ def main():
 
             title = Gtk.Label(label='SignageX · Device maintenance')
             outer.pack_start(title, False, False, 0)
+            keyboard_hint = Gtk.Label(
+                label='Tab / Shift+Tab: move focus · Enter: activate buttons · Space: toggle options · Esc: return',
+                xalign=0)
+            keyboard_hint.set_line_wrap(True)
+            keyboard_hint.get_style_context().add_class('keyboard-hint')
+            outer.pack_start(keyboard_hint, False, False, 0)
             self.overview = Gtk.Label(label=socket.gethostname(), xalign=0)
             self.overview.set_selectable(True)
             self.overview.set_line_wrap(True)
@@ -117,6 +140,16 @@ def main():
             hint = Gtk.Label(label='A failed connection restores the previous network. Saved networks and pairing are kept.', xalign=0)
             hint.set_line_wrap(True)
             self.controls.pack_start(hint, False, False, 0)
+            self.pointer = Gtk.CheckButton(label='Keep mouse cursor visible')
+            self.pointer_value = False
+            self.pointer.connect('toggled', self.set_pointer)
+            self.controls.pack_start(self.pointer, False, False, 0)
+            self.pointer_note = Gtk.Label(label='Mouse clicks work in either mode. Changes apply within a few seconds and survive a restart.', xalign=0)
+            self.pointer_note.set_line_wrap(True)
+            self.controls.pack_start(self.pointer_note, False, False, 0)
+            if os.environ.get('XDG_SESSION_TYPE') == 'wayland':
+                self.pointer.set_sensitive(False)
+                self.pointer_note.set_text('Cursor visibility control is currently available in the X11 kiosk session.')
             self.support = Gtk.Label(label='Local SSH status: refresh to check', xalign=0)
             self.support.set_line_wrap(True)
             self.controls.pack_start(self.support, False, False, 0)
@@ -174,14 +207,22 @@ def main():
                 return
             self.busy = True
             self.message.set_text('Working… Please keep the player powered on.')
+            previous_focus = self.window.get_focus()
             self.controls.set_sensitive(False)
             self.auth.set_sensitive(False)
+            temporary_focus = self.window.get_focus()
 
             def finished(answer):
                 self.busy = False
                 if self.window:
                     self.controls.set_sensitive(True)
                     self.auth.set_sensitive(True)
+                    # Disabling a focused field can move GTK focus elsewhere.
+                    # Restore it after the operation unless the operator moved on.
+                    if (previous_focus is not None and previous_focus.get_mapped()
+                            and previous_focus.is_sensitive()
+                            and self.window.get_focus() == temporary_focus):
+                        previous_focus.grab_focus()
                     self.touch()
                     callback(answer)
                 return False
@@ -217,6 +258,12 @@ def main():
 
         def result(self, answer):
             self.message.set_text(answer.get('detail', 'No result'))
+            if 'pointer_visible' in answer:
+                # Refreshing state must not issue a second, unauthenticated change.
+                self.pointer.handler_block_by_func(self.set_pointer)
+                self.pointer_value = answer['pointer_visible'] is True
+                self.pointer.set_active(self.pointer_value)
+                self.pointer.handler_unblock_by_func(self.set_pointer)
             if 'ssh_active' in answer:
                 state = 'running' if answer['ssh_active'] else 'off'
                 expiry = answer.get('ssh_expires')
@@ -245,6 +292,18 @@ def main():
                 self.ssid.get_child().set_text(previous)
                 self.message.set_text('Choose a network, or type its name.')
             self.work(nearby_networks, show)
+
+        def set_pointer(self, *_):
+            if not self.pin:
+                return
+            request = {'op': 'pointer', 'pin': self.pin, 'visible': self.pointer.get_active()}
+            def applied(answer):
+                self.result(answer)
+                if answer.get('phase') != 'applied':
+                    self.pointer.handler_block_by_func(self.set_pointer)
+                    self.pointer.set_active(self.pointer_value)
+                    self.pointer.handler_unblock_by_func(self.set_pointer)
+            self.work(lambda: helper_request(request), applied)
 
         def connect_wifi(self, *_):
             password = self.password.get_text()

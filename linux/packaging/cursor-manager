@@ -1,0 +1,73 @@
+#!/usr/bin/python3
+"""X11 kiosk cursor policy; never disable mouse input or kill unrelated processes."""
+import fcntl
+import json
+import os
+import pathlib
+import signal
+import subprocess
+import time
+
+PREFERENCE = pathlib.Path('/var/lib/signagex-pointer/preference.json')
+
+
+def visible():
+    try:
+        return json.loads(PREFERENCE.read_text()).get('visible') is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+class Cursor:
+    def __init__(self):
+        self.process = None
+
+    def apply(self, keep_visible):
+        if keep_visible:
+            self.stop()
+        elif self.process is None or self.process.poll() is not None:
+            try:
+                arguments = ['--timeout', '2'] if 'xfixes' in str(pathlib.Path('/usr/bin/unclutter').resolve()) else ['-idle', '2', '-root']
+                self.process = subprocess.Popen(['/usr/bin/unclutter', *arguments])
+            except OSError:
+                self.process = None
+
+    def stop(self):
+        if self.process is not None:
+            if self.process.poll() is None:
+                self.process.terminate()
+                try:
+                    self.process.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.process.kill()
+                    self.process.wait(timeout=3)
+            self.process = None
+
+
+def main():
+    # unclutter controls X11 only; do not interfere with a Wayland compositor.
+    if not os.environ.get('DISPLAY') or os.environ.get('XDG_SESSION_TYPE') == 'wayland':
+        return
+    runtime = pathlib.Path(os.environ.get('XDG_RUNTIME_DIR', '/run/user/' + str(os.getuid())))
+    with (runtime/'signagex-cursor.lock').open('a') as lock:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return
+        running = True
+        def stop(*_):
+            nonlocal running
+            running = False
+        signal.signal(signal.SIGTERM, stop)
+        signal.signal(signal.SIGINT, stop)
+        cursor = Cursor()
+        try:
+            while running:
+                cursor.apply(visible())
+                time.sleep(1)
+        finally:
+            cursor.stop()
+
+
+if __name__ == '__main__':
+    main()

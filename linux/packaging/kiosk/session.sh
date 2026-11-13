@@ -4,10 +4,15 @@ export SIGNAGEX_KIOSK=1
 xset s off
 xset s noblank
 xset -dpms
-unclutter -idle 2 -root &
+if [ -f /usr/lib/signagex-player/cursor-manager ]; then
+  /usr/bin/python3 /usr/lib/signagex-player/cursor-manager &
+else
+  unclutter -idle 2 -root &
+fi
+cursor_pid=$!
 openbox &
 wm_pid=$!
-trap 'kill "$wm_pid" 2>/dev/null || true' EXIT HUP INT TERM
+trap 'kill "$wm_pid" "$cursor_pid" 2>/dev/null || true' EXIT HUP INT TERM
 # The root-owned file contains one absolute executable path, not shell code.
 IFS= read -r player < /etc/signagex-kiosk-player
 while :; do
