@@ -77,5 +77,22 @@ void main() {
       expect((await directory.list().toList()).any((f) => f.path.endsWith('.part')), isFalse);
     } finally { await server.close(force: true); await directory.delete(recursive: true); }
   });
+  test('gzip transfer length is checked in the saved representation', () async {
+    final directory = await Directory.systemTemp.createTemp('signagex-gzip-');
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    final payload = List.filled(1000, 42);
+    server.listen((request) async {
+      final wire = gzip.encode(payload);
+      request.response.headers.set(HttpHeaders.contentEncodingHeader, 'gzip');
+      request.response.contentLength = wire.length;
+      request.response.add(wire);
+      await request.response.close();
+    });
+    try {
+      final cache = LinuxAssetCache(directory: directory, maxBytes: 2000);
+      final path = await cache.fetch('http://127.0.0.1:${server.port}/compressed.bin');
+      expect(await File(path!).readAsBytes(), payload);
+    } finally { await server.close(force: true); await directory.delete(recursive: true); }
+  });
 
 }

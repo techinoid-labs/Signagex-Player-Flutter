@@ -84,7 +84,10 @@ class LinuxAssetCache {
       final request = await client.getUrl(uri);
       final response = await request.close().timeout(const Duration(seconds: 30));
       if (response.statusCode != 200) throw StateError('Media HTTP ${response.statusCode}');
-      final expected = response.contentLength;
+      // HttpClient reports the wire length even when it transparently
+      // decompresses gzip. Compare only lengths in the representation we save.
+      final expected = response.compressionState == HttpClientResponseCompressionState.decompressed
+          ? -1 : response.contentLength;
       if (expected > maxBytes) throw StateError('Asset exceeds cache size limit');
       var bytes = 0;
       await for (final entry in root.list()) {
