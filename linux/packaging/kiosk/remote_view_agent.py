@@ -8,7 +8,7 @@ input, since neither X11 tool reaches a Wayland compositor.
 Only encrypted frames/receipts and a public identity leave stdout. Commands are
 verified against the packaged server key before decryption or OS interaction.
 """
-import base64, collections, io, json, math, os, pathlib, queue, subprocess, sys, tempfile, threading, time, uuid
+import base64, collections, io, json, math, os, pathlib, queue, re, subprocess, sys, tempfile, threading, time, uuid
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
@@ -47,6 +47,16 @@ def output_transform(listing):
             if first is None: first = transform
     value = transform if enabled and transform else first
     return value if value in ('normal','90','180','270') else 'normal'
+
+def x11_transform(connected):
+    """xrandr's rotation of the connected output (primary first), in the same
+    counter-clockwise terms: left = '90', inverted = '180', right = '270'."""
+    lines = sorted((l for l in connected.splitlines() if ' connected' in l),
+                   key=lambda l: ' connected primary' not in l)
+    for line in lines[:1]:
+        m = re.search(r' connected(?: primary)? \d+x\d+\+\d+\+\d+ (left|right|inverted)\b', line)
+        if m: return {'left':'90','inverted':'180','right':'270'}[m.group(1)]
+    return 'normal'
 
 def upright_point(x, y, transform):
     """A 0..1 point on the turned picture, as a 0..1 point on the upright layout."""
@@ -210,6 +220,7 @@ class Remote:
         # Include rotation so a square or identically-sized output is fenced too.
         rotation = run('xrandr','--current')
         connected = '\n'.join(line for line in rotation.splitlines() if ' connected' in line)
+        self.transform = x11_transform(connected)
         return width, height, f'{width}x{height}:{connected}'
 
     def execute(self, command):
@@ -229,6 +240,9 @@ class Remote:
                 x,y = value['x'],value['y']
                 if any(isinstance(v,bool) or not isinstance(v,(int,float)) or not math.isfinite(v) or not 0 <= v <= 1 for v in (x,y)):
                     raise ValueError('Invalid coordinates')
+                # The CMS clicked on the picture as the screen shows it;
+                # xdotool works in the upright (rotated root) layout.
+                x,y = upright_point(x,y,self.transform)
                 return str(min(width-1,int(x*width))),str(min(height-1,int(y*height)))
             # The player also gets Back, so a kiosk page (no browser history) goes
             # one screen back; the key below still covers everything else.
@@ -361,10 +375,12 @@ class Remote:
                 geometry = f'{width}x{height}:wayland:{self.transform}'
             else: run('scrot','-z','-q','75',str(path))
             with Image.open(path) as image:
-                if self.wayland and PHYSICAL_TURN.get(self.transform): image = image.rotate(PHYSICAL_TURN[self.transform], expand=True)
+                if PHYSICAL_TURN.get(self.transform): image = image.rotate(PHYSICAL_TURN[self.transform], expand=True)
                 image.thumbnail((1280,1280) if self.high else (800,800))
                 output = io.BytesIO(); image.convert('RGB').save(output,format='JPEG',quality=78 if self.high else 60)
         if not self.active or self.monotonic() >= self.deadline: return
+        # X11 sizes are the upright layout; the CMS gets the picture as shown.
+        if not self.wayland and self.transform in ('90','270'): width,height = height,width
         if self.wayland: foreground = True  # the only client of the kiosk compositor
         else:
             try: foreground = 'signagex' in run('xdotool','getactivewindow','getwindowname').lower()

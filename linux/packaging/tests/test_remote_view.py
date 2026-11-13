@@ -113,6 +113,22 @@ class RemoteProtocolTests(unittest.TestCase):
         signed=agent.ota_reply(self.remote,{'id':10,'ota_sign':'{}'})
         self.assertEqual((signed['id'],signed['ota_signed']['data']),(10,'{}'))
         self.assertEqual(agent.ota_reply(self.remote,{'id':'x','ota_sign':'x'*9000}),{'ota_rejected':'invalid','id':None})
+    def test_x11_rotation_is_read_from_xrandr(self):
+        line='HDMI-1 connected primary 1920x1080+0+0 inverted (normal left inverted right x axis y axis) 1600mm x 900mm'
+        self.assertEqual(agent.x11_transform(line),'180')
+        self.assertEqual(agent.x11_transform(line.replace(' inverted (',' left (')),'90')
+        self.assertEqual(agent.x11_transform(line.replace(' inverted (',' right (')),'270')
+        self.assertEqual(agent.x11_transform(line.replace(' inverted (',' (')),'normal')
+        self.assertEqual(agent.x11_transform('DP-1 connected 1920x1080+1920+0 left (n)\n'+line),'180')  # primary wins
+    def test_x11_click_on_a_rotated_screen_lands_on_the_upright_spot(self):
+        def geometry():
+            self.remote.transform='180'
+            return (1920,1080,'geometry')
+        with patch.object(self.remote,'geometry',side_effect=geometry),patch.object(agent,'run') as run:
+            self.remote.receive(self.command())  # join the session first
+            self.remote.frames['frame']=(100,'geometry')
+            self.remote.receive(self.command(revision=2,command_id='command-2',input={'action':'click','x':0.25,'y':0.25,'frame_id':'frame'}))
+            run.assert_called_once_with('xdotool','mousemove','--sync','1440','810','click','1')
     def test_input_requires_controller_and_recent_frame_geometry(self):
         with patch.object(self.remote,'geometry',return_value=(1024,600,'geometry')),patch.object(agent,'run') as run:
             self.remote.receive(self.command(input={'action':'click','x':0.5,'y':0.5,'frame_id':'missing'}))

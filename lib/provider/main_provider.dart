@@ -78,7 +78,7 @@ class _MqttProviderState extends State<MqttProvider> {
             onKeyEvent: (_,event) => Platform.isLinux && event is KeyDownEvent && LinuxInteractivity.instance.key(event.logicalKey.keyLabel,consumeOnly:true) ? KeyEventResult.handled : KeyEventResult.ignored,
             child: GestureDetector(
               onTapUp: _onTap,
-              child: LinuxConfiguredSurface(applySchedule: [MqttState.campaignScreen,MqttState.playlistScreen,MqttState.noContent].contains(viewModel.state),child: Platform.isLinux ? LinuxPluginHost(child: LinuxKioskSurface(state: viewModel.state, child: LinuxTriggerSurface(child: _linuxScreen(viewModel.state)))) : _getScreenForState(viewModel.state)),
+              child: LinuxConfiguredSurface(applySchedule: [MqttState.campaignScreen,MqttState.playlistScreen,MqttState.noContent].contains(viewModel.state),child: Platform.isLinux ? LinuxPluginHost(child: LinuxTriggerSurface(child: LinuxKioskSurface(state: viewModel.state, child: _linuxScreen(viewModel.state)))) : _getScreenForState(viewModel.state)),
             ),
           );
         },
