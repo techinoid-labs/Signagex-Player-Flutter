@@ -22,7 +22,21 @@ pairing or content screen must not hold a core (`top -H`: the main thread well
 under 10 %). Before v58 the GTK loop spun at 100 % of one core because Chromium's
 GLib work source was attached but never run; CEF now runs the loop itself.
 
-## Next release — production candidate (amd64)
+## v92 — 2026-11-13 — production (amd64)
+
+- Source: `97167bf19bf938b1c9d90354f9afc41996cdf9db`, branch `linux`.
+- [Build/test run](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/43473902724)
+  and [production promotion](https://github.com/techinoid-labs/Signagex-Player-Flutter/actions/runs/43477198979) passed.
+- The exact production artifact passed installation, fresh build/PID-bound health,
+  pairing preservation and live protected maintenance-menu checks on Ben's TVM
+  lab appliance `signage-x86-91a25e` before promotion. No automatic restarts in
+  follow-up; sampled idle main-thread CPU was 0% of one core.
+- Download: https://norwin.sfo3.digitaloceanspaces.com/player-releases/production/linux/signagex-player-production-92_amd64.deb
+- SHA-256: `9d996f2f2aac1d94c58e0b49aa70a80d05d72f97efe3cd23de9dbc36f08dc981`.
+- Package size: 143,565,180 bytes. Production feed version/checksum verified by
+  the promotion workflow. Independent public download returned HTTP 200 with the
+  correct `.deb` filename; SHA-256 and byte-for-byte CI artifact comparison passed.
+  [Validation evidence and limits](LINUX-QA-v92-2026-11-13.md).
 
 - Includes all changes on `linux` since v87: version/checksum-bound update
   approval, cache integrity checks, bounded download retries, playback monitoring,
@@ -36,9 +50,9 @@ GLib work source was attached but never run; CEF now runs the loop itself.
   button/checkbox highlighting, keyboard hints, and focus retention after actions.
 - Local Linux verification: 98 packaging/helper tests, 97 passed and one skipped
   because the local container lacks patchelf/readelf. GTK offline keyboard and
-  maintenance smoke checks passed. Flutter/native CI and exact-artifact hardware
-  acceptance are required before promotion; version/checksum will be recorded
-  after CI assigns the build ID.
+  maintenance smoke checks passed. CI passed all 214 Flutter tests and 98 Linux
+  helper/package tests; analyzer error gate and GTK keyboard/maintenance checks
+  also passed. Exact-artifact hardware acceptance is recorded above.
 - Older appliance images that force `X -nocursor` or launch another cursor hider
   need the documented one-time image migration. Ben's TVM lab appliance has had
   that migration and live cursor/focus checks. This package does not rebuild USB

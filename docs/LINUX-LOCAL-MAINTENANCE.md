@@ -1,9 +1,9 @@
 # Local device maintenance
 
-Status: integrated into `linux`; release validation is recorded in LINUX-RELEASES.md.
-Public player v81 does not gain these controls until a new Debian package and
-the appliance provisioning change are installed. Do not assign a release ID by
-hand; record the CI build ID and package checksum when a build is produced.
+Status: integrated into `linux`. The base console shipped in production v87;
+cursor visibility and clearer keyboard focus shipped in production v92 (AMD64).
+Release validation is recorded in LINUX-RELEASES.md. Per-device provisioning is
+still required; installing a package alone does not create a maintenance PIN.
 
 ## Operator flow
 
@@ -76,13 +76,13 @@ helper switches the real hiding child on/off, the saved visible setting survives
 a cursor-service restart, and a pointer appears over the player after idle.
 Left visibility enabled. No payment, print, scan or customer-journey action was
 executed; the latest CMS content message marked its campaign paused. This lab
-patch is not a newly published production package or a full power-cycle test.
+patch preceded the v92 package acceptance below and was not a full power-cycle test.
 
-The Linux regression suite passed 96 checks with one unrelated runpath check
-skipped because that container lacks patchelf/readelf. The GTK virtual-display
-test passed, including the new switch. A further helper test covers a private
-administrator umask: the public pointer preference remains readable while the
-PIN verifier remains private.
+The final local Linux regression suite passed 97 checks with one unrelated
+runpath check skipped because that container lacks patchelf/readelf; CI passed
+all 98. The GTK virtual-display test passed, including the new switch. A helper
+test covers a private administrator umask: the public pointer preference remains
+readable while the PIN verifier remains private.
 
 Keyboard-focus follow-up, 2026-11-13: the GTK test traversed the actual focus
 chain forward/backward, skipped the hidden PIN field after unlock, checked
@@ -90,8 +90,10 @@ visible outlines and preserved checkbox focus after an authenticated operation.
 Installed the menu-only patch on `signage-x86-91a25e` and visually verified the
 highlight after a real Tab keypress on the player. Rollback copy:
 `/var/backups/signagex/focus-menu-20261113T172010Z/signagex-maintenance`.
-Playback was not restarted for this follow-up. Source/package publication is
-still pending.
+Playback was not restarted for that menu-only follow-up. These changes are now
+included in production v92. The exact package subsequently passed installation,
+pairing preservation, real PIN unlock, cursor changes and live keyboard focus on
+this TVM lab player; see [v92 acceptance](LINUX-QA-v92-2026-11-13.md).
 
 ## Provisioning once, as an administrator
 
