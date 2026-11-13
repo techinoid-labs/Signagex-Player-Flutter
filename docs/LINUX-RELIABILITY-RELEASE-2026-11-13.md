@@ -60,8 +60,12 @@ production promotion remains gated on the outstanding checks below.
   `/var/lib/signagex-player/Boot0005-before-inactive.bin`, and verified readback.
   **A second automatic reboot still loaded the other OS**, confirmed by the
   user. BIOS boot-device/BBS priorities and another automatic-boot check are
-  required. Do not mark this finding resolved. No partitions or bootloader
-  files were erased. A power-loss cold start is also open.
+  required at that stage. No partitions or bootloader files were erased.
+  **Subsequent operator fix:** BIOS FIXED BOOT ORDER had Hard Disk/UEFI OS
+  ahead of NVMe/Ubuntu. The operator selected Kingston/Ubuntu as Boot Option
+  #1 and saved with F4. Automatic normal reboots then passed, including a
+  further v87 reboot and the installed v91 reboot. A power-loss cold start
+  remains open. See [v91 device QA](LINUX-QA-v91-2026-11-13.md).
 - Player `signage-x86-d1a1d8` (LNX-02): replaced the confirmed offline-ISO
   `http://127.0.0.1:9/ubuntu` source with the Ubuntu HTTPS archive and changed
   the security source to HTTPS, keeping the original source file backup.
@@ -109,8 +113,12 @@ Source commit: `03ed248dd7fc012c921937ee70407624481f9d0f`.
   GTK maintenance smoke and browser frame ASan/UBSan checks also passed.
 - Analyzer error gate passed with **635 findings**; this is not lint-clean.
   The production feed was separately checked and still serves v87.
-- Superseded candidates were cancelled. No new candidate was installed on
-  either audited player or promoted to production.
+- Superseded candidates were cancelled. A subsequent controlled rollout
+  installed v91 only on the Byte; the other player remains unchanged.
+  See [v91 device QA](LINUX-QA-v91-2026-11-13.md) for recovery fault injection,
+  remaining tests and the in-progress 24-hour kiosk monitor. No fleet-wide
+  production promotion was performed.
 
-Green CI does not complete the outstanding audit gates. The failed automatic
-boot checks remain release-blocking device evidence.
+Green CI does not complete the outstanding audit gates. The BIOS change passed
+normal boot checks, while electrical power-loss acceptance, completed endurance
+results and the other security/reliability gates above remain open.
