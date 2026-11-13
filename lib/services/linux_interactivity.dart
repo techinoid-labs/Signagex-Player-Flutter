@@ -21,6 +21,22 @@ class LinuxInteractivity extends ChangeNotifier {
   DateTime _lastInput = DateTime.now();
   final Set<String> _fired = {};
   bool Function(Map<String, dynamic>) allowed = (_) => true;
+
+  /// True while a kiosk campaign covers the screen. Then no trigger plays
+  /// (taps on the kiosk belong to the kiosk), except a Local API trigger set
+  /// to play on top, which shows above it (emergency messages).
+  bool Function() kioskCovering = () => false;
+
+  static bool _passesKiosk(Map<String, dynamic> item, String source) =>
+      source == 'local_api' && item['play_on_top'] == true;
+
+  /// A kiosk just started covering the screen: a trigger playing full screen
+  /// ends (it would otherwise hide the kiosk) and nothing queued follows.
+  void yieldToKiosk() {
+    if (active == null || overlay) return;
+    _queue.clear();
+    finish();
+  }
   Future<void> Function(String, String)? event;
   bool get overlay => active?['item']?['play_on_top'] == true;
 
@@ -221,6 +237,17 @@ class LinuxInteractivity extends ChangeNotifier {
     if (matching.isEmpty) return false;
     final item = matching.first;
     if (source == 'on_demand' && item['on_demand'] != true) return false;
+    if (kioskCovering() && !_passesKiosk(item, source)) {
+      // Someone asked for it explicitly: say why nothing happened. Touches,
+      // keys and timers stay silent (a kiosk session is full of taps).
+      if (source == 'on_demand' || source == 'local_api') {
+        unawaited(event?.call(
+                'Trigger ${item['name'] ?? id} not played: a kiosk campaign is showing on this screen',
+                'warning') ??
+            Future.value());
+      }
+      return false;
+    }
     final triggers = item['triggers'] as List? ?? [];
     if (triggers.isEmpty) return false;
     final trigger = Map<String, dynamic>.from(triggers.first);
@@ -311,6 +338,8 @@ class LinuxInteractivity extends ChangeNotifier {
 
   List<List<double>> captureRegions(double width, double height) {
     final result = <List<double>>[];
+    // Over a kiosk, touch regions would steal the kiosk's taps.
+    if (kioskCovering()) return result;
     for (final item in items) {
       if (item['touch_region'] != true ||
           item['propagate'] == true ||

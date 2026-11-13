@@ -5,12 +5,15 @@ import 'linux_configuration.dart';
 import 'linux_interactivity.dart';
 import 'linux_playback_health.dart';
 import 'linux_diagnostics.dart';
+import 'linux_kiosk_campaign.dart' show KioskCampaignService;
 
 class LinuxPlaybackGate {
   static final instance = LinuxPlaybackGate._();
   LinuxPlaybackGate._() {
     LinuxConfiguration.instance.addListener(update);
     LinuxInteractivity.instance.addListener(update);
+    // Signage video pauses (and goes quiet) while a kiosk covers the screen.
+    KioskCampaignService.instance.addListener(update);
   }
   final Stopwatch _clock = Stopwatch()..start();
   final Map<VideoPlayerController, LinuxPlaybackHealth> _health = {};
@@ -59,7 +62,8 @@ class LinuxPlaybackGate {
     final triggers = LinuxInteractivity.instance;
     return LinuxConfiguration.instance.working &&
         (_players[controller] == true ? triggers.active != null
-            : triggers.active == null || triggers.overlay);
+            : (triggers.active == null || triggers.overlay) &&
+                !KioskCampaignService.instance.showing);
   }
 
   void _checkProgress(VideoPlayerController controller) {

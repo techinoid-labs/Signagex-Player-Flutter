@@ -28,6 +28,7 @@ import '../views/no_content_view.dart';
 import '../widgets/center_image_widget.dart';
 import '../widgets/text_widget.dart';
 import '../services/linux_pop.dart';
+import '../services/linux_kiosk_campaign.dart' show KioskCampaignService;
 import '../services/data_feed_binding.dart';
 import '../widgets/feed_bound.dart';
 
@@ -1405,6 +1406,8 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
     final id = _resolvedMediaAt(_currentMediaIndex).itemId;
     if (id == null || id.isEmpty) return;
     final campaignId = widget.campaignId;
+    // Signage under a kiosk campaign is not seen by anyone: not a play.
+    if (KioskCampaignService.instance.showing && !(campaignId?.startsWith('trigger:') ?? false)) return;
     var reason = 'scheduled';
     if (campaignId?.startsWith('trigger:') ?? false) {
       reason = 'interactivity';

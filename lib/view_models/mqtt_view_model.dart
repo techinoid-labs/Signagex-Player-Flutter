@@ -140,6 +140,13 @@ class MqttViewModel extends ChangeNotifier {
     _mqttClientService.onRemoteMessageReceived = _secureRemote.receive;
     final triggers = LinuxInteractivity.instance;
     triggers.event = config.event;
+    // A kiosk campaign owns the screen while it shows: triggers wait, and one
+    // playing full screen ends when the kiosk starts.
+    final kiosk = KioskCampaignService.instance;
+    triggers.kioskCovering = () => kiosk.showing;
+    kiosk.addListener(() {
+      if (kiosk.showing) triggers.yieldToKiosk();
+    });
     triggers.allowed = (item) {
       if (!config.working || storeState != true || _topic.isEmpty || _state == MqttState.playerStopped || _storedApiResponse?['paired'] != true) return false;
       try {
@@ -2388,7 +2395,9 @@ class MqttViewModel extends ChangeNotifier {
 
   Future<void> reportAdProofOfPlay(AdProofOfPlayRequest request) async {
     if (Platform.isLinux && (!LinuxConfiguration.instance.working ||
-        (LinuxInteractivity.instance.active != null && !LinuxInteractivity.instance.overlay && !request.campaignId.startsWith('trigger:')))) return;
+        (LinuxInteractivity.instance.active != null && !LinuxInteractivity.instance.overlay && !request.campaignId.startsWith('trigger:')) ||
+        // Signage under a kiosk is not seen by anyone: not a play.
+        (KioskCampaignService.instance.showing && !request.campaignId.startsWith('trigger:')))) return;
     final url = '$baseurl$adCampaignProofOfPlayPath';
     if (playerCode.isEmpty) {
       print('[AdPoP] Skipped: player_code is empty (POST $url)');
@@ -2849,6 +2858,16 @@ class MqttViewModel extends ChangeNotifier {
     final id = data['campaign_id']?.toString();
     final repeat = int.tryParse('${data['repeat'] ?? 1}') ?? 1;
     final mode = data['mode']?.toString() ?? 'play';
+    if (Platform.isLinux && KioskCampaignService.instance.showing) {
+      // It would play hidden under the kiosk: say so instead.
+      _mqttClientService.publish(topic, jsonEncode({
+        'action': 'player_logs',
+        'log': 'On-demand $id not played: a kiosk campaign is showing on this screen',
+        'type': 'warning',
+        'date_time': DateTime.now().toIso8601String(),
+      }), retain: false);
+      return;
+    }
     final campaigns = _campaignModel?.data?.playerCampaigns ?? const <Campaign>[];
     final index = campaigns.indexWhere((c) => c.campaignId == id);
     if (index < 0) {
