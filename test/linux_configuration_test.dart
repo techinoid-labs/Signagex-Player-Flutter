@@ -128,4 +128,112 @@ void main() {
     expect(calls.where((call)=>call.first=='systemctl').length,1);
   });
 
+  group('no screen detected', () {
+    // A stateful xrandr: outputs stay as the commands leave them.
+    late Map<String, Map<String, dynamic>> outputs;
+    late List<Map<String, dynamic>> reports;
+    String query() => outputs.entries.map((e) {
+      final o = e.value;
+      final geometry = o['mode'] == null ? '' : ' ${o['mode']}+0+0';
+      final rotation = o['mode'] == null || o['rotate'] == 'normal' ? '' : ' ${o['rotate']}';
+      return '${e.key} ${o['connected'] ? 'connected' : 'disconnected'}${o['primary'] == true ? ' primary' : ''}$geometry$rotation (normal left inverted right x axis y axis)';
+    }).join('\n');
+    LinuxConfiguration screens() => LinuxConfiguration(command: (exe, args) async {
+      calls.add([exe, ...args]);
+      if (exe != 'xrandr') return '';
+      if (args.first == '--query') return query();
+      if (args.first == '--output') {
+        final o = outputs[args[1]]!;
+        if (args.contains('--off')) o['mode'] = null;
+        if (args.contains('--mode')) o['mode'] = '1920x1080';
+        if (args.contains('--primary')) {
+          for (final other in outputs.values) {
+            other['primary'] = false;
+          }
+          o['primary'] = true;
+        }
+        if (args.contains('--rotate')) o['rotate'] = args[args.indexOf('--rotate') + 1];
+      }
+      return '';
+    });
+    Map<String, dynamic> port({bool connected = false, String? mode}) =>
+        {'connected': connected, 'mode': mode, 'rotate': 'normal', 'primary': false};
+    setUp(() {
+      config.close();
+      outputs = {'DP-1': port(), 'HDMI-1': port(), 'HDMI-2': port()};
+      reports = [];
+      config = screens()..report = (ack) async => reports.add(ack);
+    });
+    tearDown(() => LinuxConfiguration.debugKioskOverride = null);
+
+    test('xrandr output lines parse with size, primary and rotation', () {
+      final parsed = XOutput.parse('Screen 0: minimum 320 x 200, current 1080 x 1920\n'
+          'HDMI-1 connected primary 1080x1920+0+0 right (normal left inverted right x axis y axis) 0mm x 0mm\n'
+          '   1920x1080     60.00*\n'
+          'HDMI-2 disconnected (normal left inverted right x axis y axis)\n'
+          'DP-1 disconnected 1920x1080+1080+0 (normal left inverted right x axis y axis)');
+      expect(parsed.map((o) => o.name), ['HDMI-1', 'HDMI-2', 'DP-1']);
+      expect(parsed[0].connected && parsed[0].primary && parsed[0].active, isTrue);
+      expect([parsed[0].width, parsed[0].height, parsed[0].rotation], [1080, 1920, 'right']);
+      expect(parsed[1].active, isFalse);
+      expect([parsed[2].connected, parsed[2].active, parsed[2].rotation], [false, true, 'normal']);
+      expect(XOutput.pick(parsed)!.name, 'HDMI-1');
+      expect(XOutput.pick(parsed.skip(1).toList())!.name, 'DP-1');
+    });
+
+    test('the kiosk drives HDMI at 1080p and still turns the screen to portrait', () async {
+      LinuxConfiguration.debugKioskOverride = true;
+      final ack = await config.apply({'configuration_revision': 1, 'screen_rotation': '90'});
+      expect(calls, contains(equals(['xrandr', '--addmode', 'HDMI-1', LinuxConfiguration.fallbackMode])));
+      expect(calls, contains(equals(['xrandr', '--output', 'HDMI-1', '--mode', LinuxConfiguration.fallbackMode, '--primary'])));
+      expect(outputs['HDMI-1']!['rotate'], 'right');
+      expect(ack['results']['screen_rotation']['status'], 'applied');
+      expect(outputs['DP-1']!['mode'], isNull);
+    });
+
+    test('the kiosk keeps a 1080p screen even with no rotation set', () async {
+      LinuxConfiguration.debugKioskOverride = true;
+      await config.start();
+      expect(outputs['HDMI-1']!['mode'], '1920x1080');
+      calls.clear();
+      await config.tick();
+      expect(calls.where((c) => c.contains('--addmode')), isEmpty, reason: 'already running');
+    });
+
+    test('outside the kiosk a rotation waits for a screen, then applies and reports', () async {
+      LinuxConfiguration.debugKioskOverride = false;
+      final ack = await config.apply({'configuration_revision': 1, 'screen_rotation': '90'});
+      expect(ack['results']['screen_rotation']['status'], 'pending');
+      expect(config.values['screen_rotation'], '90');
+      expect(outputs.values.every((o) => o['mode'] == null), isTrue);
+      outputs['HDMI-2'] = port(connected: true, mode: '1920x1080');
+      await config.tick();
+      expect(outputs['HDMI-2']!['rotate'], 'right');
+      expect(config.results['screen_rotation']['status'], 'applied');
+      expect(reports.single['results']['screen_rotation']['status'], 'applied');
+    });
+
+    test('a real screen replaces the stand-in and gets the rotation too', () async {
+      LinuxConfiguration.debugKioskOverride = true;
+      await config.apply({'configuration_revision': 1, 'screen_rotation': '90'});
+      expect(outputs['HDMI-1']!['mode'], '1920x1080');
+      outputs['HDMI-2'] = port(connected: true, mode: '1920x1080');
+      await config.tick();
+      expect(outputs['HDMI-1']!['mode'], isNull, reason: 'stand-in turned off');
+      expect(outputs['HDMI-2']!['rotate'], 'right');
+    });
+
+    test('a screen that comes back unrotated is turned again, once', () async {
+      LinuxConfiguration.debugKioskOverride = true;
+      outputs['HDMI-1'] = port(connected: true, mode: '1920x1080');
+      await config.apply({'configuration_revision': 1, 'screen_rotation': '270'});
+      expect(outputs['HDMI-1']!['rotate'], 'left');
+      outputs['HDMI-1']!['rotate'] = 'normal'; // swapped or re-plugged
+      await config.tick();
+      expect(outputs['HDMI-1']!['rotate'], 'left');
+      calls.clear();
+      await config.tick();
+      expect(calls.where((c) => c.contains('--rotate')), isEmpty);
+    });
+  });
 }

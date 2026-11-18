@@ -123,6 +123,10 @@ class MqttViewModel extends ChangeNotifier {
   Future<void> _startLinuxManagement() async {
     final config = LinuxConfiguration.instance;
     config.event = (message,type) => LinuxDiagnostics.instance.record(message,type);
+    // A rotation that waited for a screen tells the CMS once it is applied.
+    config.report = (ack) async {
+      if (_topic.isNotEmpty && _mqttClientService.isConnected) _mqttClientService.publishSyncAck(_topic, jsonEncode(ack));
+    };
     await config.start();
     _secureRemote.allowed = () => storeState == true && _storedApiResponse?['paired'] == true && _state != MqttState.playerStopped && _mqttClientService.isConnected;
     _secureRemote.publish = (topic,payload,retained) {
