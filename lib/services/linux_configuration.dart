@@ -78,7 +78,29 @@ class LinuxConfiguration extends ChangeNotifier {
 
   /// The SignageX kiosk session (SIGNAGEX_KIOSK=1) always starts the player at
   /// boot itself and runs no XDG autostart, so "Launch on boot" cannot apply there.
-  static bool get kiosk => Platform.environment['SIGNAGEX_KIOSK'] == '1';
+  static bool get kiosk =>
+      debugKioskOverride ?? Platform.environment['SIGNAGEX_KIOSK'] == '1';
+
+  /// Tests set this to exercise the kiosk-only screen fallback.
+  @visibleForTesting
+  static bool? debugKioskOverride;
+
+  /// Sends a fresh settings acknowledgement when a setting changes state on
+  /// its own (a rotation that waited for a screen), not only after a CMS message.
+  Future<void> Function(Map<String, dynamic> ack)? report;
+
+  /// The 1080p mode the kiosk drives an output with when no screen is detected.
+  static const fallbackMode = 'signagex_1920x1080';
+  static const _fallbackModeline = [
+    '173.00', '1920', '2048', '2248', '2576', '1080', '1083', '1088', '1120',
+    '-hsync', '+vsync'
+  ];
+  static const rotations = {
+    '0': 'normal',
+    '90': 'right',
+    '180': 'inverted',
+    '270': 'left'
+  };
 
   /// Brightness is applied with xrandr, which only drives X11 outputs, so on
   /// the Wayland (cage) kiosk it is reported as unsupported. Rotation works
@@ -175,6 +197,12 @@ class LinuxConfiguration extends ChangeNotifier {
           await _validateAndApply(key, values[key]);
         } on UnsupportedError catch (error) {
           results[key] = {'status': 'unsupported', 'message': error.message};
+        } on _WaitingForScreen catch (error) {
+          results[key] = {
+            'status': 'pending',
+            'value': values[key],
+            'message': 'Waiting for a screen: ${error.message}'
+          };
         } catch (error) {
           results[key] = {'status': 'failed', 'message': error.toString()};
         }
@@ -281,6 +309,14 @@ class LinuxConfiguration extends ChangeNotifier {
         };
       } on UnsupportedError catch (error) {
         results[key] = {'status': 'unsupported', 'message': error.message};
+      } on _WaitingForScreen catch (error) {
+        // Kept, so the tick applies it the moment a screen answers.
+        values[key] = value;
+        results[key] = {
+          'status': 'pending',
+          'value': value,
+          'message': 'Waiting for a screen: ${error.message}'
+        };
       } catch (error) {
         results[key] = {
           'status': 'failed',
@@ -306,13 +342,76 @@ class LinuxConfiguration extends ChangeNotifier {
       };
 
   Future<String> _output() async {
-    final output = await command('xrandr', ['--query']);
-    final matches = RegExp(r'^(\S+) connected(?: primary)?', multiLine: true)
-        .allMatches(output)
-        .toList();
-    if (matches.isEmpty) throw StateError('No connected X11 display');
-    final primary = matches.where((m) => m[0]!.contains('primary'));
-    return (primary.isEmpty ? matches.first : primary.first)[1]!;
+    final outputs = XOutput.parse(await command('xrandr', ['--query']));
+    final chosen = XOutput.pick(outputs);
+    if (chosen != null) return chosen.name;
+    if (kiosk) return (await _enableFallback(outputs)).name;
+    throw StateError('No connected X11 display');
+  }
+
+  /// No screen answered on any port (TV off, in standby, unplugged, or a
+  /// cable that does not report itself). Without this X shrinks the desktop to
+  /// 320x200 and the player, remote view and rotation all work on that.
+  /// Drive one output at 1080p so the kiosk keeps its real size and
+  /// orientation, ready for the moment a screen answers.
+  Future<XOutput> _enableFallback(List<XOutput> outputs) async {
+    if (outputs.isEmpty) throw StateError('No X11 outputs');
+    final target = outputs.firstWhere((o) => o.name.startsWith('HDMI'),
+        orElse: () => outputs.first);
+    try {
+      await command('xrandr', ['--newmode', fallbackMode, ..._fallbackModeline]);
+    } catch (_) {} // Already defined by an earlier run.
+    try {
+      await command('xrandr', ['--addmode', target.name, fallbackMode]);
+    } catch (_) {} // Already added to this output.
+    await command('xrandr',
+        ['--output', target.name, '--mode', fallbackMode, '--primary']);
+    await event?.call(
+        'No screen detected: running ${target.name} at 1920x1080 until one is connected',
+        'warning');
+    return XOutput(target.name,
+        connected: false, primary: true, width: 1920, height: 1080);
+  }
+
+  /// Every tick on X11: keep a sized output when no screen answers, drop the
+  /// stand-in once a real screen is connected, and hold the CMS rotation on
+  /// whatever output is showing the player. A screen plugged in, swapped or
+  /// woken later starts at normal rotation, and a rotation sent while no
+  /// screen answered waits here instead of failing for good.
+  Future<void> _keepDisplay() async {
+    // A desktop install with no rotation set: nothing here to look after.
+    if (!kiosk && values['screen_rotation'] == null) return;
+    var outputs = XOutput.parse(await command('xrandr', ['--query']));
+    final stale = outputs.where((o) => o.active && !o.connected).toList();
+    if (outputs.any((o) => o.connected) && stale.isNotEmpty) {
+      for (final o in stale) {
+        await command('xrandr', ['--output', o.name, '--off']);
+      }
+      outputs = XOutput.parse(await command('xrandr', ['--query']));
+    } else if (kiosk && !outputs.any((o) => o.connected || o.active)) {
+      await _enableFallback(outputs);
+      outputs = XOutput.parse(await command('xrandr', ['--query']));
+    }
+    final desired = values['screen_rotation']?.toString();
+    final direction = rotations[desired];
+    final target = XOutput.pick(outputs);
+    if (direction == null || target == null || !target.active) return;
+    if (target.rotation == direction &&
+        results['screen_rotation']?['status'] == 'applied') {
+      return;
+    }
+    if (target.rotation != direction) {
+      await command('xrandr', ['--output', target.name, '--rotate', direction]);
+    }
+    results['screen_rotation'] = {
+      'status': 'applied',
+      'value': values['screen_rotation'],
+      'message': ''
+    };
+    await _persist();
+    await event?.call(
+        'Screen rotation $desired applied on ${target.name}', 'info');
+    await report?.call(acknowledgement);
   }
 
   Future<void> _validateAndApply(String key, dynamic value) async {
@@ -368,16 +467,16 @@ class LinuxConfiguration extends ChangeNotifier {
     } else if (key == 'screen_rotation' && wayland) {
       await WaylandRotation.instance.apply(value.toString());
     } else if (key == 'screen_rotation') {
-      final direction = {
-        '0': 'normal',
-        '90': 'right',
-        '180': 'inverted',
-        '270': 'left'
-      }[value.toString()];
+      final direction = rotations[value.toString()];
       if (direction == null)
         throw const FormatException('Rotation must be 0, 90, 180 or 270');
-      await command(
-          'xrandr', ['--output', await _output(), '--rotate', direction]);
+      final String output;
+      try {
+        output = await _output();
+      } on StateError catch (error) {
+        throw _WaitingForScreen(error.message);
+      }
+      await command('xrandr', ['--output', output, '--rotate', direction]);
     } else if (key == 'volume') {
       final percent = configurationPercent(value);
       if ((values['volume_timeout'] as num? ?? 0) > 0) {
@@ -600,6 +699,13 @@ class LinuxConfiguration extends ChangeNotifier {
   Future<void> tick() async {
     if (_ticking || _closed) return;
     _ticking = true;
+    if (!wayland) {
+      try {
+        await _keepDisplay();
+      } catch (error) {
+        await event?.call('Display check: $error', 'error');
+      }
+    }
     try {
       final now = clock();
       final schedule = values['working_schedule'] as Map?;
@@ -757,5 +863,61 @@ class LinuxConfiguration extends ChangeNotifier {
   void close() {
     _closed = true;
     _timer?.cancel();
+  }
+}
+
+class _WaitingForScreen implements Exception {
+  _WaitingForScreen(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+/// One output line of `xrandr --query`, e.g.
+/// "HDMI-1 connected primary 1080x1920+0+0 right (normal left ...)".
+@visibleForTesting
+class XOutput {
+  XOutput(this.name,
+      {required this.connected,
+      this.primary = false,
+      this.width,
+      this.height,
+      this.rotation = 'normal'});
+  final String name;
+  final bool connected;
+  final bool primary;
+  final int? width;
+  final int? height;
+  final String rotation;
+
+  /// Showing part of the desktop (has a mode), plugged in or not.
+  bool get active => width != null;
+
+  static final _line = RegExp(
+      r'^(\S+) (connected|disconnected)( primary)?(?: (\d+)x(\d+)(?:\+\d+\+\d+)?)?(?: (left|right|inverted))?',
+      multiLine: true);
+
+  static List<XOutput> parse(String query) => [
+        for (final m in _line.allMatches(query))
+          XOutput(m[1]!,
+              connected: m[2] == 'connected',
+              primary: m[3] != null,
+              width: m[4] == null ? null : int.parse(m[4]!),
+              height: m[5] == null ? null : int.parse(m[5]!),
+              rotation: m[6] ?? 'normal')
+      ];
+
+  /// The output the player shows on: a connected screen (primary first),
+  /// else one already driven without a screen, such as the kiosk stand-in.
+  static XOutput? pick(List<XOutput> outputs) {
+    XOutput? first(Iterable<XOutput> list) {
+      final primary = list.where((o) => o.primary);
+      return primary.isNotEmpty
+          ? primary.first
+          : (list.isEmpty ? null : list.first);
+    }
+
+    return first(outputs.where((o) => o.connected)) ??
+        first(outputs.where((o) => o.active));
   }
 }
