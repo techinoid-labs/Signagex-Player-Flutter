@@ -20,6 +20,7 @@ import '../views/no_content_view.dart';
 import '../views/no_internet_view.dart';
 import '../views/play_list_view.dart';
 import '../views/player_stopped_view.dart';
+import '../widgets/kiosk_surface.dart';
 
 class MqttProvider extends StatefulWidget {
   final Widget child;
@@ -94,8 +95,14 @@ class _MqttProviderState extends State<MqttProvider> {
               child: Stack(
                 fit: StackFit.expand,
                 children: [
-                  _getScreenForState(viewModel.state),
-                  // Trigger content, over whichever screen is showing.
+                  // A scheduled kiosk campaign covers signage (which keeps
+                  // running offstage underneath).
+                  KioskSurface(
+                    state: viewModel.state,
+                    child: _getScreenForState(viewModel.state),
+                  ),
+                  // Trigger content, over whichever screen is showing. Over
+                  // a kiosk only a Local API play-on-top trigger gets here.
                   if (interactive != null)
                     Positioned.fill(
                       child: InteractivityContentView(
@@ -124,6 +131,8 @@ class _MqttProviderState extends State<MqttProvider> {
       // key listener already uses when calling getKey() -- matching it
       // rather than a different key-string format keeps this consistent
       // with whatever the CMS's key_press configuration actually expects.
+      // Keys typed into a kiosk campaign belong to the kiosk.
+      if (viewModel.kioskCovering) return;
       if (event.logicalKey.debugName != null) {
         viewModel.getKey(event.logicalKey.debugName!);
       }

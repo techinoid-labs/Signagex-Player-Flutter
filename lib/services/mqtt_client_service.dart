@@ -31,6 +31,9 @@ class MqttClientService {
       ValueNotifier<String>('');
 
   Function(String)? onMessageReceived;
+  /// Kiosk campaign messages ({playerCode}/kiosk), kept out of the content
+  /// handler above.
+  void Function(String)? onKioskMessageReceived;
 
   // Feeds the "connectivity" block of the resource_usage payload, mirroring
   // MqttClientHelper.getMqttStats() on the Android player.
@@ -442,6 +445,13 @@ class MqttClientService {
     final payloadBytes = recMess.payload.message;
     if (payloadBytes == null) return;
     final payload = utf8.decode(payloadBytes.toList());
+
+    // Kiosk campaigns ({playerCode}/kiosk, retained) have their own handler;
+    // the content handler doesn't know these actions.
+    if ((messages[0].topic ?? '').endsWith('/kiosk')) {
+      onKioskMessageReceived?.call(payload);
+      return;
+    }
 
     if (onMessageReceived != null) {
       onMessageReceived!(payload);

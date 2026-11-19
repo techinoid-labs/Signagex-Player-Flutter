@@ -93,6 +93,10 @@ class Interactivity {
   final List<String> localApi;
   final bool onDemand;
 
+  /// A Local API trigger that shows above a kiosk campaign (an emergency
+  /// message); every other trigger waits while a kiosk covers the screen.
+  final bool playOnTop;
+
   /// Seconds without any touch or key input. Null when not configured.
   final int? interactivityTimeout;
 
@@ -118,6 +122,7 @@ class Interactivity {
     required this.control,
     required this.localApi,
     required this.onDemand,
+    this.playOnTop = false,
     required this.interactivityTimeout,
     required this.specificTime,
     required this.pause,
@@ -140,6 +145,7 @@ class Interactivity {
           _asMaps(json['control']).map(InteractivityControl.fromJson).toList(),
       localApi: _asStrings(json['local_api']),
       onDemand: _asBool(json['on_demand']),
+      playOnTop: _asBool(json['play_on_top']),
       interactivityTimeout: timeout != null && timeout > 0 ? timeout : null,
       specificTime: _asStrings(json['specific_time'])
           .map((s) => DateTime.tryParse(s))

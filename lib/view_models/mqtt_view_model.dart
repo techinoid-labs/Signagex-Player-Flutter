@@ -41,6 +41,7 @@ import 'package:digital_signage/utils/windows_screen_capture.dart'
 import 'package:digital_signage/view_models/system_apply_settings_vm.dart';
 
 import '../data/api_repository/api_repository.dart';
+import '../services/kiosk_campaign.dart';
 import '../services/mqtt_client_service.dart';
 import '../utils/constants.dart';
 
@@ -237,12 +238,46 @@ class MqttViewModel extends ChangeNotifier {
     _debugLog('=== MqttViewModel constructed (app launched) ===');
     _mqttClientService.receivedMessageNotifier.addListener(_updateMessage);
     _mqttClientService.onMessageReceived = _handleIncomingMessage;
+    _wireKioskCampaigns();
 
     fetchAllInfo();
     _populateAppVersion();
     _initializeBasedOnPlatform();
     _monitorConnectivity();
   }
+
+  /// Kiosk campaigns ({playerCode}/kiosk) own the screen while they show:
+  /// triggers wait (a Local API trigger set to play on top still shows above
+  /// the kiosk), and one playing full screen ends when the kiosk starts.
+  void _wireKioskCampaigns() {
+    final kiosk = KioskCampaignService.instance;
+    _mqttClientService.onKioskMessageReceived =
+        (payload) => unawaited(kiosk.handleMessage(payload));
+    interactivity.kioskCovering = () => kioskCovering;
+    interactivity.warn = (message) {
+      if (topic.isEmpty) return;
+      _mqttClientService.publish(
+          topic,
+          jsonEncode({
+            'action': 'player_logs',
+            'log': message,
+            'type': 'warning',
+            'date_time': DateTime.now().toIso8601String(),
+          }));
+    };
+    kiosk.addListener(_onKioskChanged);
+  }
+
+  void _onKioskChanged() {
+    if (kioskCovering) interactivity.yieldToKiosk();
+  }
+
+  /// True while a kiosk campaign covers signage (never on the pairing or
+  /// stopped screens).
+  bool get kioskCovering =>
+      KioskCampaignService.instance.showing &&
+      _state != MqttState.playerStopped &&
+      _state != MqttState.pairedScreen;
 
   // Field name and "Version: x.y.z" format match the working Android
   // player's PlayerInformation.getPlayerVersion() exactly -- the backend
@@ -2627,6 +2662,11 @@ EOF
   static const int _kMaxQueuedAdProofOfPlay = 50;
 
   Future<void> reportAdProofOfPlay(AdProofOfPlayRequest request) async {
+    // Signage under a kiosk campaign is not seen by anyone: not a play.
+    if (kioskCovering) {
+      _debugLog('[AdPoP] Skipped: a kiosk campaign covers the screen');
+      return;
+    }
     final url = '$baseurl$adCampaignProofOfPlayPath';
     if (playerCode.isEmpty) {
       print('[AdPoP] Skipped: player_code is empty (POST $url)');
@@ -3030,7 +3070,9 @@ EOF
       print('MQTT_LOGS:: Cannot subscribe - topic is empty');
       return;
     }
+    // {topic}/# also brings the retained {topic}/kiosk schedule.
     _mqttClientService.subscribe(topic);
+    KioskCampaignService.instance.start(topic);
   }
 
   void publishMessage(String topic, String message) {
@@ -3496,6 +3538,8 @@ EOF
         if (Platform.isWindows) deviceSettings.showDesktopForWindows();
         return;
       case "press_back":
+        // Over a kiosk campaign, Back goes one screen back in the kiosk.
+        if (kioskCovering && KioskCampaignService.instance.requestBack()) return;
         if (Platform.isWindows) deviceSettings.restoreWindowsForWindows();
         return;
       case "send_text":
@@ -4553,6 +4597,7 @@ EOF
     _timer?.cancel();
     _pairingPollTimer?.cancel();
     _statusPollTimer?.cancel();
+    KioskCampaignService.instance.removeListener(_onKioskChanged);
     interactivity.dispose();
     _networkRecoveryTimer?.cancel();
     _stopPeriodicReporting();
