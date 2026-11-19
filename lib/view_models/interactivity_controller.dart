@@ -89,6 +89,31 @@ class InteractivityController {
   bool _serverStarting = false;
   Timer? _serverRetry;
 
+  // -- Kiosk campaigns --
+
+  /// True while a kiosk campaign covers the screen. Then no trigger plays
+  /// (taps on the kiosk belong to the kiosk), except a Local API trigger set
+  /// to play on top, which shows above it.
+  bool Function() kioskCovering = () => false;
+
+  /// Tells the CMS why an explicit request (Run now, Local API) did nothing.
+  void Function(String message)? warn;
+
+  static bool _passesKiosk(Interactivity it, String source) =>
+      source == 'local_api' && it.playOnTop;
+
+  /// Whether the content on screen is a play-on-top trigger.
+  bool get overlay => _playback?.onTop == true;
+
+  /// A kiosk just started covering the screen: a trigger playing full screen
+  /// ends (it would otherwise hide the kiosk) and nothing queued follows.
+  void yieldToKiosk() {
+    if (_playback == null && _queue.isEmpty) return;
+    if (overlay) return;
+    log('a kiosk campaign is showing: trigger content stopped');
+    _stopPlayback();
+  }
+
   /// Replaces the whole list -- `create_interactivity` always carries the
   /// player's full current set, on create, update and delete alike.
   void setList(InteractivityModel model) {
@@ -161,6 +186,8 @@ class InteractivityController {
   /// tap is mapped into that space before the hit test.
   void onTap(double x, double y, double screenWidth, double screenHeight) {
     _registerInput();
+    // Over a kiosk, touch regions would steal the kiosk's taps.
+    if (kioskCovering()) return;
     if (screenWidth <= 0 || screenHeight <= 0) return;
     for (final it in _items) {
       if (!it.touchRegion || it.control.isEmpty) continue;
@@ -342,6 +369,17 @@ class InteractivityController {
 
   /// Fires [it] if its gate passes. Returns whether it fired.
   bool _fire(Interactivity it, String condition) {
+    final source = condition.split(' ').first;
+    final onTop = _passesKiosk(it, source);
+    if (kioskCovering() && !onTop) {
+      log('"${it.name}" via $condition not fired: a kiosk campaign is showing');
+      // Someone asked for it explicitly: say why nothing happened. Keys and
+      // timers stay silent (a kiosk session is full of input).
+      if (source == 'on_demand' || source == 'local_api') {
+        warn?.call('Trigger ${it.name} not played: a kiosk campaign is showing on this screen');
+      }
+      return false;
+    }
     final rejection = _gateRejection(it);
     if (rejection != null) {
       log('"${it.name}" via $condition not fired: $rejection');
@@ -350,7 +388,7 @@ class InteractivityController {
     log('"${it.name}" fired via $condition '
         '(${it.triggers.length} trigger(s))');
     for (var i = 0; i < it.triggers.length; i++) {
-      _runTrigger(it, i);
+      _runTrigger(it, i, onTop: onTop && kioskCovering());
     }
     return true;
   }
@@ -430,7 +468,7 @@ class InteractivityController {
 
   // -- Actions --
 
-  void _runTrigger(Interactivity it, int index) {
+  void _runTrigger(Interactivity it, int index, {bool onTop = false}) {
     final trigger = it.triggers[index];
     final label = '${it.name} / ${trigger.triggerType}';
     if (trigger.triggerType == 'stop') {
@@ -438,7 +476,7 @@ class InteractivityController {
       _stopPlayback();
       return;
     }
-    final playback = _playbackFor(it, index, label);
+    final playback = _playbackFor(it, index, label, onTop: onTop);
     if (playback == null) return;
     if (trigger.triggerType == 'enqueue') {
       _queue.add(playback);
@@ -449,7 +487,7 @@ class InteractivityController {
     _start(playback);
   }
 
-  _Playback? _playbackFor(Interactivity it, int index, String label) {
+  _Playback? _playbackFor(Interactivity it, int index, String label, {bool onTop = false}) {
     final campaigns = _prepared['${it.id}#$index'] ?? const <Campaign>[];
     if (campaigns.isEmpty) {
       log('"$label" has no content to show');
@@ -459,6 +497,7 @@ class InteractivityController {
       label: label,
       campaigns: campaigns,
       duration: Duration(seconds: it.triggers[index].duration),
+      onTop: onTop,
     );
   }
 
@@ -619,6 +658,9 @@ class _Playback {
   final String label;
   final List<Campaign> campaigns;
   final Duration duration;
+
+  /// Shown above a kiosk campaign (Local API, play on top).
+  final bool onTop;
   DateTime? deadline;
   int index = 0;
 
@@ -626,5 +668,6 @@ class _Playback {
     required this.label,
     required this.campaigns,
     required this.duration,
+    this.onTop = false,
   });
 }

@@ -15,6 +15,8 @@ import 'package:video_player/video_player.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import 'package:digital_signage/services/kiosk_campaign.dart' show KioskCampaignService;
+import 'package:digital_signage/services/kiosk_video_pause.dart';
 import 'package:digital_signage/models/ad_proof_of_play_model.dart';
 import 'package:digital_signage/models/compaign_model.dart';
 import 'package:digital_signage/utils/constants.dart';
@@ -988,6 +990,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   @override
   void initState() {
     super.initState();
+    KioskCampaignService.instance.addListener(_onKioskChanged);
     _timer = Timer(Duration.zero, () {});
     _startRestrictionCheckTimer();
     _initializeNextMedia();
@@ -1080,6 +1083,23 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
   String _mediaUrlAt(int index, List<MediaItem> items) {
     if (index < 0 || index >= items.length) return '';
     return items[index].adCreativeUrl;
+  }
+
+  /// The older video_player path pauses under a kiosk campaign too, and
+  /// resumes when the kiosk ends (only if it was paused for the kiosk).
+  bool _pausedForKiosk = false;
+  void _onKioskChanged() {
+    final controller = _videoController;
+    if (controller == null || !controller.value.isInitialized) return;
+    if (KioskCampaignService.instance.showing) {
+      if (controller.value.isPlaying) {
+        _pausedForKiosk = true;
+        controller.pause();
+      }
+    } else if (_pausedForKiosk) {
+      _pausedForKiosk = false;
+      controller.play();
+    }
   }
 
   void _resetState() {
@@ -1766,7 +1786,13 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
 
           setState(() {
             _videoController!.setVolume(volume.clamp(0.0, 1.0));
-            _videoController!.play();
+            // Under a kiosk campaign it starts paused, and plays once the
+            // kiosk ends.
+            if (KioskCampaignService.instance.showing) {
+              _pausedForKiosk = true;
+            } else {
+              _videoController!.play();
+            }
 
             if (targetDuration > 0 &&
                 videoLength > 0 &&
@@ -1954,6 +1980,7 @@ class _VideoPlaylistWidgetState extends State<VideoPlaylistWidget> {
         'campaignId=${widget.campaignId ?? "N/A"} mediaIndex=$_currentMediaIndex '
         'hadVideoController=${_videoController != null}');
     _isDisposed = true;
+    KioskCampaignService.instance.removeListener(_onKioskChanged);
     _timer?.cancel();
     _restrictionCheckTimer?.cancel();
     _videoController?.removeListener(_checkVideoPlaybackDuration);
@@ -2731,10 +2758,12 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
   bool _isVideoEnded = false;
   int _initAttempts = 0;
   static const int _maxInitAttempts = 5;
+  late final KioskVideoPause _kioskPause = KioskVideoPause(() => _player);
 
   @override
   void initState() {
     super.initState();
+    _kioskPause; // starts listening
     _completedSub = _player.stream.completed.listen((completed) {
       if (completed && !_isVideoEnded) {
         _isVideoEnded = true;
@@ -2856,6 +2885,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       await _player.open(Media(resolvedPath), play: false);
       await _player.setVolume(widget.volume.clamp(0.0, 1.0) * 100);
       await _player.play();
+      await _kioskPause.afterPlay();
       _debugLog("VideoPlayerWidget: Video play() called");
       if (mounted) {
         setState(() {
@@ -2897,7 +2927,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
       // stops at the end instead of looping natively.
       _isVideoEnded = false;
       _player.seek(Duration.zero);
-      _player.play();
+      _player.play().then((_) => _kioskPause.afterPlay());
     }
   }
 
@@ -2963,6 +2993,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget> {
     // outlive this widget (it gets recreated per media item via its key).
     _completedSub?.cancel();
     _errorSub?.cancel();
+    _kioskPause.dispose();
     super.dispose();
   }
 }

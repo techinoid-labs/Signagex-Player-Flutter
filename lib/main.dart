@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 // Prefixed: dart:ui re-declares several names (Color, Offset, Size, Rect,
 // TextDirection...) that flutter/material.dart also exports with its own
@@ -17,8 +18,10 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart'
     as webview;
 import 'package:flutter_phoenix/flutter_phoenix.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:path_provider/path_provider.dart';
 
 import 'package:digital_signage/provider/main_provider.dart';
+import 'package:digital_signage/services/kiosk_campaign.dart';
 import 'package:digital_signage/utils/debug_log.dart' as debug;
 import 'package:digital_signage/utils/globle_variable.dart';
 import 'package:digital_signage/widgets/touch_feedback_overlay.dart';
@@ -81,6 +84,14 @@ Future<void> main() async {
   if (kDebugMode) {
     HttpOverrides.global = MyHttpOverrides();
   }
+  // A kiosk campaign that was running before the restart comes back at
+  // once, from its cache, even before MQTT reconnects.
+  try {
+    KioskCache.supportRoot = (await getApplicationSupportDirectory()).path;
+  } catch (error) {
+    debug.debugLog('Kiosk', 'support folder unavailable: $error');
+  }
+  unawaited(KioskCampaignService.instance.restore());
   runApp(Phoenix(
     child: MaterialApp(
         debugShowCheckedModeBanner: false,

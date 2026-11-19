@@ -8,6 +8,7 @@ import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:media_kit/media_kit.dart' as media_kit;
+import 'package:digital_signage/services/kiosk_video_pause.dart';
 
 import 'package:digital_signage/views/campaign_view.dart'
     show normalizeTransitionName;
@@ -653,12 +654,14 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
   bool _isVideoEnded = false;
   int _initAttempts = 0;
   static const int _maxInitAttempts = 5;
+  late final KioskVideoPause _kioskPause = KioskVideoPause(() => _player);
 
   @override
   void initState() {
     super.initState();
     _player = media_kit.Player();
     _videoController = media_kit_video.VideoController(_player);
+    _kioskPause; // starts listening
     _completedSubscription = _player.stream.completed.listen((completed) {
       if (completed && !_isVideoEnded) {
         _isVideoEnded = true;
@@ -695,6 +698,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
       await _player.open(media_kit.Media(file.path), play: false);
       await _player.setVolume(widget.currentVolume.clamp(0.0, 1.0) * 100);
       await _player.play();
+      await _kioskPause.afterPlay();
     } catch (error) {
       _initAttempts++;
       print(
@@ -730,6 +734,7 @@ class _VideoPlayerWidgetState extends State<VideoPlayerWidget>
 
   @override
   void dispose() {
+    _kioskPause.dispose();
     _completedSubscription?.cancel();
     _errorSubscription?.cancel();
     _player.dispose();

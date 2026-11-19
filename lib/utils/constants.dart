@@ -15,6 +15,11 @@ const String apiHost =
 // top-level consts in that file, so any file importing both unprefixed
 // would get a genuine name collision the moment it tried to use either name.
 const String baseurl = "https://$apiHost/v1/";
+/// Where the CMS web app runs. Kiosk campaigns open its /kiosk-play page
+/// when a publish message carries no usable `player_url` of its own.
+const String kioskFrontendBase = isStagingEnvironment
+    ? "https://stage.signagexai.com"
+    : "https://app.signagex.ai";
 const String adCampaignProofOfPlayPath = "player/ad-campaign-proof-of-play";
 const String port = "3002/";
 bool isIos = Platform.isIOS;
